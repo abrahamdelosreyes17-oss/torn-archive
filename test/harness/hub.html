@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Torn Archive</title></head>
+<body>
+<!--
+  The hub on a made-up desk (test/fixture-view.js): every name and number here is invented, nothing is asked of Torn.
+  A stand-in engine answers the presses, so the pages can be walked and checked.
+    ?empty=1   nothing read yet        ?nokey=1   no key pasted        ?behind=1  Torn Trading is on and asks more
+    ?closed=1  the shop closed         ?fell=400  the points price that much lower
+    ?one=1     only the plushie set    ?w3b=match | differ | error
+    ?server=ok | old | update | password | down | saved
+-->
+<script type="module">
+import { mountHub } from '../../src/ui/hub.js';
+import { archiveView, viewPiece } from '../../src/core/view.js';
+import { archiveSettings } from '../../src/core/settings.js';
+import { fillPlan, toggleLine, dropLine, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, listAfterRun } from '../../src/core/shopping.js';
+import { desiredList, parseOwnList } from '../../src/core/tw3b-list.js';
+import { tradeNotice } from '../../src/core/trades.js';
+import { fixtureInput } from '../fixture-view.js';
+import { serverLines } from '../../src/core/server.js';
+
+const q = new URLSearchParams(location.search);
+const now = Date.now();
+let input = fixtureInput(now);
+if (q.has('fell')) input.listings = input.listings.map((l) => ({ ...l, cost: l.cost - (Number(q.get('fell')) || 400) }));
+if (q.has('closed')) input.settings = archiveSettings({ ...input.settings, open: false });
+if (q.has('one')) input.settings = archiveSettings({ ...input.settings, which: { plushie: true, flower: false } });
+if (q.has('empty')) input = { now, settings: archiveSettings(null), held: () => 0, mv: () => 0, stockAt: 0 };
+
+const keys = q.has('nokey') || q.has('empty')
+    ? { limited: { set: false }, full: { set: false }, w3b: { set: false } }
+    : { limited: { set: true, ok: true }, full: { set: true, ok: true }, w3b: { set: q.has('w3b'), ok: true } };
+const rnd = (() => { let s = 7; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; })();
+const usage = { torn: Array.from({ length: 60 }, (_, i) => Math.round(28 + 18 * Math.sin(i / 7) + rnd() * 14)), w3b: Array.from({ length: 60 }, (_, i) => Math.round(8 + 5 * Math.cos(i / 9) + rnd() * 6)), refused: 0 };
+usage.nowTorn = usage.torn[59];
+usage.nowW3b = usage.w3b[59];
+const busy = { w3b: false, receipt: null };
+// ?server=ok | old | update | password | down | saved (anything else: off)
+const SERVER_STATES = {
+    ok: { okAt: now - 12000, syncAt: now - 12000, reading: 'reading', key: 'working', you: { id: 2000001, name: 'Some_Body' }, peopleOn: [{ id: 2000002, name: 'Other_One' }], need: 34, serverShare: 46, serverUsed: 41, people: 3 },
+    old: { syncAt: now - 20000, error: 'This server keeps one list a person: it has to be updated first.', why: 'old' },
+    update: { syncAt: now - 20000, error: 'The server asks for a newer Torn Archive.', why: 'update', needVer: '1.2.0', need: 34, serverShare: 46, serverUsed: 12 },
+    password: { syncAt: now - 20000, error: 'The server does not know this password.', why: 'password' },
+    down: { okAt: now - 9 * 60000, syncAt: now - 15000, error: 'Network request failed.' },
+};
+const serverOf = () => {
+    const k = q.get('server');
+    if (!SERVER_STATES[k]) return { ...serverLines({ on: false, typed: k === 'saved' ? 'x' : '', hasPass: k === 'saved' }, now), bazaars: 0, address: '', typed: k === 'saved' ? 'https://torn-shared.example.workers.dev' : '', hasPass: k === 'saved', msg: k === 'saved' ? 'Not saved. The password is the long one you were given for the server: letters and digits only.' : '' };
+    const st = { on: true, address: 'https://torn-shared.example.workers.dev', peopleOn: [], you: null, okAt: null, error: null, why: null, needVer: null, reading: null, key: null, need: null, serverShare: null, serverUsed: null, people: null, ...SERVER_STATES[k], now };
+    return { ...serverLines(st, now), bazaars: k === 'ok' ? 214 : 0, address: st.address, typed: st.address, hasPass: true, msg: '' };
+};
+let notice = null;
+
+function desk() {
+    const view = archiveView(input);
+    if (q.get('w3b') && input.w3b) {
+        const want = desiredList(view.pieces, view.settings.open);
+        const list = q.get('w3b') === 'match' && !input.w3bSent ? want : input.w3bSent || [...want.slice(3)].map((x, i) => (i < 2 ? { ...x, price: x.price - 100 } : x));
+        input.w3b = { ...input.w3b, list: q.get('w3b') === 'error' ? null : parseOwnList({ items: list.map((x) => ({ itemID: x.itemID, pricingType: 'fixed', pricingValue: x.price })) }), listAt: now, error: q.get('w3b') === 'error' ? 'TornW3B did not answer (timed out). Tried again in a minute.' : '' };
+        return { view: archiveView(input), keys, usage, turns: q.has('behind') ? { mode: 'behind', why: 'trading-in-view', torn: 12, w3b: 8 } : { mode: 'alone', why: '', torn: 85, w3b: 80 }, busy, notice, server: serverOf(), version: 'harness' };
+    }
+    return { view, keys, usage, turns: q.has('behind') ? { mode: 'behind', why: 'trading-in-view', torn: 12, w3b: 8 } : { mode: 'alone', why: '', torn: 85, w3b: 80 }, busy, notice, server: serverOf(), version: 'harness' };
+}
+const stops = () => { const v = archiveView(input); return stopsOf(input.cart || [], (id) => (viewPiece(v, id) || {}).worth || 0); };
+const show = () => hub.show(desk());
+
+const hub = mountHub(document, {
+    set(patch) { input.settings = archiveSettings({ ...input.settings, ...patch }); show(); },
+    cart(id, place) {
+        const v = archiveView(input);
+        const p = viewPiece(v, id);
+        const offer = p && p.offers.find((o) => placeOf(o) === place);
+        if (offer) { input.cart = toggleLine(input.cart, p, offer); input.run = { ...RUN_IDLE }; show(); }
+    },
+    drop(key) { input.cart = dropLine(input.cart, key); input.run = { ...RUN_IDLE }; show(); },
+    makeList() { const v = archiveView(input); input.cart = fillPlan(v.pieces, input.offers); input.run = { ...RUN_IDLE }; show(); },
+    clearList() { input.cart = []; input.run = { ...RUN_IDLE }; show(); },
+    run(op) {
+        const S = stops();
+        if (op === 'start') input.run = runStart(S);
+        else if (op === 'stop') input.run = { ...RUN_IDLE };
+        else {
+            // The stand-in "buys" everything at the stop you leave, as the real one counts from the page and the log.
+            const at = runAt(input.run, S);
+            if (at >= 0 && !q.has('skip')) for (const l of S[at].lines) input.run = runTook(input.run, l.key, l.q);
+            input.run = runNext(input.run, S);
+            if (input.run.done) { input.cart = listAfterRun(input.cart, input.run); }
+        }
+        show();
+    },
+    read() { input.pricesAt = Date.now(); input.pointsAt = Date.now(); show(); },
+    copy(text) { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}); },
+    keySave(kind) { keys[kind] = { set: true, ok: true }; show(); },
+    keyForget(kind) { keys[kind] = { set: false }; show(); },
+    keyShow(kind) { keys[kind] = { ...keys[kind], shown: keys[kind].shown ? '' : 'made-up-key-0000' }; show(); },
+    zip() { console.log('zip'); },
+    w3b(op) { if (op === 'send') { const v = archiveView(input); input.w3bSent = desiredList(v.pieces, v.settings.open); } show(); },
+    receipt(id) { input.w3b.receipts.set(String(id), { id: 'r' + id, total: 0, url: '' }); show(); },
+    usageExport() { console.log('export'); },
+    notifyTest() { const t = desk().view.trades.open[2]; if (t) { notice = tradeNotice(t, t.items, t.total); hub.toast({ ...notice, tradeId: t.id }); show(); } },
+});
+show();
+window.hub = hub;
+window.deskNow = desk;
+</script>
+</body></html>

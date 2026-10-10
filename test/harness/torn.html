@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Stand-in Torn page</title>
+<style>
+  /* A stand-in for Torn's pages: its layout words only (class names the readers look for). Nothing here is Torn's. */
+  body { margin: 0; background: #191919; color: #ccc; font: 13px/1.4 Arial, sans-serif; }
+  #mainContainer { width: 976px; margin: 0 auto; padding: 16px 0 80px; }
+  h1 { font-size: 18px; color: #ddd; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .itemTile { padding: 14px 10px 10px; background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 4px; }
+  .itemTile img { width: 60px; height: 30px; object-fit: contain; display: block; }
+  .itemTile input { width: 60px; background: #1b1b1b; border: 1px solid #444; color: #ccc; }
+  button, .btn { background: #555; color: #eee; border: 0; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
+  .trade-cont { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .trade-cont ul { list-style: none; margin: 0; padding: 0; }
+  .trade-cont .title-black { padding: 7px 10px; background: #222; }
+  .trade-cont ul.desc > li { padding: 8px 10px; border-top: 1px solid #3a3a3a; background: #2a2a2a; }
+  .set { margin: 12px 0; padding: 10px; background: #2a2a2a; border-radius: 4px; }
+  .set ul { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 10px 0; }
+  .set li { width: 66px; padding: 14px 0 4px; text-align: center; background: #222; border: 1px solid #3a3a3a; border-radius: 4px; }
+  .set li img { width: 38px; height: 19px; }
+  .set input, .pm input { width: 90px; background: #1b1b1b; border: 1px solid #444; color: #ccc; padding: 3px 6px; }
+  .pm { padding: 10px; background: #2a2a2a; border-radius: 4px; display: flex; gap: 8px; align-items: center; }
+  .thread h4 { margin: 0; padding: 10px; background: #222; }
+  .log { margin-top: 20px; padding: 10px; background: #111; color: #8a8; white-space: pre-wrap; font: 12px/1.5 Consolas, monospace; }
+</style></head>
+<body>
+<!--
+  Torn Archive's box and marks on stand-in Torn pages (made-up desk, test/fixture-view.js). Nothing is asked of Torn.
+    ?page=bazaar&userId=N   a bazaar (the first stop of a made list when userId is left out)   &run=1  a run started
+    ?page=bazaar&im=1       stands in for the Item Market
+    ?page=trade#step=view&ID=N   a trade (&money=1: the add-money step)
+    ?page=museum   ?page=pmarket   ?page=forum#/p=threads&t=N
+    &old=1  the shared view is 20 minutes old      &none=1  nothing shared yet     &trading=1  Torn Trading on this page
+-->
+<div id="mainContainer"></div>
+<script type="module">
+import { archiveView, viewForTabs, viewPiece } from '../../src/core/view.js';
+import { fillPlan, stopsOf, runStart } from '../../src/core/shopping.js';
+import { SETS } from '../../src/core/sets.js';
+import { gmSet, gmGet } from '../../src/platform/gm.js';
+import { mountTornPage, SHARED_VIEW_KEY, SHARED_NOTES_KEY } from '../../src/ui/torn-page.js';
+import { fixtureInput } from '../fixture-view.js';
+
+const q = new URLSearchParams(location.search);
+const page = q.get('page') || 'bazaar';
+const now = Date.now();
+const input = fixtureInput(now);
+let view = archiveView(input);
+if (page === 'bazaar' || q.has('list')) {
+    input.cart = fillPlan(view.pieces, input.offers);
+    const stops = stopsOf(input.cart, (id) => (viewPiece(view, id) || {}).worth || 0);
+    if (q.has('run')) input.run = runStart(stops);
+    view = archiveView(input);
+}
+const main = document.getElementById('mainContainer');
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const pic = (id) => `<img src="https://www.torn.com/images/items/${id}/large.png" alt="">`;
+const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
+
+if (page === 'bazaar') {
+    const stops = view.buy.run.stops;
+    const stop = q.get('userId') ? stops.find((s) => String(s.whoId) === q.get('userId')) : stops.find((s) => !s.im);
+    if (!q.get('userId') && stop && !q.has('im')) { q.set('userId', stop.whoId); history.replaceState(null, '', '?' + q.toString() + location.hash); }
+    // The stop's own lines, two pieces that are not on the list, and one item that is no set piece.
+    const lines = stop ? stop.lines.map((l) => ({ id: l.id, name: l.name, price: l.price, qty: l.q + 3 })) : [];
+    const extra = view.pieces.filter((p) => !lines.some((l) => String(l.id) === String(p.id))).slice(0, 3).map((p, i) => ({ id: p.id, name: p.name, price: Math.round(p.worth * (i === 0 ? 0.9 : 1.2)), qty: 5 }));
+    const cards = [...lines, ...extra, { id: 206, name: 'Xanax', price: 830000, qty: 2 }];
+    main.innerHTML = `<h1>${q.has('im') ? 'Item Market' : esc((stop && stop.who) || 'Someone') + "'s Bazaar"}</h1><div class="tiles">` + cards.map((c) =>
+        `<div class="itemTile" data-id="${c.id}">${pic(c.id)}<p class="name___x">${esc(c.name)}</p><p>${money(c.price)}</p><p class="stock">(${c.qty} in stock)</p><input type="text" value=""> <button aria-label="Buy: ${esc(c.name)}">Buy</button></div>`).join('') + '</div>';
+    // "Buy" on the stand-in takes what is typed off the stock, as Torn's page would after the purchase.
+    main.addEventListener('click', (e) => {
+        const b = e.target.closest('button[aria-label^="Buy"]');
+        if (!b) return;
+        const card = b.closest('.itemTile');
+        const typed = Number(card.querySelector('input').value.replace(/\D/g, '')) || 0;
+        const stock = card.querySelector('.stock');
+        const left = Number(stock.textContent.replace(/\D/g, '')) - typed;
+        if (typed <= 0) return;
+        if (left <= 0) card.remove(); else stock.textContent = `(${left} in stock)`;
+        card.querySelector('input') && (card.querySelector('input').value = '');
+    });
+} else if (page === 'trade') {
+    const id = (location.hash.match(/ID=(\d+)/) || [])[1];
+    const t = view.trades.open.find((x) => String(x.id) === id) || view.trades.open[0];
+    if (!id && t) location.hash = 'step=' + (q.has('money') ? 'addmoney' : 'view') + '&ID=' + t.id;
+    const rows = t ? t.rows : [];
+    main.innerHTML = `<h1>Trade</h1><div class="trade-cont">
+      <div class="user left"><div class="title-black">You</div><ul class="cont"><li class="color1"><div class="name">${t && t.myMoney ? money(t.myMoney) : 'No money in trade'}</div></li><li class="color2"><ul class="desc"><li><div class="name">No items in trade</div></li></ul></li></ul></div>
+      <div class="user right"><div class="title-black">${esc((t && t.who) || 'Someone')}</div><ul class="cont"><li class="color1"><div class="name">No money in trade</div></li><li class="color2"><ul class="desc">${rows.map((r) => `<li><div class="name">${esc(r.name)} x${r.qty}</div></li>`).join('')}</ul></li></ul></div>
+    </div>${q.has('money') ? '<p class="input-money-group"><input class="input-money" type="text" value=""><input class="input-money" type="hidden" name="amount" value=""> <button>Change</button></p>' : ''}`;
+} else if (page === 'museum') {
+    main.innerHTML = '<h1>Museum</h1>' + SETS.map((s) => `<div class="set"><p>To exchange a ${esc(s.museum)} for ${s.points} points, you need one of each:</p><ul>${s.pieces.map((p) => `<li>${pic(p.id)}</li>`).join('')}</ul>
+      <p>Number of sets <input type="text" value=""> <button>EXCHANGE</button></p></div>`).join('');
+} else if (page === 'pmarket') {
+    main.innerHTML = '<h1>Points Market</h1><div class="pm">Amount <input type="text" name="amount" value=""> Price each <input type="text" name="price" value=""> <button>ADD LISTING</button></div>';
+} else if (page === 'forum') {
+    const th = view.prices.thread;
+    const title = q.has('exact') ? view.prices.forum.title : (th && th.title) || view.prices.forum.title;
+    if (!/t=\d+/.test(location.hash)) location.hash = '/p=threads&f=10&t=' + ((th && th.id) || 16000001);
+    main.innerHTML = `<h1>Forums</h1><div class="thread"><h4>${esc(title)}</h4><p style="padding:10px;background:#2a2a2a">The first post.</p></div>`;
+}
+if (q.has('trading')) { const h = document.createElement('div'); h.id = 'ttv2-host'; document.body.appendChild(h); }
+
+if (!q.has('none')) gmSet(SHARED_VIEW_KEY, { at: q.has('old') ? now - 20 * 60000 : now, v: JSON.parse(JSON.stringify(viewForTabs(view))) });
+const log = document.createElement('div');
+log.className = 'log';
+main.appendChild(log);
+const app = mountTornPage(document, { tabId: 'harness', version: 'harness', scripted: true });
+setInterval(() => { const n = gmGet(SHARED_NOTES_KEY, []); const text = 'notes to the hub: ' + JSON.stringify(n.map((x) => [x.kind, x.what])); if (log.textContent !== text) log.textContent = text; }, 500);
+window.app = app;
+window.viewNow = view;
+</script>
+</body></html>

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Torn Archive</title></head>
+<body>
+<!--
+  The real wiring (src/main.js: hub, engine, clients) against a made-up Torn and a made-up TornW3B (test/fake-torn.js).
+  Every request to api.torn.com and weav3r.dev is answered here, in this page: nothing leaves this computer.
+  The keys are the fake's own made-up ones.
+    ?tarc=archive          the hub (needed: it is how the script knows this is its own page)
+    &nokey=1               no key set: the first-run state
+    &fast=60               the clock runs this many times faster, so minutes of reads pass in seconds
+-->
+<script type="module">
+import { gmSet } from '../../src/platform/gm.js';
+
+const q = new URLSearchParams(location.search);
+// A faster clock, for everything that asks Date.now(): the engine's cadences and the clients' windows alike.
+const fast = Math.max(1, Number(q.get('fast')) || 1);
+if (fast > 1) {
+    const real = Date.now.bind(Date);
+    const t0 = real();
+    Date.now = () => t0 + (real() - t0) * fast;
+}
+let fake = null;
+try {
+    const { makeFakeTorn } = await import('../fake-torn.js');
+    fake = makeFakeTorn({ now: () => Date.now() });
+} catch (error) {
+    console.warn('No made-up Torn (test/fake-torn.js): every request is refused.', error);
+}
+const realFetch = window.fetch.bind(window);
+const leaks = [];
+const asked = [];
+window.fetch = (url, init) => {
+    const u = String(url);
+    const ours = u.startsWith('https://api.torn.com/') || u.startsWith('https://weav3r.dev/');
+    if (ours && fake) {
+        // Kept for the test to look at, with the key's value left out.
+        asked.push({ t: Date.now(), method: (init && init.method) || 'GET', url: u.replace(/([?&]key=)[^&]*/i, '$1...') });
+        return Promise.resolve(fake.fetch(u, init));
+    }
+    // Anything that is not this page's own files would be a leak: refused, and kept for the test to see.
+    if (ours || /^https?:/.test(u) && !u.startsWith(location.origin)) {
+        leaks.push(u.replace(/([?&]key=)[^&]*/i, '$1...'));
+        return Promise.reject(new Error('refused by the harness'));
+    }
+    return realFetch(url, init);
+};
+const fakeKeys = (fake && (fake.keys || (fake.world && fake.world.keys))) || null;
+if (fakeKeys && !q.has('nokey')) for (const kind of ['limited', 'full', 'w3b']) if (fakeKeys[kind]) gmSet('key.' + kind, fakeKeys[kind]);
+const { boot } = await import('../../src/main.js');
+window.fake = fake;
+window.leaks = leaks;
+window.asked = asked;
+window.app = boot();
+</script>
+</body></html>

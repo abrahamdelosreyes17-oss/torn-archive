@@ -1,0 +1,153 @@
+/*
+ * The item database: indexing and cache policy. Pure - no GM_*, no DOM, no
+ * network. main.js supplies the storage adapter and the fetcher.
+ *
+ * The index is built ONCE at load. V1's fatal performance bug was rebuilding
+ * and re-sorting a ~1,500-entry name array inside a per-element loop; here
+ * name lookup is a Map hit.
+ */
+
+/** Bump to invalidate every cached item database in the wild. */
+export const ITEMS_CACHE_VERSION = 'items-v5';
+
+/**
+ * One hour. sell_price barely moves, but market_value moves every day, and
+ * every "below market value" judgement is only as good as it. A week-old
+ * market value made listings look cheap, or not, against a price that no
+ * longer existed. One Public API call an hour is nothing.
+ */
+export const ITEMS_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Canonical form for name matching: lowercase, collapsed whitespace.
+ * Kept in one place so the index and the lookups can never disagree.
+ */
+export function normalizeItemName(name) {
+    if (typeof name !== 'string') return '';
+    return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Build the lookup index from the raw `torn/items` payload.
+ *
+ * @param {object} rawItems - { "1": { name, sell_price, ... }, ... }
+ */
+export function buildItemIndex(rawItems) {
+    const byId = new Map();
+    const byName = new Map();
+
+    for (const [id, item] of Object.entries(rawItems || {})) {
+        if (!item || typeof item.name !== 'string') continue;
+
+        const record = {
+            id: String(id),
+            name: item.name,
+            type: item.type || null,
+            // v2's sub_type (Melee / Primary / Secondary / Temporary for weapons).
+            subType: item.sub_type || null,
+            buyPrice: Number(item.buy_price) || 0,
+            // 0 when no NPC shop buys it ("Sell: N/A" in game).
+            sellPrice: Number(item.sell_price) || 0,
+            // Which NPC shop buys it, when the item data names one.
+            npcShopName: item.npc_shop || null,
+            marketValue: Number(item.market_value) || 0,
+            circulation: Number(item.circulation) || 0,
+        };
+
+        byId.set(record.id, record);
+
+        const key = normalizeItemName(record.name);
+        // Torn item names are unique; if that ever changes, first wins and the
+        // duplicate is simply not reachable by name.
+        if (key && !byName.has(key)) byName.set(key, record);
+    }
+
+    return { byId, byName, size: byId.size };
+}
+
+/**
+ * An item list without NPC prices (Torn's v1 fallback, see api/torn.js) is
+ * asked for again after this, so real NPC prices return within minutes.
+ */
+export const ITEMS_PARTIAL_TTL_MS = 5 * 60 * 1000;
+
+/** Wrap a raw payload with the metadata the cache policy needs. */
+export function makeItemsCacheEntry(rawItems, now = Date.now()) {
+    const partial = Object.values(rawItems || {}).some((i) => i && i.npc_unknown);
+    return {
+        version: ITEMS_CACHE_VERSION,
+        fetchedAt: now,
+        items: rawItems,
+        ...(partial ? { partial: true } : {}),
+    };
+}
+
+/** True when a stored entry is the right shape, right version, and not stale. */
+export function isItemsCacheFresh(entry, now = Date.now(), ttl = ITEMS_TTL_MS) {
+    if (!entry || typeof entry !== 'object') return false;
+    if (entry.version !== ITEMS_CACHE_VERSION) return false;
+    if (!entry.items || typeof entry.items !== 'object') return false;
+    if (!Number.isFinite(entry.fetchedAt)) return false;
+
+    return now - entry.fetchedAt < (entry.partial ? Math.min(ttl, ITEMS_PARTIAL_TTL_MS) : ttl);
+}
+
+/**
+ * Look an item up by display name. Returns null on a miss - never a guess.
+ *
+ * @param {object} index - from buildItemIndex
+ */
+export function findItemByName(index, name) {
+    if (!index || !index.byName) return null;
+
+    const key = normalizeItemName(name);
+    if (!key) return null;
+
+    return index.byName.get(key) || null;
+}
+
+/** Look an item up by id. */
+export function findItemById(index, id) {
+    if (!index || !index.byId) return null;
+    return index.byId.get(String(id)) || null;
+}
+
+/** An item's category in Torn Bids' filter: Torn's own item type. */
+export function itemCategory(item) {
+    return (item && typeof item.type === 'string' && item.type.trim()) || 'Other';
+}
+
+/**
+ * How many items each category has, most first (then by name), for the
+ * Category dropdown. A category you picked stays listed, with 0, while the
+ * items that fill it are still loading: the pick is never dropped under you.
+ *
+ * @param {string[]} categories - one per item
+ * @param {string} [picked]
+ * @returns {{category: string, count: number}[]}
+ */
+export function categoryCounts(categories, picked = '') {
+    const n = new Map();
+    for (const c of categories) n.set(c, (n.get(c) || 0) + 1);
+    if (picked && !n.has(picked)) n.set(picked, 0);
+    return [...n]
+        .map(([category, count]) => ({ category, count }))
+        .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category));
+}
+
+/*
+ * Never flip "Other" (3.14.2, the friend: "nakakahiya itrade" - embarrassing
+ * to trade): Torn's Other category joins Clothing on the Never flip list,
+ * once - a list saved before keeps its choices and gains "Other"; taking it
+ * off again afterwards is yours to keep.
+ */
+export const NEVER_FLIP_ONCE = 'otherOn3142';
+
+/** Stored Torn Bids preferences with "Other" added to Never flip once, or null when already done. */
+export function neverFlipOtherOnce(stored) {
+    const p = stored && typeof stored === 'object' ? stored : {};
+    if (p[NEVER_FLIP_ONCE]) return null;
+    const never = new Set(Array.isArray(p.neverFlip) ? p.neverFlip : ['Clothing']);
+    never.add('Other');
+    return { ...p, neverFlip: [...never], [NEVER_FLIP_ONCE]: true };
+}

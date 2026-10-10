@@ -1,0 +1,12 @@
+{
+  "name": "torn-archive",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Museum sets and points for Torn: what to buy, what your trades hold, what a set earns.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test \"test/*.test.js\"",
+    "check": "node build.mjs && node --check dist/torn-archive.user.js && node --test \"test/*.test.js\""
+  }
+}
