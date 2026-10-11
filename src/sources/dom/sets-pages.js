@@ -241,28 +241,59 @@ export function setRule(host, on, state = '') {
     return rule;
 }
 
+/** Torn's own buttons, links and boxes you can see inside `root`: what a mark of ours never stands on. */
+const TORN_CONTROLS = 'a, button, input, select, textarea, label, [role="button"], .btn, .torn-btn';
+function tornControls(root) {
+    return [...root.querySelectorAll(TORN_CONTROLS)].filter((el) => el.type !== 'hidden' && !setsOurs(el) && setsShown(el));
+}
+
+/** Two boxes on the page share some room (`gap`: how near counts as touching). */
+export const boxesMeet = (a, b, gap = 3) => a.left < b.right + gap && a.right > b.left - gap && a.top < b.bottom + gap && a.bottom > b.top - gap;
+
 /**
  * Put a mark of ours beside one of Torn's controls, in the empty room to its right; where that room is too small,
  * under it. By measure only: nothing of Torn's is sized or moved.
+ *
+ * It never stands on a button, a link or a box of Torn's (the owner, 2026-10-11, on the points market's "Are you
+ * sure ...? Yes / No": "this also blocks my buttons"). Where neither place is free of them, and when the control
+ * it belongs to is no longer shown, the mark is not shown at all: the box says the same words.
+ * @returns whether the mark is shown
  */
 export function markBeside(mark, anchor) {
     const host = mark && mark.parentElement;
-    if (!host || !anchor || !anchor.getBoundingClientRect) return;
+    if (!host || !anchor || !anchor.getBoundingClientRect) return false;
+    const hide = () => { if (mark.style.visibility !== 'hidden') mark.style.visibility = 'hidden'; return false; };
+    if (!setsShown(anchor)) return hide();
     const h = host.getBoundingClientRect();
     const a = anchor.getBoundingClientRect();
     // The room is the widest thing around the control that starts where its own row starts: Torn's panel.
     let room = h;
+    let roomEl = host;
     for (let node = host.parentElement, up = 0; node && up < 6 && node !== host.ownerDocument.body; node = node.parentElement, up += 1) {
         const r = node.getBoundingClientRect();
         if (Math.abs(r.left - h.left) > 24) break;
-        if (r.width > room.width) room = r;
+        if (r.width > room.width) { room = r; roomEl = node; }
     }
-    const width = mark.getBoundingClientRect().width;
+    const m = mark.getBoundingClientRect();
+    const width = m.width;
+    const half = (m.height || 22) / 2;
     const fits = a.right + 12 + width <= room.right - 6;
-    const left = Math.round(fits ? a.right - h.left + 12 : Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)));
-    const top = Math.round(fits ? a.top - h.top + a.height / 2 : a.bottom - h.top + 14);
+    // Beside the control (when it fits there), else under it; `top` is the mark's middle line.
+    const spots = [];
+    if (fits) spots.push({ left: a.right - h.left + 12, top: a.top - h.top + a.height / 2 });
+    spots.push({ left: Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)), top: a.bottom - h.top + 14 });
+    const theirs = tornControls(roomEl).map((el) => el.getBoundingClientRect());
+    const free = spots.find((s) => {
+        const box = { left: h.left + s.left, right: h.left + s.left + width, top: h.top + s.top - half, bottom: h.top + s.top + half };
+        return !theirs.some((r) => boxesMeet(box, r));
+    });
+    if (!free) return hide();
+    const left = Math.round(free.left);
+    const top = Math.round(free.top);
     if (mark.style.left !== left + 'px') mark.style.left = left + 'px';
     if (mark.style.top !== top + 'px') mark.style.top = top + 'px';
+    if (mark.style.visibility) mark.style.removeProperty('visibility');
+    return true;
 }
 
 /** The other side's item rows on the trade view: [{ el, name, qty }]. */

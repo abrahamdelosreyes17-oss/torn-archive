@@ -874,3 +874,40 @@ test('a bazaar\'s own page, told by your Torn tab: its price and stock are the h
     const later = piece(r.view(), line.id).offers.find((o) => String(o.whoId) === String(line.whoId));
     assert.ok(later && later.from === 'torn' && later.price === line.price, 'Torn\'s later read stands over the page\'s');
 });
+
+test('"Buy from": a list without the Item Market, a place switched off leaves the list, and one piece added whole', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    const both = r.engine.state.cart.map((l) => ({ ...l }));
+    assert.ok(both.some((l) => l.im) && both.some((l) => !l.im), 'with both places on, the made-up world gives a list with bazaars and the Item Market');
+
+    // Switched off while the list is on hand: its Item Market lines leave at once, the bazaar lines stay.
+    r.set({ from: { bazaar: true, market: false } });
+    assert.ok(r.engine.state.cart.length > 0 && r.engine.state.cart.every((l) => !l.im), 'no Item Market line is left');
+    assert.deepEqual(r.engine.state.cart.filter((l) => !l.im).map((l) => l.key).sort(), both.filter((l) => !l.im).map((l) => l.key).sort());
+
+    // And a list made now is bazaars alone, as the page's own count says.
+    r.engine.act('clearList');
+    r.engine.act('makeList');
+    const only = r.engine.state.cart;
+    assert.ok(only.length > 0 && only.every((l) => !l.im));
+    assert.equal(only.reduce((s, l) => s + l.q, 0), r.view().buy.plan.units, 'the list is what the page counted: the same pieces');
+
+    // One piece in one press: what the page said it would add, from bazaars only; pressed again, the piece is off.
+    r.engine.act('clearList');
+    const p = r.view().pieces.find((x) => x.more > 1 && x.offers.some((o) => o.src === 'market' && o.price < x.worth));
+    assert.ok(p, 'a piece with more than one unit to add, and an Item Market row under its worth that must be left alone');
+    r.engine.act('cartAll', p.id);
+    const lines = r.engine.state.cart;
+    assert.ok(lines.length > 0 && lines.every((l) => String(l.id) === String(p.id) && !l.im && l.price < p.worth));
+    assert.equal(lines.reduce((s, l) => s + l.q, 0), p.more);
+    assert.equal(piece(r.view(), p.id).more, 0);
+    r.engine.act('cartAll', p.id);
+    assert.deepEqual(r.engine.state.cart, []);
+
+    // Back on: the Item Market counts again.
+    r.set({ from: { bazaar: true, market: true } });
+    r.engine.act('makeList');
+    assert.ok(r.engine.state.cart.some((l) => l.im));
+});

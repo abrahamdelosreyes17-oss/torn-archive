@@ -3,9 +3,9 @@
 // out comes one plain object. No page, no storage, no clock of its own. The pages only format it.
 
 import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
-import { setsCtx } from './settings.js';
+import { setsCtx, buysFrom } from './settings.js';
 import { safeWorth, pieceBrings, tradeMargin, placeMargin, mendRate } from './margin.js';
-import { fillPlan, fillList, stopsOf, runView, runOrder, onList, listAfterRun, cheapPieces, placeOf } from './shopping.js';
+import { fillPlan, fillList, stopsOf, runView, runOrder, onList, listAfterRun, cheapPieces, placeOf, addAll } from './shopping.js';
 import { listPrice, priceLevels, usualLevel, pointsCheap } from './points.js';
 import { avgBook, heldByDay, mugCheck, profitBuckets, profitSum, runningTotal, poolSum, poolSetCost } from './books.js';
 import { lotTable, sellPlan } from './lots.js';
@@ -78,13 +78,18 @@ export function archiveView(i) {
     const mv = (id) => vwWhole(i.mv(id));
     // A row that was not looked at lately (`ok: false`, engine/state.js COUNT_MS) is shown, after the checked ones,
     // and counts for nothing: no list, no "Do now", no "cheapest". It is asked of Torn first (buy.check).
+    // A row in a place you do not buy from (settings.from: `out: true`) is shown too, after the ones you do, and
+    // counts for no list either. It still counts as a price: a set's cost, the day's lowest, "Open your shop?".
     const rowsMemo = new Map();
+    const inPlace = buysFrom(settings);
+    const rank = (o) => (o.ok === false ? 2 : o.out ? 1 : 0);
     const offersOf = (id) => {
         const k = String(id);
-        if (!rowsMemo.has(k)) rowsMemo.set(k, [...((i.offers && i.offers(id)) || [])].filter((o) => o.price > 0 && o.qty > 0).sort((a, b) => (a.ok === false) - (b.ok === false) || a.price - b.price));
+        if (!rowsMemo.has(k)) rowsMemo.set(k, [...((i.offers && i.offers(id)) || [])].filter((o) => o.price > 0 && o.qty > 0).map((o) => (inPlace(o) ? o : { ...o, out: true })).sort((a, b) => rank(a) - rank(b) || a.price - b.price));
         return rowsMemo.get(k);
     };
-    const checkedOf = (id) => offersOf(id).filter((o) => o.ok !== false);
+    const checkedAll = (id) => offersOf(id).filter((o) => o.ok !== false);
+    const checkedOf = (id) => offersOf(id).filter((o) => o.ok !== false && !o.out);
 
     // ---- the points price --------------------------------------------------------------------------------------------
     const price = listPrice(i.listings || [], settings.pointsRule);
@@ -133,16 +138,21 @@ export function archiveView(i) {
             const offers = offersOf(p.id);
             const worth = safeWorth(p.id, mv, pointsPrice, settings.least);
             const pay = ratePrice(mv(p.id), settings.pct);
-            const under = offers.filter((o) => o.ok !== false && o.price < worth);
+            const under = offers.filter((o) => o.ok !== false && !o.out && o.price < worth);
             const bid = (i.topBid && i.topBid(p.id)) || null;
+            const listed = onList(leftList, p.id);
             return {
                 ...p, set: set.key, short: shortName(p.name), target: stock.target, mv: mv(p.id), pay, worth,
                 brings: Math.floor(pieceBrings(p.id, mv, pointsPrice)),
-                offers, low: offers[0] || null, lowBazaar: (offers.find((o) => o.src !== 'market') || {}).price || 0,
+                // low: the cheapest where you buy. lowAll: the cheapest anywhere (the day's record, the tape).
+                offers, low: offers.find((o) => !o.out) || null, lowAll: [...offers].sort((a, b) => (a.ok === false) - (b.ok === false) || a.price - b.price)[0] || null,
+                lowBazaar: (offers.find((o) => o.src !== 'market') || {}).price || 0,
+                // What one press of "Add all" on this piece would put on the list.
+                more: onList(addAll(leftList, { ...p, worth }, under), p.id) - listed,
                 under: { units: vwSum(under, (o) => vwWhole(o.qty)), places: under.length },
                 other: bid && bid.pct > 0 ? { pct: bid.pct, name: bid.name || '' } : null,
                 hist: (((i.hist && i.hist.low) || {})[p.id] || []).slice(-7).map((d) => d.low),
-                listed: onList(leftList, p.id),
+                listed,
             };
         });
         // Shortest first: the piece holding the next set back leads.
@@ -174,13 +184,14 @@ export function archiveView(i) {
     const planStops = stopsOf(plan, worthOf);
     // What the list would hold if every row shown were true: the bazaars of it that are not checked are the ones
     // to ask Torn about next. Checked, they count - or are gone, and the next ones are asked.
-    const wish = fillPlan(pieces, offersOf);
+    const wish = fillPlan(pieces, (id) => offersOf(id).filter((o) => !o.out));
     const unsure = wish.filter((l) => !l.im && (offersOf(l.id).find((o) => placeOf(o) === l.place) || {}).ok === false);
     const check = [...new Set(unsure.map((l) => String(l.whoId)))];
     const stops = runOrder(stopsOf(cartList, worthOf), i.run).map((s) => ({ ...s, margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
     // `took` (line key -> units you took) rides along: the box on a bazaar says it per line.
     const run = { ...runView(i.run, stops), took: (i.run && i.run.took) || {} };
-    const hot = hotListings(pieces, checkedOf);
+    // Cheaper than you pay your sellers, wherever it is: anyone can buy there and sell to you ("Open your shop?").
+    const hot = hotListings(pieces, checkedAll);
     // What "Do now" says to buy, as the list its button makes: under what you pay sellers and under the worth.
     const hotPlan = fillList(cheapPieces(pieces), checkedOf);
     const hotPlanStops = stopsOf(hotPlan, (id) => (pieceOf(id) || {}).pay || 0);
@@ -193,7 +204,7 @@ export function archiveView(i) {
             units: vwSum(plan, (l) => l.q), need: needUnits, stops: planStops.length, cost: vwSum(planStops, (s) => s.cost),
             full: fullAfter((p) => onList(plan, p.id)),
         },
-        stops, run,
+        stops, run, from: { ...settings.from },
         // Bazaars shown but not checked lately that a list would use (asked of Torn next), and their units.
         check, unsure: vwSum(unsure, (l) => l.q),
         units: vwSum(leftStops, (s) => s.units), cost: cartCost, gain: vwSum(leftStops, (s) => s.gain),
@@ -335,7 +346,7 @@ export function archiveView(i) {
         },
         stock: { units: pool.units, cost: pool.cost, est: pool.est, made: book.left, sold14: sum14.points },
         share: { ...share, max: settings.shareMax, days: ((i.hist && i.hist.share) || []).slice(-14) },
-        tape: pieces.filter((p) => p.low).map((p) => ({ id: p.id, name: p.name, set: p.set, price: p.low.price })),
+        tape: pieces.filter((p) => p.lowAll).map((p) => ({ id: p.id, name: p.name, set: p.set, price: p.lowAll.price })),
     };
 }
 

@@ -112,9 +112,10 @@ export function boxStock(v, live = {}) {
  * @param place 'b:' + the owner's id, or 'im'
  * @param live  what this tab saw that the shared view does not hold yet, so the box moves the moment you buy:
  *              pend { itemId: units } bought here and not in the view yet, took { itemId: units } bought here on
- *              this visit, fillAll (Fill all is on)
+ *              this visit, fillAll (Fill all is on), itemId (the Item Market: the piece its address names)
  * @returns null when nothing here is yours to buy; else { where, head, html, marks: [{ i, text, state, ring }],
- *          fill: [{ i, n }] the number Fill all types into each card's box }
+ *          fill: [{ i, n }] the number Fill all types into each card's box,
+ *          imNext: { id, name } | null - the Item Market, a run on: the piece whose page Next opens }
  */
 export function boxBazaar(v, cards, place, live = {}) {
     const pend = live.pend || {};
@@ -231,11 +232,16 @@ export function boxBazaar(v, cards, place, live = {}) {
     // While a run stands here the Next button names the next stop: said once.
     if (next && next !== here && !on) html += `<div class="ta-kv"><span>${here ? 'Next stop' : 'Your list starts at'}</span><span>${next.im ? 'Item Market' : hEsc(next.who || 'a bazaar')}: ${next.lines.map((l) => hEsc(l.name.replace(/ (Plushie|Flower)$/i, '')) + ' ×' + hNum(l.q)).join(', ')}</span></div>`;
     const after = here ? stops[at + 1] || null : null;
+    // The Item Market is ONE stop with a page for each piece. Next walks its pieces in the list's order, and only
+    // after the last one moves on (the owner, 2026-10-11: "so the next next in shopping list just takes me there").
+    // Until 1.2.4 Next left the Item Market after its first piece: the others were "skipped".
+    const pageAt = im && here ? here.lines.reduce((k0, l, k) => (onPage.has(String(l.id)) || String(l.id) === String(live.itemId || '') ? k : k0), -1) : -1;
+    const imNext = im && here && on && here.state === 'cur' ? here.lines.find((l, k) => k > pageAt && l.q - takenOn(l) > 0) || null : null;
     const stopName = (s) => (s.im ? 'the Item Market' : hEsc(s.who || 'a bazaar'));
     // One purple button on the page: Fill all while there is something to type, Next once there is not.
     const main = todo.length ? '' : 'go';
     html += '<div class="ta-btns">' + (on && here && here.state === 'cur'
-        ? bxBtn('run-next', (after ? (after.im ? 'Next: the Item Market' : 'Next bazaar: ' + hEsc(after.who || '')) : 'Done: back to the list') + '<span class="kbd">N</span>', main, '', after ? ` title="${hEsc(after.lines.map((l) => l.name + ' ×' + l.q).join(', '))}"` : '') + bxBtn('run-stop', 'Stop the run', 'link')
+        ? bxBtn('run-next', (imNext ? `Next: ${hEsc(imNext.name)} ×${hNum(imNext.q - takenOn(imNext))}, its Item Market page` : after ? (after.im ? 'Next: the Item Market' : 'Next bazaar: ' + hEsc(after.who || '')) : 'Done: back to the list') + '<span class="kbd">N</span>', main, '', !imNext && after ? ` title="${hEsc(after.lines.map((l) => l.name + ' ×' + l.q).join(', '))}"` : '') + bxBtn('run-stop', 'Stop the run', 'link')
         // A run is on and this is not its stop (you went elsewhere, or the stop left the list): back to it.
         : on ? bxBtn('run-go', `Your stop: ${stopName(cur)}<span class="kbd">N</span>`, main) + bxBtn('run-stop', 'Stop the run', 'link')
         : stops.length ? bxBtn('run-start', 'Start the run', main) : '') + '</div>';
@@ -243,7 +249,7 @@ export function boxBazaar(v, cards, place, live = {}) {
     // Folded, the bar says what is here, so you know to unfold it.
     const left = todo.length + waits.length;
     const head = here ? (left ? `${hNum(left)} to buy here` : 'all taken here ✓') : todo.length ? `${hNum(todo.length)} under ${todo.length === 1 ? 'its' : 'their'} worth here` : '';
-    return { where: im ? 'the Item Market' : 'a bazaar', head, html, marks, fill };
+    return { where: im ? 'the Item Market' : 'a bazaar', head, html, marks, fill, imNext: imNext ? { id: imNext.id, name: imNext.name } : null };
 }
 
 /**

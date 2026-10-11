@@ -26,6 +26,7 @@ export const ARCHIVE_DEFAULTS = Object.freeze({
     sound: false,
     beforeEach: 0,
     w3bSync: false,
+    from: Object.freeze({ bazaar: true, market: true }),
 });
 
 /** Stored settings made safe: unknown keys dropped, numbers inside their range. */
@@ -33,6 +34,7 @@ export function archiveSettings(stored) {
     const s = stored && typeof stored === 'object' ? stored : {};
     const d = ARCHIVE_DEFAULTS;
     const which = s.which && typeof s.which === 'object' ? s.which : {};
+    const from = s.from && typeof s.from === 'object' ? s.from : {};
     const pct = stNum(s.pct);
     const least = Number(s.least);
     const share = Number(s.shareMax);
@@ -56,11 +58,21 @@ export function archiveSettings(stored) {
         beforeEach: stNum(s.beforeEach) > 0 ? stWhole(s.beforeEach) : 0,
         // Keep your TornW3B price list at your rate by itself (needs the key you registered there).
         w3bSync: s.w3bSync === true,
+        // Where a list may send you to buy: bazaars, the Item Market, or both.
+        from: { bazaar: from.bazaar !== false, market: from.market !== false },
     };
     // Both sets off is no shop at all: the last one stays on.
     if (!out.which.plushie && !out.which.flower) out.which = { ...d.which };
+    // Nowhere to buy is no list at all: both stay on.
+    if (!out.from.bazaar && !out.from.market) out.from = { ...d.from };
     return out;
 }
 
 /** The settings as sets.js reads them (its `on` switch is Torn Bids'; here Sets is the whole app). */
 export const setsCtx = (settings) => ({ on: true, which: settings.which });
+
+/** Whether a listing is in a place you buy from (settings.from): the Item Market, or a bazaar. */
+export const buysFrom = (settings) => {
+    const from = (settings && settings.from) || {};
+    return (o) => (o && o.src === 'market' ? from.market !== false : from.bazaar !== false);
+};

@@ -494,6 +494,7 @@ function bootHub(tabId) {
         },
         cart: (id, place) => engine.act('cart', id, place),
         drop: (key) => engine.act('drop', key),
+        cartAll: (id) => engine.act('cartAll', id),
         makeList: (kind) => engine.act('makeList', kind),
         // The piece open on "Sold by": its bazaars are asked of Torn itself (not connected in 1.2.2: nothing was asked).
         look: (id) => { engine.act('look', id); schedule(); },

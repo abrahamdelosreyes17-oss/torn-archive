@@ -75,7 +75,7 @@ export function mountHub(doc, actions) {
     doc.head.appendChild(style);
     doc.body.innerHTML = hubShell();
 
-    const ui = { page: 'dashboard', pane: 0, sel: null, trade: null, range: { pts: 40, pts2: 40 }, unit: 'day' };
+    const ui = { page: 'dashboard', pane: 0, sel: null, trade: null, range: { pts: 40, pts2: 40 }, unit: 'day', imKey: '' };
     let desk = null;
     let shown = '';
     let tabsShown = '';
@@ -272,12 +272,17 @@ export function mountHub(doc, actions) {
         else if (a === 'trade') { ui.trade = id; draw(false); }
         else if (a === 'range') { ui.range[id] = Number(v); draw(false); }
         else if (a === 'unit') { ui.unit = v; draw(false); }
+        // Where a list may send you: pressing the only place still lit swaps to the other one, so one is always on.
+        else if (a === 'from') { const from = { ...desk.view.settings.from }; from[v] = !from[v]; if (!from.bazaar && !from.market) from[v === 'bazaar' ? 'market' : 'bazaar'] = true; act('set', { from }); }
         else if (a === 'cart') act('cart', id, v);
+        else if (a === 'cart-all') act('cartAll', id);
         else if (a === 'drop') act('drop', v);
         else if (a === 'make-list') { act('makeList', v || ''); go('buy', 2); }
         else if (a === 'clear-list') act('clearList');
         // Start and Next are links: the press opens the bazaar itself, here the run only moves on.
-        else if (a === 'run') act('run', v);
+        else if (a === 'run') { ui.imKey = ''; act('run', v); }
+        // The Item Market stop: the link opened the next piece's page; the run stays on the stop.
+        else if (a === 'im-walk') { ui.imKey = v; draw(false); }
         else if (a === 'copy') { act('copy', v); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
         else if (a === 'key-save') { const box = $(`input[data-key="${v}"]`); const key = box ? box.value.trim() : ''; if (key) { box.value = ''; act('keySave', v, key); } }
         else if (a === 'key-forget') act('keyForget', v);
@@ -311,7 +316,7 @@ export function mountHub(doc, actions) {
         const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
         if (typing && e.key === 'Enter') { e.target.blur(); const k = e.target.dataset.key; if (k) { const b = $(`[data-act="key-save"][data-v="${k}"]`); if (b) b.click(); } if (e.target.dataset.server) { const b = $('[data-act="server-save"]'); if (b) b.click(); } return; }
         if (typing || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== 'n' || ui.page !== 'buy') return;
-        const next = $('[data-act="run"][data-v="next"]', view);
+        const next = $('[data-act="im-walk"], [data-act="run"][data-v="next"]', view);
         if (next) next.click();
     });
     // A picture Torn does not serve gives way to the piece's letters.

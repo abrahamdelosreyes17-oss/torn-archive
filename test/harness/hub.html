@@ -13,8 +13,8 @@
 <script type="module">
 import { mountHub } from '../../src/ui/hub.js';
 import { archiveView, viewPiece } from '../../src/core/view.js';
-import { archiveSettings } from '../../src/core/settings.js';
-import { fillList, cheapPieces, toggleLine, dropLine, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, listAfterRun } from '../../src/core/shopping.js';
+import { archiveSettings, buysFrom } from '../../src/core/settings.js';
+import { fillList, cheapPieces, toggleLine, dropLine, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, listAfterRun, addAll, dropPiece, dropPlaces } from '../../src/core/shopping.js';
 import { desiredList, parseOwnList } from '../../src/core/tw3b-list.js';
 import { tradeNotice } from '../../src/core/trades.js';
 import { fixtureInput } from '../fixture-view.js';
@@ -74,7 +74,8 @@ const stops = () => { const v = archiveView(input); return stopsOf(input.cart ||
 const show = () => hub.show(desk());
 
 const hub = mountHub(document, {
-    set(patch) { input.settings = archiveSettings({ ...input.settings, ...patch }); show(); },
+    // As the engine: a place switched off ("Buy from") leaves the list.
+    set(patch) { input.settings = archiveSettings({ ...input.settings, ...patch }); input.cart = dropPlaces(input.cart, buysFrom(input.settings)); show(); },
     cart(id, place) {
         const v = archiveView(input);
         const p = viewPiece(v, id);
@@ -82,8 +83,16 @@ const hub = mountHub(document, {
         if (offer) { input.cart = toggleLine(input.cart, p, offer); input.run = { ...RUN_IDLE }; show(); }
     },
     drop(key) { input.cart = dropLine(input.cart, key); input.run = { ...RUN_IDLE }; show(); },
+    cartAll(id) {
+        const p = viewPiece(archiveView(input), id);
+        if (!p) return;
+        const next = addAll(input.cart || [], p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+        input.cart = next.length > (input.cart || []).length ? next : dropPiece(input.cart, id);
+        input.run = { ...RUN_IDLE };
+        show();
+    },
     // As main.js and the engine: 'hot' = "Do now"'s list (under what you pay sellers), else the whole list.
-    makeList(kind) { const v = archiveView(input); input.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => input.offers(id).filter((o) => o.ok !== false)); input.run = { ...RUN_IDLE }; show(); },
+    makeList(kind) { const v = archiveView(input); input.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => input.offers(id).filter((o) => o.ok !== false && buysFrom(input.settings)(o))); input.run = { ...RUN_IDLE }; show(); },
     look(id) { window.looked = [...(window.looked || []), String(id)]; },
     clearList() { input.cart = []; input.run = { ...RUN_IDLE }; show(); },
     run(op) {

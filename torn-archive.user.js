@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.2.3
+// @version      1.2.4
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.2.3';
+    const TARC_BUILD_VERSION = '1.2.4';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -5658,6 +5658,28 @@
     const dropLine = (cart, key) => (cart || []).filter((l) => l.key !== key);
 
     /**
+     * Every listing of ONE piece under its worth put on the list in one press: the cheapest first, as many as you still
+     * need, one line per place. A place already on the list for this piece keeps its line as it is.
+     * @param piece  { id, name, set, need, worth }
+     * @param offers the piece's listings that count: [{ price, qty, src, who, whoId }]
+     */
+    function addAll(cart, piece, offers) {
+        const list = cart || [];
+        if (!piece) return list;
+        const want = shWhole(piece.need) - onList(list, piece.id);
+        if (want <= 0) return list;
+        const have = new Set(list.filter((l) => String(l.id) === String(piece.id)).map((l) => l.place));
+        const rows = (offers || []).filter((o) => !have.has(placeOf(o)));
+        return [...list, ...fillPlan([{ ...piece, need: want }], () => rows)];
+    }
+
+    /** A piece taken off the list, every place of it. */
+    const dropPiece = (cart, itemId) => (cart || []).filter((l) => String(l.id) !== String(itemId));
+
+    /** The list without the lines of a place you no longer buy from. `keep(line)` true: the line stays whatever its place. */
+    const dropPlaces = (cart, allowed, keep = null) => (cart || []).filter((l) => allowed({ src: l.im ? 'market' : 'bazaar' }) || (keep && keep(l)));
+
+    /**
      * The list checked against a fresh read: a line whose listing is gone, or no longer under its worth, comes off;
      * one with less stock or less need shrinks. Nothing is ever added here.
      *
@@ -6959,10 +6981,12 @@
         const day = enDay(now);
         const low = { ...S.hist.low };
         for (const p of view.pieces || []) {
-            if (!p.low) continue;
+            // The cheapest anywhere, not only where you buy: the record is of the price.
+            const lo = p.lowAll || p.low;
+            if (!lo) continue;
             const list = (low[p.id] || []).filter((d) => d.day !== day);
             const cur = (low[p.id] || []).find((d) => d.day === day);
-            low[p.id] = [...list, { day, low: cur ? Math.min(cur.low, p.low.price) : p.low.price }].slice(-14);
+            low[p.id] = [...list, { day, low: cur ? Math.min(cur.low, lo.price) : lo.price }].slice(-14);
         }
         let pays = S.hist.pays;
         const paid = {};
@@ -7046,6 +7070,7 @@
         sound: false,
         beforeEach: 0,
         w3bSync: false,
+        from: Object.freeze({ bazaar: true, market: true }),
     });
 
     /** Stored settings made safe: unknown keys dropped, numbers inside their range. */
@@ -7053,6 +7078,7 @@
         const s = stored && typeof stored === 'object' ? stored : {};
         const d = ARCHIVE_DEFAULTS;
         const which = s.which && typeof s.which === 'object' ? s.which : {};
+        const from = s.from && typeof s.from === 'object' ? s.from : {};
         const pct = stNum(s.pct);
         const least = Number(s.least);
         const share = Number(s.shareMax);
@@ -7076,14 +7102,24 @@
             beforeEach: stNum(s.beforeEach) > 0 ? stWhole(s.beforeEach) : 0,
             // Keep your TornW3B price list at your rate by itself (needs the key you registered there).
             w3bSync: s.w3bSync === true,
+            // Where a list may send you to buy: bazaars, the Item Market, or both.
+            from: { bazaar: from.bazaar !== false, market: from.market !== false },
         };
         // Both sets off is no shop at all: the last one stays on.
         if (!out.which.plushie && !out.which.flower) out.which = { ...d.which };
+        // Nowhere to buy is no list at all: both stay on.
+        if (!out.from.bazaar && !out.from.market) out.from = { ...d.from };
         return out;
     }
 
     /** The settings as sets.js reads them (its `on` switch is Torn Bids'; here Sets is the whole app). */
     const setsCtx = (settings) => ({ on: true, which: settings.which });
+
+    /** Whether a listing is in a place you buy from (settings.from): the Item Market, or a bazaar. */
+    const buysFrom = (settings) => {
+        const from = (settings && settings.from) || {};
+        return (o) => (o && o.src === 'market' ? from.market !== false : from.bazaar !== false);
+    };
 
     /* ===== src/core/margin.js ===== */
     // Margins: one rule for "safe", used everywhere a price is judged.
@@ -7390,13 +7426,18 @@
         const mv = (id) => vwWhole(i.mv(id));
         // A row that was not looked at lately (`ok: false`, engine/state.js COUNT_MS) is shown, after the checked ones,
         // and counts for nothing: no list, no "Do now", no "cheapest". It is asked of Torn first (buy.check).
+        // A row in a place you do not buy from (settings.from: `out: true`) is shown too, after the ones you do, and
+        // counts for no list either. It still counts as a price: a set's cost, the day's lowest, "Open your shop?".
         const rowsMemo = new Map();
+        const inPlace = buysFrom(settings);
+        const rank = (o) => (o.ok === false ? 2 : o.out ? 1 : 0);
         const offersOf = (id) => {
             const k = String(id);
-            if (!rowsMemo.has(k)) rowsMemo.set(k, [...((i.offers && i.offers(id)) || [])].filter((o) => o.price > 0 && o.qty > 0).sort((a, b) => (a.ok === false) - (b.ok === false) || a.price - b.price));
+            if (!rowsMemo.has(k)) rowsMemo.set(k, [...((i.offers && i.offers(id)) || [])].filter((o) => o.price > 0 && o.qty > 0).map((o) => (inPlace(o) ? o : { ...o, out: true })).sort((a, b) => rank(a) - rank(b) || a.price - b.price));
             return rowsMemo.get(k);
         };
-        const checkedOf = (id) => offersOf(id).filter((o) => o.ok !== false);
+        const checkedAll = (id) => offersOf(id).filter((o) => o.ok !== false);
+        const checkedOf = (id) => offersOf(id).filter((o) => o.ok !== false && !o.out);
 
         // ---- the points price --------------------------------------------------------------------------------------------
         const price = listPrice(i.listings || [], settings.pointsRule);
@@ -7445,16 +7486,21 @@
                 const offers = offersOf(p.id);
                 const worth = safeWorth(p.id, mv, pointsPrice, settings.least);
                 const pay = ratePrice(mv(p.id), settings.pct);
-                const under = offers.filter((o) => o.ok !== false && o.price < worth);
+                const under = offers.filter((o) => o.ok !== false && !o.out && o.price < worth);
                 const bid = (i.topBid && i.topBid(p.id)) || null;
+                const listed = onList(leftList, p.id);
                 return {
                     ...p, set: set.key, short: shortName(p.name), target: stock.target, mv: mv(p.id), pay, worth,
                     brings: Math.floor(pieceBrings(p.id, mv, pointsPrice)),
-                    offers, low: offers[0] || null, lowBazaar: (offers.find((o) => o.src !== 'market') || {}).price || 0,
+                    // low: the cheapest where you buy. lowAll: the cheapest anywhere (the day's record, the tape).
+                    offers, low: offers.find((o) => !o.out) || null, lowAll: [...offers].sort((a, b) => (a.ok === false) - (b.ok === false) || a.price - b.price)[0] || null,
+                    lowBazaar: (offers.find((o) => o.src !== 'market') || {}).price || 0,
+                    // What one press of "Add all" on this piece would put on the list.
+                    more: onList(addAll(leftList, { ...p, worth }, under), p.id) - listed,
                     under: { units: vwSum(under, (o) => vwWhole(o.qty)), places: under.length },
                     other: bid && bid.pct > 0 ? { pct: bid.pct, name: bid.name || '' } : null,
                     hist: (((i.hist && i.hist.low) || {})[p.id] || []).slice(-7).map((d) => d.low),
-                    listed: onList(leftList, p.id),
+                    listed,
                 };
             });
             // Shortest first: the piece holding the next set back leads.
@@ -7486,13 +7532,14 @@
         const planStops = stopsOf(plan, worthOf);
         // What the list would hold if every row shown were true: the bazaars of it that are not checked are the ones
         // to ask Torn about next. Checked, they count - or are gone, and the next ones are asked.
-        const wish = fillPlan(pieces, offersOf);
+        const wish = fillPlan(pieces, (id) => offersOf(id).filter((o) => !o.out));
         const unsure = wish.filter((l) => !l.im && (offersOf(l.id).find((o) => placeOf(o) === l.place) || {}).ok === false);
         const check = [...new Set(unsure.map((l) => String(l.whoId)))];
         const stops = runOrder(stopsOf(cartList, worthOf), i.run).map((s) => ({ ...s, margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
         // `took` (line key -> units you took) rides along: the box on a bazaar says it per line.
         const run = { ...runView(i.run, stops), took: (i.run && i.run.took) || {} };
-        const hot = hotListings(pieces, checkedOf);
+        // Cheaper than you pay your sellers, wherever it is: anyone can buy there and sell to you ("Open your shop?").
+        const hot = hotListings(pieces, checkedAll);
         // What "Do now" says to buy, as the list its button makes: under what you pay sellers and under the worth.
         const hotPlan = fillList(cheapPieces(pieces), checkedOf);
         const hotPlanStops = stopsOf(hotPlan, (id) => (pieceOf(id) || {}).pay || 0);
@@ -7505,7 +7552,7 @@
                 units: vwSum(plan, (l) => l.q), need: needUnits, stops: planStops.length, cost: vwSum(planStops, (s) => s.cost),
                 full: fullAfter((p) => onList(plan, p.id)),
             },
-            stops, run,
+            stops, run, from: { ...settings.from },
             // Bazaars shown but not checked lately that a list would use (asked of Torn next), and their units.
             check, unsure: vwSum(unsure, (l) => l.q),
             units: vwSum(leftStops, (s) => s.units), cost: cartCost, gain: vwSum(leftStops, (s) => s.gain),
@@ -7647,7 +7694,7 @@
             },
             stock: { units: pool.units, cost: pool.cost, est: pool.est, made: book.left, sold14: sum14.points },
             share: { ...share, max: settings.shareMax, days: ((i.hist && i.hist.share) || []).slice(-14) },
-            tape: pieces.filter((p) => p.low).map((p) => ({ id: p.id, name: p.name, set: p.set, price: p.low.price })),
+            tape: pieces.filter((p) => p.lowAll).map((p) => ({ id: p.id, name: p.name, set: p.set, price: p.lowAll.price })),
         };
     }
 
@@ -8196,6 +8243,7 @@
 
 
 
+
     const EG_MIN = 60000;
     const EG_HOUR = 3600000;
     const EG_DAY = 86400000;
@@ -8607,14 +8655,14 @@
                 for (const s of v.buy.stops) if (!s.im) more(s.whoId);
                 for (const id of v.buy.check || []) more(id);
                 for (const h of v.buy.hot) if (!h.im) more(h.whoId);
-                for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) more(o.whoId);
+                for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && !o.out && o.price < p.worth) more(o.whoId);
                 return [...ids, ...rest.slice(0, shopsCap())];
             }
             for (const s of v.buy.stops) if (!s.im) add(s.whoId);
             // The bazaars a list would use that are shown but not checked: checked, they count.
             for (const id of v.buy.check || []) add(id);
             for (const h of v.buy.hot) if (!h.im) add(h.whoId);
-            for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) add(o.whoId);
+            for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && !o.out && o.price < p.worth) add(o.whoId);
             return ids.slice(0, shopsCap());
         }
 
@@ -8980,9 +9028,19 @@
                 touch('cart', 'run');
             },
             drop(key) { S.cart = dropLine(S.cart, key); idle(); touch('cart', 'run'); },
+            // One piece, every listing of it that counts (checked, where you buy, under its worth), in one press. With
+            // nothing more to add, the press takes the piece off the list.
+            cartAll(itemId) {
+                const p = viewPiece(view(), itemId);
+                if (!p) return;
+                const next = addAll(S.cart, p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+                S.cart = next.length > S.cart.length ? next : dropPiece(S.cart, itemId);
+                idle();
+                touch('cart', 'run');
+            },
             // A list is made from the count as it stands, and Torn is asked for its own at once: the list follows it.
             // `kind` 'hot': only what "Do now" counted - under what you pay your sellers. Else everything under its worth.
-            makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false)); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
+            makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); const inPlace = buysFrom(settings()); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false && inPlace(o))); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
             clearList() { S.cart = []; idle(); touch('cart', 'run'); },
             run(op) {
                 const list = stops();
@@ -9054,7 +9112,13 @@
             busy: () => ({ ...flags }),
             mv: mvOf(S),
             /** Whether the settings changed something the reads depend on. */
-            settingsChanged() { cache = null; syncAt = 0; },
+            settingsChanged() {
+                cache = null;
+                syncAt = 0;
+                // A place switched off ("Buy from") leaves the list at once - but never a line you already took from.
+                const left = dropPlaces(S.cart, buysFrom(settings()), (l) => S.run.on && S.run.took && S.run.took[l.key] > 0);
+                if (left.length !== S.cart.length) { S.cart = left; idle(); touch('cart', 'run'); }
+            },
         };
     }
 
@@ -10086,7 +10150,7 @@
     .p-buy { grid-template-columns: minmax(0, 1fr); } .p-buy > .pane { height: 100%; } .gbuy { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
     @container (max-width: 1240px) { .pane.stk { grid-template-columns: minmax(0, 1fr); } .pane.stk .minc { min-height: 260px !important; } }
     .t tr.pick { cursor: pointer; } .t tbody tr.sel, .t tbody tr.sel:hover { background: var(--brand-bg); box-shadow: inset 2px 0 0 var(--brand); }
-    .rec { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; } .rec .hero { white-space: nowrap; } .rec-t { flex: 1; min-width: 240px; color: var(--text2); line-height: 1.5; } .rec-t b { color: var(--text); } .rec-b { display: flex; gap: 8px; }
+    .rec { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; } .rec .hero { white-space: nowrap; } .rec-t { flex: 1; min-width: 240px; color: var(--text2); line-height: 1.5; } .rec-t b { color: var(--text); } .rec-b { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; } .from { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; white-space: nowrap; } .ph .from { margin-right: 6px; }
     .wl { display: grid; grid-template-columns: minmax(0, 1fr) 44px 72px 76px 112px 104px; align-items: center; gap: 8px; padding: 6px 14px; border-top: 1px solid var(--line); white-space: nowrap; color: var(--text2); transition: background .14s; }
     .wl:hover { background: rgba(255,255,255,.028); } .wl b { color: var(--text); } .wl .n { text-align: right; }
     .wl.h { color: var(--faint); font: 650 12px var(--sans); } .wl.h:hover { background: none; }
@@ -10627,13 +10691,17 @@
     const pgNeedBadge = (p) => (p.need ? `<span class="badge need">need ${p.need}</span>` : p.ahead ? `<span class="badge ahead">${p.ahead} ahead</span>` : '<span class="badge">enough</span>');
     const pgFullWords = (v, full) => v.sets.map((s) => `${pgLow(s.label)} <b>${s.full}</b> to <b>${full[s.key]}</b>`).join(' · ');
     const pgGap = (gap) => (gap > 0 ? `<span class="t-good">${hSigned(gap)}</span>` : `<span class="t-muted">${hMoney(-gap)} over</span>`);
+    /** "Buy from": the places a list may send you to. Both lit until you press one off. */
+    const pgFrom = (v) => `<span class="from"><span class="t-muted">Buy from</span><span class="seg"><button data-act="from" data-v="bazaar"${v.buy.from.bazaar ? ' class="on"' : ''}>Bazaars</button><button data-act="from" data-v="market"${v.buy.from.market ? ' class="on"' : ''}>Item Market</button></span></span>`;
     const pgSeller = (p, o) => (o.src === 'market' ? hOut(itemMarketUrl(p.id, p.name), 'Item Market') : hOut(bazaarUrl(o.whoId, p.id, o.price), `<b>${hEsc(o.who || 'Bazaar ' + (o.whoId ?? ''))}</b>`));
 
     function pgWhere(v, p, lines) {
         if (!p) return '';
         const hist = sparkSvg(p.hist, 'var(--muted)', 54, 20);
-        const under = p.offers.filter((o) => o.ok !== false && o.price < p.worth);
+        const under = p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth);
         const shown = p.offers.slice(0, 14);
+        // Rows of a place you do not buy from ("Buy from") come after the ones you do, with no Add.
+        const firstOut = shown.findIndex((o) => o.out && o.ok !== false);
         // Rows not looked at lately come after the checked ones (core/view.js), under a line that says what they are.
         const firstOld = shown.findIndex((o) => o.ok === false);
         // The Item Market is one line for all its rows: each row says its own part of it, cheapest first.
@@ -10645,30 +10713,41 @@
             const key = lineKey(p.id, placeOf(o));
             const on = im ? (imLine && imPart[k] ? { q: imPart[k] } : null) : lines.get(key);
             const q = im ? (imLine ? 0 : imPart[k]) : Math.min(o.qty, want);
-            const btn = on ? `<button class="btn sm" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}" title="Take it off the list">${on.q} on list ✓</button>` : o.price < p.worth && q ? `<button class="btn sm go" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}">Add ${q}</button>` : '';
+            const btn = on ? `<button class="btn sm" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}" title="Take it off the list">${on.q} on list ✓</button>` : o.out ? '' : o.price < p.worth && q ? `<button class="btn sm go" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}">Add ${q}</button>` : '';
             // Torn's own answer, or TornW3B's older copy of that bazaar: said on the row, with its age.
             const how = o.from === 'w3b' ? "TornW3B's copy of this bazaar: Torn itself has not been asked yet" : o.from === 'page' ? 'Seen on its own page, in your Torn tab' : 'Read from Torn itself';
             const age = o.at ? `<span class="n num ${o.ok === false || o.from === 'w3b' ? 't-warn' : 't-muted'}" title="${how}">${o.from === 'w3b' ? 'TornW3B · ' : ''}${hAge(o.at, v.at).replace(' ago', '')}</span>` : '<span></span>';
             const split = k === firstOld ? `<div class="wl-s old-h">Not checked in the last 5 minutes${firstOld ? '' : ': nothing here is'}. These are not counted until Torn has been asked${v.buy.check && v.buy.check.length ? ': it is being asked now' : ''}.</div>` : '';
-            return `${split}<div class="wl ${o.ok === false ? 'old' : ''} ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
+            const left = k === firstOut ? `<div class="wl-s old-h">${im ? 'The Item Market' : 'Bazaars'}: not where you buy now, so not counted. "Buy from" switches ${im ? 'it' : 'them'} back on.</div>` : '';
+            return `${left}${split}<div class="wl ${o.ok === false || o.out ? 'old' : ''} ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
         }).join('');
         const u = p.under.units;
         const foot = (under.length ? `<b>${hNum(u)}</b> under its worth in ${hPlural(p.under.places, 'place')}` : 'Nowhere under its worth now')
             + (!p.need ? '. You have enough of it.' : !under.length ? '.' : u >= p.need ? `: covers the ${p.need} you need.` : `. The other ${p.need - u} come from your sellers.`)
             + (p.offers.some((o) => o.price < p.pay) ? ' Violet: cheaper than you pay sellers.' : '');
+        // One press for the whole piece: everything counted above, cheapest first. With all of it on, the press takes it off.
+        const all = p.more ? `<button class="btn sm go" data-act="cart-all" data-id="${p.id}" title="Every listing of it under its worth, cheapest first">Add all ${hNum(p.more)}</button>` : p.listed ? `<button class="btn sm" data-act="cart-all" data-id="${p.id}" title="Take ${hEsc(p.name)} off the list">Take all ${hNum(p.listed)} off</button>` : '';
         return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
         <div class="wl-s">Worth <b>${hMoney(p.worth)}</b> to you · you pay sellers <b>${hMoney(p.pay)}</b></div>
-        ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span class="n">Checked</span><span></span></div>${rows}` : pgNone('Nobody lists it now.')}
+        ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span class="n">Checked</span><span class="wl-a">${all}</span></div>${rows}` : pgNone('Nobody lists it now.')}
         <div class="wl-s foot">${foot}</div></div>`;
     }
 
-    function pgRunBar(v) {
+    function pgRunBar(v, ui) {
         const run = v.buy.run;
         const S = run.stops;
         if (!S.length) return '';
         const at = S.findIndex((s) => s.state === 'cur');
         if (at >= 0) {
             const next = S[at + 1];
+            // The Item Market is one stop with a page for each piece: Next opens the next piece's page (ui.imKey: the
+            // line whose page was opened last; none yet = the first, which the press that came here opened).
+            if (S[at].im) {
+                const lines = S[at].lines;
+                const k = Math.max(0, lines.findIndex((l) => l.key === ui.imKey));
+                const piece = lines.find((l, j) => j > k && l.q - Math.min(l.q, (run.took && run.took[l.key]) || 0) > 0);
+                if (piece) return `<div class="runbar"><span><b>Stop ${at + 1} of ${S.length}:</b> the Item Market, a page for each piece. ${hNum(run.got)} of ${hNum(run.units)} bought so far.</span>${hOut(itemMarketUrl(piece.id, piece.name), `Next: ${hEsc(piece.name)}, its Item Market page<span class="kbd">N</span>`, 'btn go', `data-act="im-walk" data-v="${hEsc(piece.key)}"`)}<button class="btn sm link" data-act="run" data-v="stop">Stop the run</button></div>`;
+            }
             const btn = next ? hOut(pgStopUrl(next), `Next: ${pgPlace(next)}<span class="kbd">N</span>`, 'btn go', 'data-act="run" data-v="next"') : '<button class="btn go" data-act="run" data-v="next">Done: back to the list<span class="kbd">N</span></button>';
             return `<div class="runbar"><span><b>Stop ${at + 1} of ${S.length}:</b> ${pgPlace(S[at])}. ${hNum(run.got)} of ${hNum(run.units)} bought so far.</span>${btn}<button class="btn sm link" data-act="run" data-v="stop">Stop the run</button></div>`;
         }
@@ -10718,9 +10797,9 @@
             const vault = v.buy.vault == null ? '' : v.buy.vault > 0 ? `<span class="grow1 t-warn">On hand ${hMoney(v.top.onHand)}: take ${hMoney(v.buy.vault)} out of the vault first. <span class="t-muted">You press Buy yourself.</span></span>` : `<span class="grow1 t-muted">On hand ${hMoney(v.top.onHand)} covers it. You press Buy yourself.</span>`;
             const onList = v.pieces.filter((p) => p.listed);
             return `<section class="page p-buy on"><div class="pane gbuy stk on">
-          <div class="panel grow" data-k="list"><div class="ph"><h2>Shopping list</h2><span class="sub">${v.buy.units ? `${hPlural(v.buy.units, 'piece')} · ${hPlural(S.length, 'stop')}` : 'empty'}</span><span class="sp"></span><button class="btn sm" data-act="make-list">Fill my stock</button><button class="btn sm" data-act="clear-list">Clear</button></div><div class="pb flush">${list}</div></div>
+          <div class="panel grow" data-k="list"><div class="ph"><h2>Shopping list</h2><span class="sub">${v.buy.units ? `${hPlural(v.buy.units, 'piece')} · ${hPlural(S.length, 'stop')}` : 'empty'}</span><span class="sp"></span>${pgFrom(v)}<button class="btn sm" data-act="make-list">Fill my stock</button><button class="btn sm" data-act="clear-list">Clear</button></div><div class="pb flush">${list}</div></div>
           <div class="col">
-            <div class="panel tint" data-k="run"><div class="ph"><h2>The run</h2><span class="sub">Next counts only what you took</span></div><div class="pb"><div class="rows">${pgRunBar(v)}
+            <div class="panel tint" data-k="run"><div class="ph"><h2>The run</h2><span class="sub">Next counts only what you took</span></div><div class="pb"><div class="rows">${pgRunBar(v, ui)}
               <div class="row"><span class="grow1">${hPlural(v.buy.units, 'piece')} at ${hPlural(S.length, 'stop')}</span><b class="num">${hMoney(v.buy.cost)}</b>${paid ? `<span class="num t-good">leaves ${hSigned(leaves)}, ${hPct(leaves / paid * 100)} ${PG_FEE}</span>` : ''}</div>
               <div class="row"><span class="grow1">Full sets after</span><b class="num" style="font-weight:500">${pgFullWords(v, v.buy.full)}</b></div>
               ${vault ? `<div class="row">${vault}</div>` : ''}
@@ -10736,12 +10815,12 @@
         const plan = v.buy.plan;
         const table = rows.length ? '<thead><tr><th>Piece</th><th class="n">Need</th><th class="n">Cheapest</th><th>Where</th><th class="n">Under its worth</th><th class="n">On your list</th></tr></thead><tbody>' + rows.map((p) => {
             const low = p.low;
-            return `<tr class="pick ${sel && p.id === sel.id ? 'sel' : ''}" data-act="sel" data-id="${p.id}"><td>${pgIco(p)}<b>${hEsc(p.name)}</b></td><td class="n">${p.need ? `<span class="t-need">${p.need}</span>` : p.ahead ? `<span class="t-warn">${p.ahead} ahead</span>` : '<span class="t-muted">enough</span>'}</td><td class="n">${low ? `<b class="${low.price < p.pay ? 't-brand' : ''}">${hMoney(low.price)}</b> <span class="t-muted">×${hNum(low.qty)}</span>` : '<span class="t-muted">none listed</span>'}</td><td>${low ? (low.src === 'market' ? 'Item Market' : hEsc(low.who || 'Bazaar ' + (low.whoId ?? ''))) : ''}</td><td class="n">${low ? pgGap(p.worth - low.price) : ''}</td><td class="n">${p.listed ? `<b>${p.listed}</b> <span class="t-muted">of ${p.need}</span>` : '<span class="t-muted">none</span>'}</td></tr>`;
+            return `<tr class="pick ${sel && p.id === sel.id ? 'sel' : ''}" data-act="sel" data-id="${p.id}"><td>${pgIco(p)}<b>${hEsc(p.name)}</b></td><td class="n">${p.need ? `<span class="t-need">${p.need}</span>` : p.ahead ? `<span class="t-warn">${p.ahead} ahead</span>` : '<span class="t-muted">enough</span>'}</td><td class="n">${low ? `<b class="${low.price < p.pay ? 't-brand' : ''}">${hMoney(low.price)}</b> <span class="t-muted">×${hNum(low.qty)}</span>` : `<span class="t-muted">${p.lowAll ? 'none where you buy' : 'none listed'}</span>`}</td><td>${low ? (low.src === 'market' ? 'Item Market' : hEsc(low.who || 'Bazaar ' + (low.whoId ?? ''))) : ''}</td><td class="n">${low ? pgGap(p.worth - low.price) : ''}</td><td class="n">${p.listed ? `<b>${p.listed}</b> <span class="t-muted">of ${p.need}</span>` : '<span class="t-muted">none</span>'}</td></tr>`;
         }).join('') + '</tbody>' : '';
         return `<section class="page p-buy on"><div class="pane gbuy stk on">
           <div class="col">
             <div class="panel tint" data-k="rec"><div class="ph"><h2>Fill my stock</h2></div><div class="pb">
-              <div class="rec"><div class="hero">${hNum(plan.units)}<small>of the ${hPlural(plan.need, 'piece')} you need ${plan.units === 1 ? 'is' : 'are'} under ${plan.units === 1 ? 'its' : 'their'} worth</small></div><div class="rec-t"><b>${hPlural(plan.stops, 'stop')}</b> · ${hMoney(plan.cost)}<br>${pgFullWords(v, plan.full)}</div><div class="rec-b"><button class="btn go" data-act="make-list"${plan.units ? '' : ' disabled'}>Make the list</button></div></div>
+              <div class="rec"><div class="hero">${hNum(plan.units)}<small>of the ${hPlural(plan.need, 'piece')} you need ${plan.units === 1 ? 'is' : 'are'} under ${plan.units === 1 ? 'its' : 'their'} worth</small></div><div class="rec-t"><b>${hPlural(plan.stops, 'stop')}</b> · ${hMoney(plan.cost)}<br>${pgFullWords(v, plan.full)}</div><div class="rec-b">${pgFrom(v)}<button class="btn go" data-act="make-list"${plan.units ? '' : ' disabled'}>Make the list</button></div></div>
               <div class="rows"><div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div>${v.buy.unsure ? `<div class="row"><span class="grow1 t-muted">${hPlural(v.buy.unsure, 'more piece')} in ${hPlural(v.buy.check.length, 'bazaar')} not checked in the last 5 minutes: not counted until Torn has been asked, which it is being now.</span></div>` : ''}</div>
             </div></div>
             <div class="panel grow" data-k="buy-t"><div class="ph"><h2>Where each piece is cheapest</h2><span class="sub">press a piece to see every place that sells it</span></div>
@@ -11251,7 +11330,7 @@
         doc.head.appendChild(style);
         doc.body.innerHTML = hubShell();
 
-        const ui = { page: 'dashboard', pane: 0, sel: null, trade: null, range: { pts: 40, pts2: 40 }, unit: 'day' };
+        const ui = { page: 'dashboard', pane: 0, sel: null, trade: null, range: { pts: 40, pts2: 40 }, unit: 'day', imKey: '' };
         let desk = null;
         let shown = '';
         let tabsShown = '';
@@ -11448,12 +11527,17 @@
             else if (a === 'trade') { ui.trade = id; draw(false); }
             else if (a === 'range') { ui.range[id] = Number(v); draw(false); }
             else if (a === 'unit') { ui.unit = v; draw(false); }
+            // Where a list may send you: pressing the only place still lit swaps to the other one, so one is always on.
+            else if (a === 'from') { const from = { ...desk.view.settings.from }; from[v] = !from[v]; if (!from.bazaar && !from.market) from[v === 'bazaar' ? 'market' : 'bazaar'] = true; act('set', { from }); }
             else if (a === 'cart') act('cart', id, v);
+            else if (a === 'cart-all') act('cartAll', id);
             else if (a === 'drop') act('drop', v);
             else if (a === 'make-list') { act('makeList', v || ''); go('buy', 2); }
             else if (a === 'clear-list') act('clearList');
             // Start and Next are links: the press opens the bazaar itself, here the run only moves on.
-            else if (a === 'run') act('run', v);
+            else if (a === 'run') { ui.imKey = ''; act('run', v); }
+            // The Item Market stop: the link opened the next piece's page; the run stays on the stop.
+            else if (a === 'im-walk') { ui.imKey = v; draw(false); }
             else if (a === 'copy') { act('copy', v); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
             else if (a === 'key-save') { const box = $(`input[data-key="${v}"]`); const key = box ? box.value.trim() : ''; if (key) { box.value = ''; act('keySave', v, key); } }
             else if (a === 'key-forget') act('keyForget', v);
@@ -11487,7 +11571,7 @@
             const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
             if (typing && e.key === 'Enter') { e.target.blur(); const k = e.target.dataset.key; if (k) { const b = $(`[data-act="key-save"][data-v="${k}"]`); if (b) b.click(); } if (e.target.dataset.server) { const b = $('[data-act="server-save"]'); if (b) b.click(); } return; }
             if (typing || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== 'n' || ui.page !== 'buy') return;
-            const next = $('[data-act="run"][data-v="next"]', view);
+            const next = $('[data-act="im-walk"], [data-act="run"][data-v="next"]', view);
             if (next) next.click();
         });
         // A picture Torn does not serve gives way to the piece's letters.
@@ -12257,9 +12341,10 @@
      * @param place 'b:' + the owner's id, or 'im'
      * @param live  what this tab saw that the shared view does not hold yet, so the box moves the moment you buy:
      *              pend { itemId: units } bought here and not in the view yet, took { itemId: units } bought here on
-     *              this visit, fillAll (Fill all is on)
+     *              this visit, fillAll (Fill all is on), itemId (the Item Market: the piece its address names)
      * @returns null when nothing here is yours to buy; else { where, head, html, marks: [{ i, text, state, ring }],
-     *          fill: [{ i, n }] the number Fill all types into each card's box }
+     *          fill: [{ i, n }] the number Fill all types into each card's box,
+     *          imNext: { id, name } | null - the Item Market, a run on: the piece whose page Next opens }
      */
     function boxBazaar(v, cards, place, live = {}) {
         const pend = live.pend || {};
@@ -12376,11 +12461,16 @@
         // While a run stands here the Next button names the next stop: said once.
         if (next && next !== here && !on) html += `<div class="ta-kv"><span>${here ? 'Next stop' : 'Your list starts at'}</span><span>${next.im ? 'Item Market' : hEsc(next.who || 'a bazaar')}: ${next.lines.map((l) => hEsc(l.name.replace(/ (Plushie|Flower)$/i, '')) + ' ×' + hNum(l.q)).join(', ')}</span></div>`;
         const after = here ? stops[at + 1] || null : null;
+        // The Item Market is ONE stop with a page for each piece. Next walks its pieces in the list's order, and only
+        // after the last one moves on (the owner, 2026-10-11: "so the next next in shopping list just takes me there").
+        // Until 1.2.4 Next left the Item Market after its first piece: the others were "skipped".
+        const pageAt = im && here ? here.lines.reduce((k0, l, k) => (onPage.has(String(l.id)) || String(l.id) === String(live.itemId || '') ? k : k0), -1) : -1;
+        const imNext = im && here && on && here.state === 'cur' ? here.lines.find((l, k) => k > pageAt && l.q - takenOn(l) > 0) || null : null;
         const stopName = (s) => (s.im ? 'the Item Market' : hEsc(s.who || 'a bazaar'));
         // One purple button on the page: Fill all while there is something to type, Next once there is not.
         const main = todo.length ? '' : 'go';
         html += '<div class="ta-btns">' + (on && here && here.state === 'cur'
-            ? bxBtn('run-next', (after ? (after.im ? 'Next: the Item Market' : 'Next bazaar: ' + hEsc(after.who || '')) : 'Done: back to the list') + '<span class="kbd">N</span>', main, '', after ? ` title="${hEsc(after.lines.map((l) => l.name + ' ×' + l.q).join(', '))}"` : '') + bxBtn('run-stop', 'Stop the run', 'link')
+            ? bxBtn('run-next', (imNext ? `Next: ${hEsc(imNext.name)} ×${hNum(imNext.q - takenOn(imNext))}, its Item Market page` : after ? (after.im ? 'Next: the Item Market' : 'Next bazaar: ' + hEsc(after.who || '')) : 'Done: back to the list') + '<span class="kbd">N</span>', main, '', !imNext && after ? ` title="${hEsc(after.lines.map((l) => l.name + ' ×' + l.q).join(', '))}"` : '') + bxBtn('run-stop', 'Stop the run', 'link')
             // A run is on and this is not its stop (you went elsewhere, or the stop left the list): back to it.
             : on ? bxBtn('run-go', `Your stop: ${stopName(cur)}<span class="kbd">N</span>`, main) + bxBtn('run-stop', 'Stop the run', 'link')
             : stops.length ? bxBtn('run-start', 'Start the run', main) : '') + '</div>';
@@ -12388,7 +12478,7 @@
         // Folded, the bar says what is here, so you know to unfold it.
         const left = todo.length + waits.length;
         const head = here ? (left ? `${hNum(left)} to buy here` : 'all taken here ✓') : todo.length ? `${hNum(todo.length)} under ${todo.length === 1 ? 'its' : 'their'} worth here` : '';
-        return { where: im ? 'the Item Market' : 'a bazaar', head, html, marks, fill };
+        return { where: im ? 'the Item Market' : 'a bazaar', head, html, marks, fill, imNext: imNext ? { id: imNext.id, name: imNext.name } : null };
     }
 
     /**
@@ -14416,28 +14506,59 @@
         return rule;
     }
 
+    /** Torn's own buttons, links and boxes you can see inside `root`: what a mark of ours never stands on. */
+    const TORN_CONTROLS = 'a, button, input, select, textarea, label, [role="button"], .btn, .torn-btn';
+    function tornControls(root) {
+        return [...root.querySelectorAll(TORN_CONTROLS)].filter((el) => el.type !== 'hidden' && !setsOurs(el) && setsShown(el));
+    }
+
+    /** Two boxes on the page share some room (`gap`: how near counts as touching). */
+    const boxesMeet = (a, b, gap = 3) => a.left < b.right + gap && a.right > b.left - gap && a.top < b.bottom + gap && a.bottom > b.top - gap;
+
     /**
      * Put a mark of ours beside one of Torn's controls, in the empty room to its right; where that room is too small,
      * under it. By measure only: nothing of Torn's is sized or moved.
+     *
+     * It never stands on a button, a link or a box of Torn's (the owner, 2026-10-11, on the points market's "Are you
+     * sure ...? Yes / No": "this also blocks my buttons"). Where neither place is free of them, and when the control
+     * it belongs to is no longer shown, the mark is not shown at all: the box says the same words.
+     * @returns whether the mark is shown
      */
     function markBeside(mark, anchor) {
         const host = mark && mark.parentElement;
-        if (!host || !anchor || !anchor.getBoundingClientRect) return;
+        if (!host || !anchor || !anchor.getBoundingClientRect) return false;
+        const hide = () => { if (mark.style.visibility !== 'hidden') mark.style.visibility = 'hidden'; return false; };
+        if (!setsShown(anchor)) return hide();
         const h = host.getBoundingClientRect();
         const a = anchor.getBoundingClientRect();
         // The room is the widest thing around the control that starts where its own row starts: Torn's panel.
         let room = h;
+        let roomEl = host;
         for (let node = host.parentElement, up = 0; node && up < 6 && node !== host.ownerDocument.body; node = node.parentElement, up += 1) {
             const r = node.getBoundingClientRect();
             if (Math.abs(r.left - h.left) > 24) break;
-            if (r.width > room.width) room = r;
+            if (r.width > room.width) { room = r; roomEl = node; }
         }
-        const width = mark.getBoundingClientRect().width;
+        const m = mark.getBoundingClientRect();
+        const width = m.width;
+        const half = (m.height || 22) / 2;
         const fits = a.right + 12 + width <= room.right - 6;
-        const left = Math.round(fits ? a.right - h.left + 12 : Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)));
-        const top = Math.round(fits ? a.top - h.top + a.height / 2 : a.bottom - h.top + 14);
+        // Beside the control (when it fits there), else under it; `top` is the mark's middle line.
+        const spots = [];
+        if (fits) spots.push({ left: a.right - h.left + 12, top: a.top - h.top + a.height / 2 });
+        spots.push({ left: Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)), top: a.bottom - h.top + 14 });
+        const theirs = tornControls(roomEl).map((el) => el.getBoundingClientRect());
+        const free = spots.find((s) => {
+            const box = { left: h.left + s.left, right: h.left + s.left + width, top: h.top + s.top - half, bottom: h.top + s.top + half };
+            return !theirs.some((r) => boxesMeet(box, r));
+        });
+        if (!free) return hide();
+        const left = Math.round(free.left);
+        const top = Math.round(free.top);
         if (mark.style.left !== left + 'px') mark.style.left = left + 'px';
         if (mark.style.top !== top + 'px') mark.style.top = top + 'px';
+        if (mark.style.visibility) mark.style.removeProperty('visibility');
+        return true;
     }
 
     /** The other side's item rows on the trade view: [{ el, name, qty }]. */
@@ -14953,8 +15074,10 @@
             cards: [], tiles: [], seen: {}, seenPlace: '', pressed: new Map(), images: 0,
             // What this tab saw you buy here: `pend` until the hub's view holds it, `took` for as long as you stay.
             pend: [], took: {}, fillAll: null, fill: [], said: new Set(),
-            exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
+            exchanges: [], presses: [], pressAt: 0, listing: null, imNext: null, moneyBox: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
             marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
+            // Torn's elements holding a note of ours beside a control: the ones of the last look, and of this one.
+            notes: new Set(), notesNow: new Set(),
             // Your stock on its own: what this tab adds to the view (buys seen, numbers typed), and its fold.
             live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false,
             // The listing a link of ours named: brought into view once, pulsing until you press anything.
@@ -15311,16 +15434,19 @@
                 const input = st.tiles[i].input;
                 return { itemId: c.itemId, price: c.listingPrice, qty: c.qtyAssumed ? 0 : c.qty, typed: input ? tpDigits(input.value) : 0, hasBox: !!input };
             });
-            let out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: !!st.fillAll });
+            // The Item Market's page is of one piece: its address names it, also while no listing is drawn yet.
+            const itemId = kind === 'itemmarket' ? (st.href.match(/[#&?/]itemID=(\d+)/i) || [])[1] || '' : '';
+            let out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: !!st.fillAll, itemId });
             st.fill = out ? out.fill : [];
             const typedOf = () => { const by = {}; for (const c of cards) if (c.hasBox && c.typed > 0) by[c.itemId] = (by[c.itemId] || 0) + c.typed; return by; };
             st.live = { pend, typed: typedOf(), here: cards.map((c) => c.itemId) };
             // Fill all is on: the boxes that are open now get their numbers, and the box says so in the same look.
             if (st.fillAll && fillAllNow()) {
                 cards.forEach((c, i) => { const input = st.tiles[i].input; c.typed = input ? tpDigits(input.value) : 0; });
-                out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: true });
+                out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: true, itemId });
                 st.live.typed = typedOf();
             }
+            st.imNext = out ? out.imNext || null : null;
             const marks = new Map((out ? out.marks : []).map((m) => [m.i, m]));
             listings.forEach((c, i) => {
                 // Nothing of ours on Torn's open buy form: it is where you type and press.
@@ -15384,6 +15510,18 @@
             return off;
         }
 
+        /**
+         * A note of ours beside one of Torn's controls (ADD LISTING, EXCHANGE). It lives only as long as that control is
+         * on the page: when Torn swaps its form for "Are you sure ...? Yes / No", the next look finds no control, names
+         * no note here, and scan() takes the old one away - it used to stay where it was, on top of Yes and No.
+         */
+        function noteBeside(host, text, state, anchor) {
+            const mark = setMark(host, text, state, 'note');
+            if (!mark) return;
+            st.notesNow.add(host);
+            markBeside(mark, anchor);
+        }
+
         function onMuseum(v) {
             const found = museumExchanges(doc, SETS, win.location.hash);
             st.exchanges = found;
@@ -15409,8 +15547,7 @@
                 if (!s || !ex.box || !host) continue;
                 const full = Math.max(0, s.full - (off[s.key] || 0));
                 const over = tpDigits(ex.box.value) > full;
-                const mark = setMark(host, over ? (full ? `You hold ${hNum(full)} full ${full === 1 ? 'set' : 'sets'}` : 'No full set yet') : '', 'bad', 'note');
-                if (mark) markBeside(mark, ex.button);
+                noteBeside(host, over ? (full ? `You hold ${hNum(full)} full ${full === 1 ? 'set' : 'sets'}` : 'No full set yet') : '', 'bad', ex.button);
             }
             return boxMuseum(v, found.map((f) => ({ set: f.set, hasBox: !!f.box })), off);
         }
@@ -15433,10 +15570,7 @@
                 const m = lines.get(i);
                 setRule(r.el, !!m, m ? m.state : '');
             });
-            if (l && l.root) {
-                const mark = setMark(l.root, out.note ? out.note.text : '', out.note ? out.note.state : '', 'note');
-                if (mark) markBeside(mark, l.button);
-            }
+            if (l && l.root) noteBeside(l.root, out.note ? out.note.text : '', out.note ? out.note.state : '', l.button);
             return out;
         }
 
@@ -15475,7 +15609,9 @@
             st.fill = [];
             st.exchanges = [];
             st.listing = null;
+            st.imNext = null;
             st.moneyBox = null;
+            st.notes = new Set();
         }
 
         function scan() {
@@ -15501,6 +15637,7 @@
             }
             const v = st.shared.v;
             let out = null;
+            st.notesNow = new Set();
             try {
                 if (kind === 'bazaar' || kind === 'itemmarket') out = onBazaar(v, kind);
                 else if (kind === 'trade') out = onTrade(v);
@@ -15512,6 +15649,9 @@
                 win.console.error('[Torn Archive] page', kind, error);
                 out = null;
             }
+            // A note whose control this look did not find is taken off the page.
+            for (const host of st.notes) if (!st.notesNow.has(host)) setMark(host, '', '', 'note');
+            st.notes = st.notesNow;
             show(out);
             showStock((kind === 'bazaar' || kind === 'itemmarket') && st.live ? boxStock(v, st.live) : null);
         }
@@ -15537,6 +15677,8 @@
         };
 
         function goNext(v) {
+            // The Item Market, with a piece of your list still unvisited: its page, and the run stays on this stop.
+            if (st.kind === 'itemmarket' && st.imNext) { win.location.assign(itemMarketUrl(st.imNext.id, st.imNext.name)); return; }
             const stops = v.buy.run.stops;
             const at = stops.findIndex((s) => s.place === placeNow());
             const next = at >= 0 ? stops[at + 1] || null : null;
@@ -15614,6 +15756,9 @@
                 for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
                 return;
             }
+            // The points market and the museum: a press of yours may swap Torn's form for its "Are you sure ...?" by
+            // showing and hiding what is already there, which no change of the page's nodes tells us. Looked at once.
+            if (st.kind === 'points' || st.kind === 'museum') for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
             // A press of Torn's EXCHANGE, by you: told to the hub, which writes the points into your book at cost.
             if (st.kind === 'museum') {
                 const ex = st.exchanges.find((x) => x.button && x.button.isConnected && (x.button === target || x.button.contains(target)));
@@ -16258,6 +16403,7 @@
             },
             cart: (id, place) => engine.act('cart', id, place),
             drop: (key) => engine.act('drop', key),
+            cartAll: (id) => engine.act('cartAll', id),
             makeList: (kind) => engine.act('makeList', kind),
             // The piece open on "Sold by": its bazaars are asked of Torn itself (not connected in 1.2.2: nothing was asked).
             look: (id) => { engine.act('look', id); schedule(); },

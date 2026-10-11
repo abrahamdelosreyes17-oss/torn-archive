@@ -27,6 +27,7 @@
   .set li img { width: 38px; height: 19px; }
   .set input, .pm input { width: 90px; background: #1b1b1b; border: 1px solid #444; color: #ccc; padding: 3px 6px; }
   .pm { padding: 10px; background: #2a2a2a; border-radius: 4px; display: flex; gap: 8px; align-items: center; }
+  .pm .ask[hidden] { display: none; } .pm .ask a { color: #74c0fc; margin-left: 10px; }
   .pm-list { list-style: none; margin: 14px 0 0; padding: 0; overflow: hidden; border-radius: 4px; }
   .pm-list li { display: flex; border-top: 1px solid #111; }
   .pm-list li span { flex: 1; padding: 13px 10px; background: #2a2a2a; border-right: 1px solid #111; text-align: right; }
@@ -123,8 +124,31 @@ if (page === 'bazaar') {
 } else if (page === 'pmarket') {
     // ?rows=none: a list this tab cannot read (the box alone then says the numbers).
     const lots = q.get('rows') === 'none' ? [] : (view.points.ladder || []).flatMap((l) => (l.lots > 1 && l.qty > 1 ? [[Math.floor(l.qty / 2), l.price], [l.qty - Math.floor(l.qty / 2), l.price]] : [[l.qty, l.price]]));
-    main.innerHTML = '<h1>Points Market</h1><div class="set" style="padding:0"><p style="padding:8px 10px;margin:0;background:#222"><b>Add listing</b></p><div class="pm">Points: <input type="text" name="amount" value=""> Price each: <input type="text" name="price" value=""> <button>ADD LISTING</button></div></div>'
+    main.innerHTML = '<h1>Points Market</h1><div class="set" style="padding:0"><p style="padding:8px 10px;margin:0;background:#222"><b>Add listing</b></p><div class="pm"><span class="f">Points: <input type="text" name="amount" value=""></span><span class="f">Price each: <input type="text" name="price" value=""></span><span class="f"><button>ADD LISTING</button></span><span class="ask" hidden></span></div></div>'
         + `<ul class="pm-list"><li class="h"><span>Name</span><span>Points</span><span>Cost Each</span><span>Total Price</span><span>Action</span></li>${lots.map(([n, each], i) => `<li><span>Seller_${i + 1}</span><span>${n.toLocaleString('en-US')}</span><span>$${each.toLocaleString('en-US')}</span><span>$${(n * each).toLocaleString('en-US')}</span><span>buy</span></li>`).join('')}</ul>`;
+    // ADD LISTING: Torn asks "Are you sure ...? Yes No". A stand-in for it, not Torn's markup (never read): the
+    // form's parts give way to the question inside the same row (the row itself stays, as on his screenshot, where
+    // our note was left standing on Yes and No) - or, with &ask=beside, they stay and the question joins them.
+    const form = main.querySelector('.pm');
+    const ask = main.querySelector('.pm .ask');
+    const parts = (shown) => { for (const f of form.querySelectorAll('.f')) f.style.display = shown ? '' : 'none'; };
+    const digits = (el) => Number(String(el.value).replace(/\D/g, '')) || 0;
+    form.querySelector('button').addEventListener('click', () => {
+        const n = digits(form.querySelector('[name=amount]'));
+        const each = digits(form.querySelector('[name=price]'));
+        if (!n || !each) return;
+        ask.innerHTML = `Are you sure you want to sell <b>${n.toLocaleString('en-US')}</b> points for <b>$${each.toLocaleString('en-US')}</b> each (<b>$${(n * each).toLocaleString('en-US')}</b> total)? <a href="#" data-ask="yes">Yes</a> <a href="#" data-ask="no">No</a>`;
+        ask.hidden = false;
+        if (q.get('ask') !== 'beside') parts(false);
+    });
+    ask.addEventListener('click', (e) => {
+        const a = e.target.closest('[data-ask]');
+        if (!a) return;
+        e.preventDefault();
+        window.asked = [...(window.asked || []), a.dataset.ask];
+        ask.hidden = true;
+        parts(true);
+    });
 } else if (page === 'forum') {
     const th = view.prices.thread;
     const title = q.has('exact') ? view.prices.forum.title : (th && th.title) || view.prices.forum.title;

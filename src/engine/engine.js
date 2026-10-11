@@ -10,7 +10,8 @@ import {
 } from './state.js';
 import { serverShop, serverListReadAt, serverMarketIn, SERVER_QUIET_MS, SERVER_BOUGHT_MS, SERVER_SYNC_MS } from '../core/server.js';
 import { archiveView, viewPiece, setsTraded, ALL_PIECE_IDS } from '../core/view.js';
-import { fillPlan, fillList, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, runView, runOrder, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE, cheapPieces } from '../core/shopping.js';
+import { fillPlan, fillList, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, runView, runOrder, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE, cheapPieces, addAll, dropPiece, dropPlaces } from '../core/shopping.js';
+import { buysFrom } from '../core/settings.js';
 import { hotSince } from '../core/verdict.js';
 import { stockAge } from '../core/stock.js';
 import { pointsLogTypes } from '../core/points.js';
@@ -432,14 +433,14 @@ export function makeEngine(env) {
             for (const s of v.buy.stops) if (!s.im) more(s.whoId);
             for (const id of v.buy.check || []) more(id);
             for (const h of v.buy.hot) if (!h.im) more(h.whoId);
-            for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) more(o.whoId);
+            for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && !o.out && o.price < p.worth) more(o.whoId);
             return [...ids, ...rest.slice(0, shopsCap())];
         }
         for (const s of v.buy.stops) if (!s.im) add(s.whoId);
         // The bazaars a list would use that are shown but not checked: checked, they count.
         for (const id of v.buy.check || []) add(id);
         for (const h of v.buy.hot) if (!h.im) add(h.whoId);
-        for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) add(o.whoId);
+        for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && !o.out && o.price < p.worth) add(o.whoId);
         return ids.slice(0, shopsCap());
     }
 
@@ -805,9 +806,19 @@ export function makeEngine(env) {
             touch('cart', 'run');
         },
         drop(key) { S.cart = dropLine(S.cart, key); idle(); touch('cart', 'run'); },
+        // One piece, every listing of it that counts (checked, where you buy, under its worth), in one press. With
+        // nothing more to add, the press takes the piece off the list.
+        cartAll(itemId) {
+            const p = viewPiece(view(), itemId);
+            if (!p) return;
+            const next = addAll(S.cart, p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+            S.cart = next.length > S.cart.length ? next : dropPiece(S.cart, itemId);
+            idle();
+            touch('cart', 'run');
+        },
         // A list is made from the count as it stands, and Torn is asked for its own at once: the list follows it.
         // `kind` 'hot': only what "Do now" counted - under what you pay your sellers. Else everything under its worth.
-        makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false)); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
+        makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); const inPlace = buysFrom(settings()); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false && inPlace(o))); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
         clearList() { S.cart = []; idle(); touch('cart', 'run'); },
         run(op) {
             const list = stops();
@@ -879,7 +890,13 @@ export function makeEngine(env) {
         busy: () => ({ ...flags }),
         mv: mvOf(S),
         /** Whether the settings changed something the reads depend on. */
-        settingsChanged() { cache = null; syncAt = 0; },
+        settingsChanged() {
+            cache = null;
+            syncAt = 0;
+            // A place switched off ("Buy from") leaves the list at once - but never a line you already took from.
+            const left = dropPlaces(S.cart, buysFrom(settings()), (l) => S.run.on && S.run.took && S.run.took[l.key] > 0);
+            if (left.length !== S.cart.length) { S.cart = left; idle(); touch('cart', 'run'); }
+        },
     };
 }
 

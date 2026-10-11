@@ -162,6 +162,28 @@ export function toggleLine(cart, piece, offer) {
 export const dropLine = (cart, key) => (cart || []).filter((l) => l.key !== key);
 
 /**
+ * Every listing of ONE piece under its worth put on the list in one press: the cheapest first, as many as you still
+ * need, one line per place. A place already on the list for this piece keeps its line as it is.
+ * @param piece  { id, name, set, need, worth }
+ * @param offers the piece's listings that count: [{ price, qty, src, who, whoId }]
+ */
+export function addAll(cart, piece, offers) {
+    const list = cart || [];
+    if (!piece) return list;
+    const want = shWhole(piece.need) - onList(list, piece.id);
+    if (want <= 0) return list;
+    const have = new Set(list.filter((l) => String(l.id) === String(piece.id)).map((l) => l.place));
+    const rows = (offers || []).filter((o) => !have.has(placeOf(o)));
+    return [...list, ...fillPlan([{ ...piece, need: want }], () => rows)];
+}
+
+/** A piece taken off the list, every place of it. */
+export const dropPiece = (cart, itemId) => (cart || []).filter((l) => String(l.id) !== String(itemId));
+
+/** The list without the lines of a place you no longer buy from. `keep(line)` true: the line stays whatever its place. */
+export const dropPlaces = (cart, allowed, keep = null) => (cart || []).filter((l) => allowed({ src: l.im ? 'market' : 'bazaar' }) || (keep && keep(l)));
+
+/**
  * The list checked against a fresh read: a line whose listing is gone, or no longer under its worth, comes off;
  * one with less stock or less need shrinks. Nothing is ever added here.
  *

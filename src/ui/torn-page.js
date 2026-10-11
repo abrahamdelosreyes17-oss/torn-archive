@@ -136,8 +136,10 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         cards: [], tiles: [], seen: {}, seenPlace: '', pressed: new Map(), images: 0,
         // What this tab saw you buy here: `pend` until the hub's view holds it, `took` for as long as you stay.
         pend: [], took: {}, fillAll: null, fill: [], said: new Set(),
-        exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
+        exchanges: [], presses: [], pressAt: 0, listing: null, imNext: null, moneyBox: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
         marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
+        // Torn's elements holding a note of ours beside a control: the ones of the last look, and of this one.
+        notes: new Set(), notesNow: new Set(),
         // Your stock on its own: what this tab adds to the view (buys seen, numbers typed), and its fold.
         live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false,
         // The listing a link of ours named: brought into view once, pulsing until you press anything.
@@ -494,16 +496,19 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             const input = st.tiles[i].input;
             return { itemId: c.itemId, price: c.listingPrice, qty: c.qtyAssumed ? 0 : c.qty, typed: input ? tpDigits(input.value) : 0, hasBox: !!input };
         });
-        let out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: !!st.fillAll });
+        // The Item Market's page is of one piece: its address names it, also while no listing is drawn yet.
+        const itemId = kind === 'itemmarket' ? (st.href.match(/[#&?/]itemID=(\d+)/i) || [])[1] || '' : '';
+        let out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: !!st.fillAll, itemId });
         st.fill = out ? out.fill : [];
         const typedOf = () => { const by = {}; for (const c of cards) if (c.hasBox && c.typed > 0) by[c.itemId] = (by[c.itemId] || 0) + c.typed; return by; };
         st.live = { pend, typed: typedOf(), here: cards.map((c) => c.itemId) };
         // Fill all is on: the boxes that are open now get their numbers, and the box says so in the same look.
         if (st.fillAll && fillAllNow()) {
             cards.forEach((c, i) => { const input = st.tiles[i].input; c.typed = input ? tpDigits(input.value) : 0; });
-            out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: true });
+            out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: true, itemId });
             st.live.typed = typedOf();
         }
+        st.imNext = out ? out.imNext || null : null;
         const marks = new Map((out ? out.marks : []).map((m) => [m.i, m]));
         listings.forEach((c, i) => {
             // Nothing of ours on Torn's open buy form: it is where you type and press.
@@ -567,6 +572,18 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         return off;
     }
 
+    /**
+     * A note of ours beside one of Torn's controls (ADD LISTING, EXCHANGE). It lives only as long as that control is
+     * on the page: when Torn swaps its form for "Are you sure ...? Yes / No", the next look finds no control, names
+     * no note here, and scan() takes the old one away - it used to stay where it was, on top of Yes and No.
+     */
+    function noteBeside(host, text, state, anchor) {
+        const mark = setMark(host, text, state, 'note');
+        if (!mark) return;
+        st.notesNow.add(host);
+        markBeside(mark, anchor);
+    }
+
     function onMuseum(v) {
         const found = museumExchanges(doc, SETS, win.location.hash);
         st.exchanges = found;
@@ -592,8 +609,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             if (!s || !ex.box || !host) continue;
             const full = Math.max(0, s.full - (off[s.key] || 0));
             const over = tpDigits(ex.box.value) > full;
-            const mark = setMark(host, over ? (full ? `You hold ${hNum(full)} full ${full === 1 ? 'set' : 'sets'}` : 'No full set yet') : '', 'bad', 'note');
-            if (mark) markBeside(mark, ex.button);
+            noteBeside(host, over ? (full ? `You hold ${hNum(full)} full ${full === 1 ? 'set' : 'sets'}` : 'No full set yet') : '', 'bad', ex.button);
         }
         return boxMuseum(v, found.map((f) => ({ set: f.set, hasBox: !!f.box })), off);
     }
@@ -616,10 +632,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             const m = lines.get(i);
             setRule(r.el, !!m, m ? m.state : '');
         });
-        if (l && l.root) {
-            const mark = setMark(l.root, out.note ? out.note.text : '', out.note ? out.note.state : '', 'note');
-            if (mark) markBeside(mark, l.button);
-        }
+        if (l && l.root) noteBeside(l.root, out.note ? out.note.text : '', out.note ? out.note.state : '', l.button);
         return out;
     }
 
@@ -658,7 +671,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         st.fill = [];
         st.exchanges = [];
         st.listing = null;
+        st.imNext = null;
         st.moneyBox = null;
+        st.notes = new Set();
     }
 
     function scan() {
@@ -684,6 +699,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         }
         const v = st.shared.v;
         let out = null;
+        st.notesNow = new Set();
         try {
             if (kind === 'bazaar' || kind === 'itemmarket') out = onBazaar(v, kind);
             else if (kind === 'trade') out = onTrade(v);
@@ -695,6 +711,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             win.console.error('[Torn Archive] page', kind, error);
             out = null;
         }
+        // A note whose control this look did not find is taken off the page.
+        for (const host of st.notes) if (!st.notesNow.has(host)) setMark(host, '', '', 'note');
+        st.notes = st.notesNow;
         show(out);
         showStock((kind === 'bazaar' || kind === 'itemmarket') && st.live ? boxStock(v, st.live) : null);
     }
@@ -720,6 +739,8 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     };
 
     function goNext(v) {
+        // The Item Market, with a piece of your list still unvisited: its page, and the run stays on this stop.
+        if (st.kind === 'itemmarket' && st.imNext) { win.location.assign(itemMarketUrl(st.imNext.id, st.imNext.name)); return; }
         const stops = v.buy.run.stops;
         const at = stops.findIndex((s) => s.place === placeNow());
         const next = at >= 0 ? stops[at + 1] || null : null;
@@ -797,6 +818,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
             return;
         }
+        // The points market and the museum: a press of yours may swap Torn's form for its "Are you sure ...?" by
+        // showing and hiding what is already there, which no change of the page's nodes tells us. Looked at once.
+        if (st.kind === 'points' || st.kind === 'museum') for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
         // A press of Torn's EXCHANGE, by you: told to the hub, which writes the points into your book at cost.
         if (st.kind === 'museum') {
             const ex = st.exchanges.find((x) => x.button && x.button.isConnected && (x.button === target || x.button.contains(target)));

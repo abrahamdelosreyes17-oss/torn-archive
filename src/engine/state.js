@@ -841,10 +841,12 @@ export function recordDay(S, view, now) {
     const day = enDay(now);
     const low = { ...S.hist.low };
     for (const p of view.pieces || []) {
-        if (!p.low) continue;
+        // The cheapest anywhere, not only where you buy: the record is of the price.
+        const lo = p.lowAll || p.low;
+        if (!lo) continue;
         const list = (low[p.id] || []).filter((d) => d.day !== day);
         const cur = (low[p.id] || []).find((d) => d.day === day);
-        low[p.id] = [...list, { day, low: cur ? Math.min(cur.low, p.low.price) : p.low.price }].slice(-14);
+        low[p.id] = [...list, { day, low: cur ? Math.min(cur.low, lo.price) : lo.price }].slice(-14);
     }
     let pays = S.hist.pays;
     const paid = {};
