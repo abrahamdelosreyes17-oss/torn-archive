@@ -55,14 +55,12 @@ h1 { margin: 4px 0 6px; color: var(--text); font: 650 27px/1.15 var(--disp); let
 .btn.go:hover { background: #a08fff; }
 .btn.out::after { content: "\2197"; opacity: .75; }
 .btn:disabled { opacity: .45; cursor: default; transform: none; }
-.btn:focus-visible, .inp:focus-visible, .tick input:focus-visible, summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.btn:focus-visible, .inp:focus-visible, summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .inp { flex: 1 1 200px; min-width: 0; height: 38px; padding: 0 13px; border-radius: 10px; border: 1px solid var(--line2); background: var(--input); color: var(--text); font: 500 15px/1 ui-monospace, Consolas, monospace; letter-spacing: .06em; outline: none; transition: border-color .16s; }
 .inp::placeholder { color: var(--faint); font-family: var(--sans); letter-spacing: 0; }
 .inp:focus { border-color: var(--brand-line); }
-.tick { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0 0; cursor: pointer; }
-.tick input { width: 17px; height: 17px; flex: none; margin: 3px 0 0; accent-color: var(--brand); }
 
 /* What the server answered: one line under the box it belongs to. */
 .said { margin: 8px 0 0; }
@@ -142,7 +140,6 @@ footer { margin-top: 22px; color: var(--muted); font-size: 13px; }
                 <input class="inp" id="give-k" type="password" maxlength="16" placeholder="your Public Only key" autocomplete="off" spellcheck="false" aria-label="Your Public Only key">
                 <button class="btn go" id="give-b" type="submit">Hand in the key</button>
               </div>
-              <label class="tick"><input type="checkbox" id="give-t"><span>This is my own key, and I have read what it is used for.</span></label>
             </form>
             <p class="said" id="give-s" role="status" aria-live="polite"></p>
           </div>
@@ -237,14 +234,13 @@ $('give-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const key = $('give-k').value.trim();
   if (!KEY.test(key)) { say('give-s', 'A Torn key is 16 letters and digits. That was ' + key.length + '.', 'bad'); return; }
-  if (!$('give-t').checked) { say('give-s', 'Tick the box first: it is your own key, and you have read what it is used for.', 'bad'); return; }
   const b = $('give-b');
   b.disabled = true; b.textContent = 'Asking Torn…'; say('give-s', '');
   const out = await ask('POST', '/join', { key });
   b.disabled = false; b.textContent = 'Hand in the key';
   const got = out.body;
   if (out.status === 200 && got && got.ok) {
-    $('give-k').value = ''; $('give-t').checked = false;
+    $('give-k').value = '';
     say('give-s', got.already ? 'This key is already here' + (named(got) ? ', for ' + named(got) : '') + '. Nothing changed.'
       : 'Thank you, ' + named(got) + '. Your key is in. We use up to ' + got.share + ' of your 100 requests a minute.', 'ok');
     return;

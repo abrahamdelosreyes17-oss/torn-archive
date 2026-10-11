@@ -47,6 +47,10 @@ else. Torn Archive never opens that page and never sends a key of yours to it.
 - It never presses anything of Torn's. Not Buy, not EXCHANGE, not ADD LISTING, not Change or Accept, not a post.
 - **Fill** types a number into one of Torn's own boxes, on the page you are looking at, only when you press Fill.
   You press Torn's button yourself.
+- **Fill all**, on a bazaar, is one press of yours: from then on, on that page only, each listing's number is typed
+  into its own quantity box - the ones open now, and each other one as you open it or scroll to it. It never
+  scrolls for you, never opens a box and never presses Buy; a second press puts back what was there. Typing a
+  number sends nothing to Torn.
 - **Copy** puts text on your clipboard. You paste and send it.
 - A link opens one page, on your press.
 - Torn's pages are read as they are in front of you. No page is loaded in the background, and nothing is asked of
