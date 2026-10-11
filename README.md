@@ -38,10 +38,6 @@ Without the Full key the hub still works; costs are then taken at market value w
 The page at `abrahamdelosreyes17-oss.github.io/torn-archive/` is an empty page: the script draws the hub there, in
 your browser. Nothing is sent to that site.
 
-`join.html` on the same site is not part of the script. It is Torn Shared Server's sign-up page: a player who
-wants to lend the server a Public Only key pastes it there, and the page sends it to the server and nowhere
-else. Torn Archive never opens that page and never sends a key of yours to it.
-
 ## What it never does
 
 - It never presses anything of Torn's. Not Buy, not EXCHANGE, not ADD LISTING, not Change or Accept, not a post.
