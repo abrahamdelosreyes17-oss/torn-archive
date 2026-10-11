@@ -166,6 +166,17 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             logTradeMoney: false,
             /** What `from` on /v2/user/trades goes by: when the trade 'completed', or when it was 'created'. UNSURE. */
             tradesFromIs: 'completed',
+            /**
+             * Whether a trade's `modified_at` moves when items or money go into it. SEEN on the owner's PC,
+             * 2026-10-11: it did not - opened 16:48:07, two piles of plushies put in minutes later, still 16:48:07.
+             */
+            tradeModifiedMoves: false,
+            /**
+             * The most log kinds one request to /v2/user/log may name and still be answered with rows. SEEN on the
+             * owner's PC, 2026-10-11: 18 kinds brought no row in 14 days. UNSURE where the line is; Torn Trading
+             * names 8 and gets its rows.
+             */
+            logMostKinds: 10,
             /** For one read each, TornW3B says "there are listings" and sends none (its known mid-scan glitch): item ids. */
             w3bGlitch: [],
             /** What the services themselves refuse, by the fake clock. */
@@ -226,7 +237,7 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
         put(t.mine, mine);
         if (myMoney != null) t.myMoney = ftWhole(myMoney);
         if (theirMoney != null) t.theirMoney = ftWhole(theirMoney);
-        t.modifiedAt = now();
+        if (world.options.tradeModifiedMoves) t.modifiedAt = now();
         return t;
     }
 
@@ -459,6 +470,7 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             const from = Number(q('from')) || 0;
             const to = Number(q('to')) || Infinity;
             const limit = Math.min(100, ftWhole(q('limit')) || 100);
+            if (types && types.size > world.options.logMostKinds) return answer(200, { log: [], _metadata: { links: { next: null, prev: null } } });
             const rows = world.log
                 .filter((e) => (!types || types.has(e.type)) && e.timestamp >= from && e.timestamp <= to)
                 .sort((a, b) => b.timestamp - a.timestamp || (a.id < b.id ? 1 : -1))

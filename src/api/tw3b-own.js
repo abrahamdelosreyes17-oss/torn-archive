@@ -68,6 +68,8 @@ export class Tw3bOwnClient {
         if (!res.ok) {
             const words = res.status === 401 ? 'TornW3B does not know this key (401).' : res.status === 429 ? 'TornW3B asked to wait (429).' : 'TornW3B answered ' + res.status + '.';
             const e = new Tw3bOwnError(words, { http: res.status });
+            // What TornW3B said with it, for the problem log: a refusal with no reason cannot be told from a blocked page.
+            try { e.said = res.text ? String(await res.text()).replace(/\s+/g, ' ').replace(/[A-Za-z0-9]{16,}/g, '[…]').trim().slice(0, 140) : ''; } catch { e.said = ''; }
             if (this.onFailed) this.onFailed({ path, tag, error: e });
             throw e;
         }

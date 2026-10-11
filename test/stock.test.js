@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { STOCK_EMPTY, stockApply, stockInventory, stockHeld, seenWaiting, stockReady, eventsFromRows } from '../src/core/stock.js';
+import { STOCK_EMPTY, stockApply, stockInventory, stockHeld, stockAge, seenWaiting, stockReady, eventsFromRows, eventFromSeen } from '../src/core/stock.js';
 import { poolEach } from '../src/core/books.js';
 import { SETS } from '../src/core/sets.js';
 
@@ -80,4 +80,39 @@ test('the Ledger\'s rows become stock events, pieces only', () => {
     ];
     const ev = eventsFromRows(rows, new Set(ids));
     assert.deepEqual(ev.map((e) => [e.key, e.id, e.d, e.paid]), [['row:a:0', '263', 4, 56000], ['row:trade:5:out:0', '263', -2, 0], ['row:trade:6:out:0', '260', -1, 0]]);
+});
+
+test('when Torn counted: trusted once two reads carried the same time, and from then Torn\'s count wins the moment it is newer than your last buy', () => {
+    let s = stockInventory(STOCK_EMPTY, { 263: 3 }, T0, ids, mv, T0 - 10 * MIN);
+    assert.equal(stockAge(s).tornAt, 0, 'one read: a time that may only say "now" is not trusted');
+    s = stockInventory(s, { 263: 3 }, T0 + 5 * MIN, ids, mv, T0 - 10 * MIN);
+    assert.equal(stockAge(s).tornAt, T0 - 10 * MIN, 'it stood still between two reads: that is when Torn counted');
+    assert.equal(stockAge(s).nextAt, T0 + 50 * MIN, 'and Torn counts again an hour after');
+    s = stockApply(s, [{ key: 'b', t: T0 + 6 * MIN, id: '263', d: 5, paid: 70000 }]).state;
+    assert.equal(stockAge(s).since, 1, 'one piece is carried by us since Torn counted');
+    // Torn's old count, read again: the buy is not in it, and ours stands.
+    s = stockInventory(s, { 263: 3 }, T0 + 10 * MIN, ids, mv, T0 - 10 * MIN);
+    assert.equal(s.held[263], 8);
+    // Torn counted anew, after the buy: taken at once - not an hour after the buy, as before.
+    s = stockInventory(s, { 263: 9 }, T0 + 51 * MIN, ids, mv, T0 + 50 * MIN);
+    assert.equal(s.held[263], 9);
+    assert.equal(stockAge(s).since, 0);
+    // A log row of something that happened before Torn counted, read late: Torn's count had it.
+    s = stockApply(s, [{ key: 'late', t: T0 + 40 * MIN, id: '263', d: 2, paid: 1 }]).state;
+    assert.equal(s.held[263], 9);
+    // A time that moves with every read was only ever "now": never trusted, the older rule holds.
+    let n = stockInventory(STOCK_EMPTY, { 263: 3 }, T0, ids, mv, T0);
+    n = stockInventory(n, { 263: 3 }, T0 + 5 * MIN, ids, mv, T0 + 5 * MIN);
+    assert.equal(stockAge(n).tornAt, 0);
+});
+
+test('a buy seen on the page, with no log to wait for: counted itself, once, and not added on top again', () => {
+    let s = stockInventory(STOCK_EMPTY, { 263: 3 }, T0, ids, mv);
+    const buy = { t: T0 + MIN, id: '263', qty: 4, price: 14000, whoId: '9' };
+    s = stockApply(s, eventFromSeen(buy), mv).state;
+    s = stockApply(s, eventFromSeen(buy), mv).state;
+    assert.equal(s.held[263], 7);
+    assert.equal(s.pool[263].n, 7, 'what it cost is in the pool');
+    assert.equal(stockHeld(s, [{ ...buy, counted: true }], [], 0)(263), 7, 'counted: not waiting for a log');
+    assert.equal(stockHeld(s, [buy], [], 0)(263), 11, 'not marked counted, it would wait for one');
 });

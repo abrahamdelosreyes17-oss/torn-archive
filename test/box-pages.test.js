@@ -49,9 +49,69 @@ test('a bazaar on your list: its lines with Fill, the next stop on the Next butt
     assert.equal(over.marks[0].state, 'over');
     // No box on the card yet: no Fill button that could do nothing.
     assert.ok(!boxBazaar(v, [{ ...cards[0], hasBox: false }], stop.place).html.includes('fill-card'));
-    // Not a set piece anywhere on the page: no box at all.
-    assert.equal(boxBazaar(v, [cards[cards.length - 1]], stop.place), null);
+    // Not a set piece anywhere on the page, at a bazaar that is not on the list: no box at all.
+    assert.equal(boxBazaar(v, [cards[cards.length - 1]], 'b:424242'), null);
     assert.ok(/You press Buy\./.test(out.html));
+    // The listings are ringed as Torn Trading rings one, and Fill all has every line's own number.
+    assert.ok(out.marks.every((m) => m.ring === 'top'));
+    assert.deepEqual(out.fill, stop.lines.map((l, i) => ({ i, n: l.q })));
+    assert.ok(out.html.includes('data-act="fill-all" data-v="on"'));
+    assert.equal(out.head, `${stop.lines.length} to buy here`);
+});
+
+test('a bazaar as a checklist: what you hold of each piece, a tick the moment you buy, before the hub has heard', () => {
+    const v = withRun();
+    const stop = v.buy.run.stops.find((s) => !s.im);
+    const l = stop.lines[0];
+    const p = viewPiece(v, l.id);
+    const cards = stop.lines.map((x) => ({ itemId: x.id, price: x.price, qty: x.q + 2, typed: 0, hasBox: false }));
+    const before = boxBazaar(v, cards, stop.place);
+    assert.ok(before.html.includes(`You hold <b class="num">${p.held}</b> of ${p.target}`), 'the stock counter is on the line');
+    assert.ok(before.html.includes('Open its Buy box on Torn, then Fill types the number.'));
+    // Bought here a moment ago (this tab saw it; the shared view is still the old one).
+    const after = boxBazaar(v, cards, stop.place, { pend: { [l.id]: l.q }, took: { [l.id]: l.q } });
+    assert.ok(after.html.includes(`You hold <b class="num">${p.held + l.q}</b> of ${p.target}`), 'the counter moved at once');
+    assert.equal(after.marks[0].text, `took ${l.q} ✓`);
+    assert.equal(after.marks[0].ring, '', 'a line that is taken is no longer ringed');
+    assert.deepEqual(after.fill.map((f) => f.i), stop.lines.slice(1).map((x, i) => i + 1), 'and Fill all leaves it alone');
+    assert.ok(after.html.includes(`You took ${l.q} of ${stop.units}`));
+    // Part of it: the rest is still to buy, and never more than the listing holds now.
+    const part = boxBazaar(v, [{ ...cards[0], qty: 1 }, ...cards.slice(1)], stop.place, { pend: { [l.id]: 1 } });
+    assert.equal(part.fill[0].n, Math.min(1, l.q - 1));
+    // The hub's view has the buy (the run counted it): the same line, with nothing added on this page.
+    const v2 = withRun();
+    v2.buy.run.took = { [l.key]: l.q };
+    v2.pieces.find((x) => String(x.id) === String(l.id)).held += l.q;
+    const told = boxBazaar(v2, cards, stop.place);
+    assert.equal(told.marks[0].text, `took ${l.q} ✓`);
+    assert.ok(told.html.includes(`You hold <b class="num">${p.held + l.q}</b> of ${p.target}`));
+});
+
+test('Fill all: said as on, each number typed is "press Buy", and a listing not on the page is named', () => {
+    const v = withRun();
+    const stop = v.buy.run.stops.find((s) => !s.im);
+    assert.ok(stop.lines.length > 1, 'the made-up stop has more than one line');
+    const cards = stop.lines.slice(1).map((x) => ({ itemId: x.id, price: x.price, qty: x.q, typed: x.q, hasBox: true }));
+    const out = boxBazaar(v, cards, stop.place, { fillAll: true });
+    assert.ok(out.marks.every((m) => /typed · press Buy$/.test(m.text) && m.ring === 'top'));
+    assert.ok(out.html.includes('data-act="fill-all" data-v="off"'));
+    assert.ok(out.html.includes(`All ${cards.length} typed.`));
+    // The first line's listing is further down the bazaar, or sold: it is on the checklist all the same.
+    assert.ok(out.html.includes('1 piece on your list is not on the page as it stands.'));
+    assert.ok(out.html.includes('Fill all types into each as it comes'));
+    assert.equal(out.head, `${stop.lines.length} to buy here`);
+    // A box not open yet under Fill all: the line says what opening it does.
+    const shut = boxBazaar(v, cards.map((c) => ({ ...c, typed: 0, hasBox: false })), stop.place, { fillAll: true });
+    assert.ok(shut.html.includes('is typed for you.'));
+    assert.ok(shut.html.includes(`0 of ${cards.length} typed.`));
+});
+
+test('a run is on and this bazaar is not its stop: one button back to the stop, the run not moved', () => {
+    const v = withRun();
+    const p = v.pieces.find((x) => x.need > 0);
+    const out = boxBazaar(v, [{ itemId: p.id, price: Math.round(p.worth * 1.2), qty: 3, typed: 0, hasBox: false }], 'b:424242');
+    assert.ok(out.html.includes('data-act="run-go"'));
+    assert.ok(!out.html.includes('data-act="run-next"'));
 });
 
 test('a bazaar off your list: only what is under its worth, and no run buttons', () => {

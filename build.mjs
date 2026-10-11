@@ -44,6 +44,21 @@ const VERSION = JSON.parse(
     await readFile(resolve(ROOT, 'package.json'), 'utf8'),
 ).version;
 
+/*
+ * The shared server's address is built in, so nobody types it: the SHARED_URL line of the server's own .env on
+ * the laptop that builds (TORN_SERVER_ENV names another file). It is never printed here. No file or no such
+ * line: a copy that keeps the two boxes in Settings, and works alone until they are filled.
+ */
+const SHARED_ENV = process.env.TORN_SERVER_ENV || 'D:/torn/server/.env';
+let SHARED_HOME = '';
+try {
+    const line = /^SHARED_URL=(.*)$/m.exec(await readFile(SHARED_ENV, 'utf8'));
+    const url = line ? new URL(line[1].trim().replace(/^["']|["']$/g, '')) : null;
+    if (url && url.protocol === 'https:' && /^[a-z0-9-]+([.][a-z0-9-]+)*[.]workers[.]dev$/.test(url.hostname)) SHARED_HOME = url.origin;
+} catch {
+    // no server folder on this machine
+}
+
 const HEADER = `// ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
@@ -88,10 +103,12 @@ const HEADER = `// ==UserScript==
  *     trade is noticed while you are on Torn. Torn's tabs ask nothing.
  *   - Beside Torn Trading (Torn Bids) the two scripts share the limits: the
  *     one whose page you look at asks more, the other less.
- *   - The shared server is off until you save its address and your password
- *     for it in Settings. It is then told bazaar and item numbers, prices
- *     and counts - never a key, never your stock or your money - and its
- *     part of your Torn limit is left to it.
+ *   - The shared server needs no setting up and serves only the people its
+ *     owner added. Torn Archive asks one server of ours (a workers.dev
+ *     address) whether this PC is one of theirs, and says your Torn id for
+ *     it - never a key. Only a PC the server knows then tells it bazaar
+ *     and item numbers, prices and counts - never your stock or your
+ *     money - and its part of your Torn limit is left to it.
  */
 `;
 
@@ -268,7 +285,8 @@ async function main() {
         HEADER +
         '\n(function () {\n' +
         "    'use strict';\n\n" +
-        `    const TARC_BUILD_VERSION = '${VERSION}';\n\n` +
+        `    const TARC_BUILD_VERSION = '${VERSION}';\n` +
+        `    const TARC_SERVER_HOME = '${SHARED_HOME}';\n\n` +
         indent(body) +
         '\n\n    boot();\n' +
         '})();\n';
@@ -297,7 +315,7 @@ async function main() {
 
     const kb = (Buffer.byteLength(bundle, 'utf8') / 1024).toFixed(1);
     console.log(
-        `Built ${relative(ROOT, OUT)} from ${ordered.length} modules (${kb} KB).`,
+        `Built ${relative(ROOT, OUT)} from ${ordered.length} modules (${kb} KB)${SHARED_HOME ? '' : ', with NO shared server built in'}.`,
     );
 }
 

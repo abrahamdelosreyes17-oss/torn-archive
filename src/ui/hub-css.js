@@ -190,7 +190,8 @@ svg .cross { stroke: var(--line2); stroke-width: 1; }
 .lad .r { text-align: right; } .lad .p { color: var(--text); font-weight: 600; }
 .lad .bar { height: 10px; border-radius: 0 4px 4px 0; background: var(--s-gold); width: var(--w); min-width: 3px; opacity: .85; animation: growx .7s var(--ease) both; animation-delay: calc(var(--n) * 50ms + 150ms); transform-origin: left; }
 .lad.wall .bar { opacity: 1; } .lad .tag { color: var(--muted); }
-.after { display: grid; grid-auto-rows: minmax(18px, 1fr); height: 100%; font-size: 12px; min-height: 150px; }
+/* Rows from the top, each its own height: one row is one row, not the whole panel (13 still fit without a scroll). */
+.after { display: grid; grid-auto-rows: minmax(18px, 34px); align-content: start; height: 100%; padding: 6px 0; box-sizing: border-box; font-size: 12px; min-height: 150px; }
 .af { display: grid; grid-template-columns: 178px minmax(0, 1fr) 110px; align-items: center; gap: 12px; padding: 0 14px; white-space: nowrap; }
 .af b { color: var(--text); font-weight: 600; } .af .it { margin-right: 8px; } .af .r { text-align: right; color: var(--muted); }
 .af-b { position: relative; height: 10px; display: flex; gap: 2px; }

@@ -164,7 +164,7 @@ export function gmSend(url, { method = 'GET', headers = {}, body = null, timeout
     const data = body == null ? undefined : typeof body === 'string' ? body : JSON.stringify(body);
     const head = { ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}), ...headers };
     if (typeof GM_xmlhttpRequest !== 'function') {
-        if (typeof fetch === 'function') return fetch(url, { method, headers: head, body: data }).then((r) => ({ ok: r.ok, status: r.status, json: () => r.json(), header: (name) => r.headers.get(name) }));
+        if (typeof fetch === 'function') return fetch(url, { method, headers: head, body: data }).then((r) => ({ ok: r.ok, status: r.status, json: () => r.json(), text: () => r.text(), header: (name) => r.headers.get(name) }));
         return Promise.reject(new Error('No HTTP transport available.'));
     }
     return new Promise((resolve, reject) => {
@@ -175,6 +175,7 @@ export function gmSend(url, { method = 'GET', headers = {}, body = null, timeout
                     ok: response.status >= 200 && response.status < 300,
                     status: response.status,
                     json: async () => JSON.parse(response.responseText),
+                    text: async () => String(response.responseText || ''),
                     header: (name) => gmHeader(response.responseHeaders, name),
                 });
             },

@@ -13,6 +13,12 @@
 // It never presses anything of Torn's. A Fill button of the box types a number into Torn's own box, only on
 // your press and only on the page you are looking at; you press Buy, EXCHANGE, ADD LISTING, Change and Accept.
 // The marks take no room and catch no click. Beside Torn Trading's own panel it is shown all the same.
+//
+// On a bazaar the box is a checklist: what to buy here, what you hold of each piece, and a tick the moment you
+// buy. The listings to buy are ringed as Torn Trading rings one. "Fill all" is one press of yours: from then on,
+// on that page, each listing's number is typed into its own quantity box - the ones that are open now, and each
+// other one as you open it or scroll to it (Torn draws only the listings near the screen, and the script never
+// scrolls for you). You press Buy on each. Typing sends nothing to Torn.
 
 import { gmGet, gmSet, gmOnChange, gmCopy, gmOpenTab } from '../platform/gm.js';
 import { MARKS_CSS } from './marks-css.js';
@@ -23,6 +29,7 @@ import { overlayStrips, overlaySide, overlayPlace, OV_WIDTH, OV_BAR, OV_GAP, OV_
 import { scanDom } from '../sources/dom/scan.js';
 import { setMark, clearSetMarks, museumExchanges, pieceTiles, pointsListing, tradeTheirRows, forumThread, boxTwins } from '../sources/dom/sets-pages.js';
 import { writeInputs } from '../sources/dom/fill.js';
+import { listingTile, buyBox } from '../sources/dom/buy-box.js';
 import { detectPage, PAGE_BAZAAR, PAGE_ITEM_MARKET, isTradePage, isMuseumPage, isPointsMarketPage, isForumPage, bazaarOwnerId, itemMarketUrl, tradeViewUrl, ARCHIVE_PAGE_URL } from '../sources/route.js';
 import { bazaarUrl } from '../core/feed.js';
 import { buildItemIndex } from '../core/items.js';
@@ -38,8 +45,15 @@ export const SHARED_NOTES_KEY = 'notes';
 export const NOTES_KEEP_MS = 10 * 60 * 1000;
 /** A view older than this says so instead of showing its numbers. */
 export const VIEW_OLD_MS = 15 * 60 * 1000;
-/** A press on a card's Buy counts for a card that then vanishes, for this long. */
-const TP_PRESS_MS = 20 * 1000;
+/**
+ * A press in a listing's tile counts for a listing that then vanishes, for this long (as Torn Trading's
+ * STOCK_PRESS_MS: typing a number, Buy, then Torn's own "are you sure" take longer than a few seconds).
+ */
+const TP_PRESS_MS = 90 * 1000;
+/** A buy seen here is shown on this page at once, until the hub's view holds it - or this long, if it never does. */
+const TP_PEND_MS = 3 * 60 * 1000;
+/** After a press on Torn's page it is looked at again this soon, and once more: Torn redraws in steps. */
+const TP_AFTER_PRESS_MS = [150, 700];
 const TP_SCAN_MS = 250;
 const TP_DONE_MS = 4000;
 /** Torn Trading's panel is looked at this often while it is on the page: it can be moved, folded, or come later. */
@@ -64,12 +78,14 @@ export function tornPageKind(href) {
     return '';
 }
 
-/** A note for the Archive's tab, added to the shared queue. */
+/** A note for the Archive's tab, added to the shared queue. @returns its id: the shared view names the notes it holds. */
 export function pushNote(tabId, kind, what, now = Date.now()) {
     const q = gmGet(SHARED_NOTES_KEY, []);
     const list = (Array.isArray(q) ? q : []).filter((n) => n && now - n.t < NOTES_KEEP_MS);
-    list.push({ id: tabId + ':' + now.toString(36) + ':' + Math.random().toString(36).slice(2, 6), t: now, kind, what });
+    const id = tabId + ':' + now.toString(36) + ':' + Math.random().toString(36).slice(2, 6);
+    list.push({ id, t: now, kind, what });
     gmSet(SHARED_NOTES_KEY, list.slice(-80));
+    return id;
 }
 
 /**
@@ -86,7 +102,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     const now = () => Date.now();
     const st = {
         shared: null, index: null, indexAt: 0, kind: '', href: '',
-        cards: [], seen: {}, seenPlace: '', pressed: new Map(),
+        cards: [], tiles: [], seen: {}, seenPlace: '', pressed: new Map(), images: 0,
+        // What this tab saw you buy here: `pend` until the hub's view holds it, `took` for as long as you stay.
+        pend: [], took: {}, fillAll: null, fill: [], said: new Set(),
         exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null,
         marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
         open: gmGet('boxOpen', true) !== false, openAny: gmGet('boxOpenAny', false) === true, pinned: false, room: true, timer: 0,
@@ -275,37 +293,121 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     }
 
     const note = (kind, what) => pushNote(tabId, kind, what, now());
+    /** One line for the hub's log (it is in the zip), said once per page of this tab: what the page was seen to hold. */
+    const say = (once, what, detail = '') => {
+        if (once) { if (st.said.has(once)) return; st.said.add(once); }
+        note('say', { what, detail });
+    };
 
     // ---- each page -----------------------------------------------------------------------------------------------
 
-    function cardBox(el) {
-        return el ? el.querySelector('input:not([type="hidden"]):not([type="checkbox"])') : null;
+    const cardKey = (c) => String(c.itemId) + '|' + Number(c.listingPrice);
+
+    /** The ring Torn Trading puts on a listing to buy, on ours: '' takes it off. */
+    function setRing(el, ring) {
+        if (!el || !el.classList) return;
+        if (!ring) {
+            if (el.classList.contains('tarc-buyhere')) { el.classList.remove('tarc-buyhere'); el.removeAttribute('data-tarc-ring'); }
+            return;
+        }
+        if (!el.classList.contains('tarc-buyhere')) el.classList.add('tarc-buyhere');
+        if (el.getAttribute('data-tarc-ring') !== ring) el.setAttribute('data-tarc-ring', ring);
+    }
+
+    /**
+     * A listing that is gone was bought by you only when you pressed in its tile a moment ago AND it would still be
+     * on the screen where it stood: Torn takes the listings you scroll away from out of the page itself, and a
+     * filter or a sort takes many out at once.
+     */
+    function pressedGone(t, images) {
+        const keys = new Set();
+        const many = st.images - images > 1;
+        for (const [k, p] of st.pressed) {
+            if (t - p.at > TP_PRESS_MS) { st.pressed.delete(k); continue; }
+            const top = p.top - (win.scrollY - p.y);
+            if (!many && top > -p.h && top < win.innerHeight) keys.add(k);
+        }
+        return keys;
+    }
+
+    /** Fill all, while it is on: each listing's number into its own open box, once (again only when the number changed and you left ours). */
+    function fillAllNow() {
+        const fa = st.fillAll;
+        if (!fa) return 0;
+        let typed = 0;
+        for (const f of st.fill) {
+            const input = st.tiles[f.i] ? st.tiles[f.i].input : null;
+            if (!input || !input.isConnected) continue;
+            const had = fa.done.get(input);
+            if (had && (had.n === f.n || tpDigits(input.value) !== had.n)) continue;
+            fa.done.set(input, { was: had ? had.was : input.value, n: f.n });
+            writeInputs(boxTwins(input), String(f.n));
+            typed += 1;
+        }
+        return typed;
+    }
+
+    function fillAllOff() {
+        const fa = st.fillAll;
+        st.fillAll = null;
+        if (!fa) return;
+        // Put back what was there, where the number is still ours.
+        for (const [input, rec] of fa.done) if (input.isConnected && tpDigits(input.value) === rec.n) writeInputs(boxTwins(input), rec.was);
     }
 
     function onBazaar(v, kind) {
         const place = kind === 'itemmarket' ? IM_PLACE : 'b:' + bazaarOwnerId(st.href);
+        const whoId = kind === 'itemmarket' ? '' : bazaarOwnerId(st.href);
         const { listings } = scanDom(kind === 'itemmarket' ? PAGE_ITEM_MARKET : PAGE_BAZAAR, doc, { index: st.index });
         st.cards = listings;
-        // What you took: a card's stock that dropped while you were here, or a card you pressed Buy on that is gone.
-        if (st.seenPlace !== place) { st.seen = {}; st.seenPlace = place; st.pressed.clear(); }
+        st.tiles = listings.map((c) => { const tile = listingTile(c.el); return { tile, input: buyBox(tile) }; });
         const t = now();
-        for (const [k, at] of st.pressed) if (t - at > TP_PRESS_MS) st.pressed.delete(k);
-        const r = stockBuys(st.seen, listings, new Set(st.pressed.keys()));
+        // Another place: nothing seen at the last one is carried over, and Fill all is off.
+        if (st.seenPlace !== place) { st.seen = {}; st.seenPlace = place; st.pressed.clear(); st.took = {}; st.said.clear(); st.images = 0; fillAllOff(); }
+        const images = doc.querySelectorAll('img[src*="/images/items/"]').length;
+        // What you took: a listing's stock that dropped while you were here, or a listing you pressed in that is gone.
+        const r = stockBuys(st.seen, listings, pressedGone(t, images));
         st.seen = r.seen;
+        st.images = images;
         for (const b of r.bought) {
-            st.pressed.delete(String(b.itemId) + '|' + Number(b.price));
-            note('buy', { t, id: String(b.itemId), qty: b.qty, price: b.price, whoId: kind === 'itemmarket' ? '' : bazaarOwnerId(st.href) });
+            const key = String(b.itemId) + '|' + Number(b.price);
+            const gone = !r.seen[key];
+            st.pressed.delete(key);
+            const id = String(b.itemId);
+            const nid = note('buy', { t, id, qty: b.qty, price: b.price, whoId });
+            st.pend.push({ nid, id, qty: b.qty, t });
+            st.took[id] = (st.took[id] || 0) + b.qty;
+            say('', `A buy seen on the page: ${b.qty} × ${b.name || 'item ' + id} at $${b.price}`, gone ? 'the listing was gone after your press in its tile' : 'the stock on its listing fell');
         }
-        const cards = listings.map((c) => {
-            const input = cardBox(c.el);
+        // Held by the hub's view now (it names the notes it has taken), or never taken: no longer added here.
+        const taken = new Set((st.shared && st.shared.notes) || []);
+        st.pend = st.pend.filter((p) => !taken.has(p.nid) && t - p.t < TP_PEND_MS);
+        const pend = {};
+        for (const p of st.pend) pend[p.id] = (pend[p.id] || 0) + p.qty;
+
+        const cards = listings.map((c, i) => {
+            const input = st.tiles[i].input;
             return { itemId: c.itemId, price: c.listingPrice, qty: c.qtyAssumed ? 0 : c.qty, typed: input ? tpDigits(input.value) : 0, hasBox: !!input };
         });
-        const out = boxBazaar(v, cards, place);
+        let out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: !!st.fillAll });
+        st.fill = out ? out.fill : [];
+        // Fill all is on: the boxes that are open now get their numbers, and the box says so in the same look.
+        if (st.fillAll && fillAllNow()) {
+            cards.forEach((c, i) => { const input = st.tiles[i].input; c.typed = input ? tpDigits(input.value) : 0; });
+            out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: true });
+        }
         const marks = new Map((out ? out.marks : []).map((m) => [m.i, m]));
         listings.forEach((c, i) => {
             const m = marks.get(i);
             setMark(c.el, m ? m.text : '', m ? m.state : '');
+            setRing(c.el, m ? m.ring : '');
         });
+        if (listings.length) {
+            const first = st.tiles[0];
+            say('cards', `A ${kind === 'itemmarket' ? 'page of the Item Market' : 'bazaar'}: ${listings.length} set piece${listings.length === 1 ? '' : 's'} on the page`, 'the tile around a listing: ' + (first.tile === listings[0].el ? 'the card itself' : (first.tile.className || first.tile.tagName)) + '; the card: ' + (String(listings[0].el.className || '').replace(/\s*tarc-\S+/g, '') || listings[0].el.tagName));
+            const open = st.tiles.find((x) => x.input);
+            if (open) say('box', 'A quantity box was found in a listing', 'its class: ' + (open.input.className || '(none)') + '; its type: ' + open.input.type);
+        }
         return out;
     }
 
@@ -384,9 +486,13 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     function clear() {
         if (st.marked) {
             clearSetMarks(doc);
+            for (const el of doc.querySelectorAll('.tarc-buyhere')) setRing(el, '');
             st.marked = false;
         }
+        fillAllOff();
         st.cards = [];
+        st.tiles = [];
+        st.fill = [];
         st.exchanges = [];
         st.listing = null;
         st.moneyBox = null;
@@ -442,15 +548,24 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         win.setTimeout(() => show(st.content), TP_DONE_MS + 50);
     }
 
+    const placeNow = () => (st.kind === 'itemmarket' ? IM_PLACE : 'b:' + bazaarOwnerId(st.href));
+    const openStop = (stop) => {
+        const first = stop.lines[0];
+        win.location.assign(stop.im ? itemMarketUrl(first.id, first.name) : bazaarUrl(stop.whoId, first.id, first.price));
+    };
+
     function goNext(v) {
         const stops = v.buy.run.stops;
-        const place = st.kind === 'itemmarket' ? IM_PLACE : 'b:' + bazaarOwnerId(st.href);
-        const at = stops.findIndex((s) => s.place === place);
+        const at = stops.findIndex((s) => s.place === placeNow());
         const next = at >= 0 ? stops[at + 1] || null : null;
         note('act', { name: 'run', args: ['next'] });
-        if (!next) return;
-        const first = next.lines[0];
-        win.location.assign(next.im ? itemMarketUrl(first.id, first.name) : bazaarUrl(next.whoId, first.id, first.price));
+        if (next) openStop(next);
+    }
+
+    /** The run's stop, from a page that is not it: opened on your press, and the run stays where it is. */
+    function goStop(v) {
+        const cur = v.buy.run.stops.find((s) => s.state === 'cur');
+        if (cur && cur.place !== placeNow()) openStop(cur);
     }
 
     function press(btn) {
@@ -467,11 +582,20 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (act === 'run-start') { note('act', { name: 'run', args: ['start'] }); done('run-start:'); return; }
         if (act === 'run-stop') { note('act', { name: 'run', args: ['stop'] }); return; }
         if (act === 'run-next') { goNext(v); return; }
+        if (act === 'run-go') { goStop(v); return; }
         // Fill: a number typed into Torn's own box, on this press. Nothing of Torn's is pressed.
-        if (act === 'fill-card') {
-            const card = st.cards[Number(val)];
-            const input = card && card.el && card.el.isConnected ? cardBox(card.el) : null;
-            if (input && n > 0) { writeInputs([input], String(n)); done('fill-card:' + val); later(0); }
+        if (act === 'fill-all') {
+            // On from this press, on this page only; a second press puts back what was there.
+            if (st.fillAll) fillAllOff();
+            else if (st.kind === 'bazaar' || st.kind === 'itemmarket') {
+                st.fillAll = { done: new Map() };
+                say('', 'Fill all pressed', `${st.fill.length} listing${st.fill.length === 1 ? '' : 's'} to type into, ${st.tiles.filter((x) => x.input).length} quantity box${st.tiles.filter((x) => x.input).length === 1 ? '' : 'es'} open`);
+            }
+            later(0);
+        } else if (act === 'fill-card') {
+            const tile = st.tiles[Number(val)];
+            const input = tile && tile.input && tile.input.isConnected ? tile.input : null;
+            if (input && n > 0) { writeInputs(boxTwins(input), String(n)); done('fill-card:' + val); later(0); }
         } else if (act === 'fill-money') {
             if (st.moneyBox && st.moneyBox.isConnected && tpDigits(val) > 0) { writeInputs(boxTwins(st.moneyBox), String(tpDigits(val))); done('fill-money:' + val); }
         } else if (act === 'fill-museum') {
@@ -498,11 +622,11 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (!yours(event) || !st.shared) return;
         const target = event.target;
         if (!target || !target.closest || target.closest('#tarc-host')) return;
-        // A press on a card's own button: the card may vanish because you bought it out.
+        // A press anywhere in a listing's tile (its Buy box is beside the card, not in it): the listing may vanish
+        // because you bought it out.
         if (st.kind === 'bazaar' || st.kind === 'itemmarket') {
-            const card = st.cards.find((c) => c.el && c.el.contains(target));
-            if (card && target.closest('button, [role="button"], input[type="submit"]')) st.pressed.set(String(card.itemId) + '|' + Number(card.listingPrice), now());
-            later(600);
+            pressIn(target);
+            for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
             return;
         }
         // A press of Torn's EXCHANGE, by you: told to the hub, which writes the points into your book at cost.
@@ -523,8 +647,23 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         }
     }
 
+    /** A press of yours in a listing's tile, remembered with where the tile stood. */
+    function pressIn(target) {
+        const i = st.cards.findIndex((c, k) => (st.tiles[k] && st.tiles[k].tile && st.tiles[k].tile.contains(target)) || (c.el && c.el.contains(target)));
+        if (i < 0) return false;
+        const r = (st.tiles[i].tile || st.cards[i].el).getBoundingClientRect();
+        st.pressed.set(cardKey(st.cards[i]), { at: now(), y: win.scrollY, top: r.top, h: r.height });
+        return true;
+    }
+
     function onKey(event) {
-        if (!yours(event) || (event.key !== 'n' && event.key !== 'N' && event.key !== '`')) return;
+        if (!yours(event)) return;
+        // Enter in a listing's box is a press there, as a click on its Buy is.
+        if (event.key === 'Enter' && (st.kind === 'bazaar' || st.kind === 'itemmarket') && event.target && event.target.closest && !event.target.closest('#tarc-host')) {
+            if (pressIn(event.target)) for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
+            return;
+        }
+        if (event.key !== 'n' && event.key !== 'N' && event.key !== '`') return;
         if (event.ctrlKey || event.metaKey || event.altKey) return;
         const el = event.target;
         if (el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName || ''))) return;
@@ -535,15 +674,21 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         }
         if (!st.shared || (st.kind !== 'bazaar' && st.kind !== 'itemmarket')) return;
         const v = st.shared.v;
-        const place = st.kind === 'itemmarket' ? IM_PLACE : 'b:' + bazaarOwnerId(st.href);
-        const here = v.buy.run.stops.find((s) => s.place === place);
+        const here = v.buy.run.stops.find((s) => s.place === placeNow());
         if (here && here.state === 'cur') goNext(v);
+        else goStop(v);
     }
 
     doc.addEventListener('click', onClick, true);
     doc.addEventListener('keydown', onKey, true);
     // A number typed into a card's box: its mark says at once when it is more than you need.
-    const onInput = () => { if (st.kind === 'bazaar' || st.kind === 'itemmarket') later(120); };
+    const onInput = (event) => {
+        if (st.kind !== 'bazaar' && st.kind !== 'itemmarket') return;
+        // Typed by you outside every listing (the bazaar's own search): listings that go now were filtered, not bought.
+        const el = event.target;
+        if (yours(event) && el && el.closest && !el.closest('#tarc-host') && !st.tiles.some((x) => x.tile && x.tile.contains(el))) st.pressed.clear();
+        later(120);
+    };
     doc.addEventListener('input', onInput, true);
 
     // ---- when to look again ---------------------------------------------------------------------------------------
@@ -608,6 +753,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             win.removeEventListener('popstate', onHash);
             win.removeEventListener('resize', onResize);
             clearSetMarks(doc);
+            for (const el of doc.querySelectorAll('.tarc-buyhere')) setRing(el, '');
             host.remove();
             style.remove();
         },

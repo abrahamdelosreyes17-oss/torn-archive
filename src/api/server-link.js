@@ -6,21 +6,27 @@
  * nothing): an older server keeps one list a person, and a sync from Torn Archive would overwrite what Torn
  * Trading told it. Such a server is never synced with.
  *
- * With no address and password saved, none of this runs and nothing is sent. The password is kept in
- * Tampermonkey's storage like a key: it goes to that one address in a header, is never shown again, and is in no
- * log and no zip.
+ * The server's address is built into the released copy (build.mjs), and with nothing typed Torn Archive says
+ * whose copy it is instead of a password (core/server.js serverClaim): the server lets it in on the PC where
+ * that person's Torn Trading runs, and turns everyone else away - they are asked again a few times a day, and
+ * nothing but the Torn id was said. An address and password typed in an older copy still go first. The password
+ * is kept in Tampermonkey's storage like a key: it goes to that one address in a header, is never shown again,
+ * and is in no log and no zip.
  *
  * Everything it touches is passed in (storage, the request, the clock), so it runs whole in the tests against
  * the server's own code.
  */
 
 import {
-    SERVER_SYNC_MS, SERVER_PAGE, serverAddress, serverPassOk, serverBody, serverOutgoingOk, serverKnowsApps, serverGrantIn, serverPerson, serverUse,
+    SERVER_SYNC_MS, SERVER_PAGE, serverAddress, serverPassOk, serverBody, serverOutgoingOk, serverKnowsApps, serverGrantIn, serverPerson, serverUse, serverClaim,
 } from '../core/server.js';
+import { usageCallsOut, usageCallsSent } from '../core/usage.js';
 
 export const SERVER_CONFIG_KEY = 'server.config';
 export const SERVER_STATE_KEY = 'server.state';
 export const SERVER_GRANT_KEY = 'server.grant';
+/** This PC's request counts waiting to be sent (core/usage.js usageCallsAdd). */
+export const SERVER_CALLS_KEY = 'server.calls';
 const SL_MAX_PAGES = 5;
 /** What the pieces are worth is said again when it changed, and at least this often. */
 const SL_WORTH_EVERY_MS = 10 * 60000;
@@ -28,6 +34,8 @@ const SL_WORTH_EVERY_MS = 10 * 60000;
 const SL_HELLO_EVERY_MS = 6 * 60 * 60000;
 /** A server that turned Torn Archive away (password, too old, wants an update) is tried again this often. */
 export const SERVER_RETRY_MS = 5 * 60000;
+/** A server that does not know this PC (core/server.js serverClaim) is asked again after this long: each time later. */
+export const SERVER_ADDRESS_RETRY_MS = [5 * 60000, 15 * 60000, 60 * 60000, 6 * 60 * 60000];
 /** Calls held back for the server's part: an exchange is asked for sooner, but never closer than this. */
 const SL_SOON_MS = 6000;
 
@@ -48,6 +56,8 @@ export class ServerLink {
      * @param {() => {seq: number, seenAt: number}} d.getMark - how far the server's reads were taken
      * @param {(answer: object, got: number) => void} d.take - one answer, for the engine to fold in
      * @param {() => void} d.forget - what was kept of the server goes (its address or password changed)
+     * @param {string} [d.home] - the server's address built into this copy ('' = none: the boxes in Settings)
+     * @param {() => string} [d.getId] - your Torn id, once Torn has said it
      * @param {() => void} [d.onChange]
      * @param {() => number} [d.now]
      */
@@ -56,17 +66,30 @@ export class ServerLink {
         this.now = d.now || (() => Date.now());
         this.busy = false;
         this.soon = false;
+        this.again = false;
         this.grantKept = undefined;
         this.worthJson = '';
         this.worthAt = 0;
     }
 
-    /** { address, pass }, or null when the server is off. */
+    /** { address, pass, own }, or null when the server is off. own: nothing was typed - the built-in address, as whoever Torn says you are. */
     config() {
         const c = this.d.load(SERVER_CONFIG_KEY);
         const address = c ? serverAddress(c.address) : null;
-        return address && serverPassOk(c.pass) ? { address, pass: c.pass } : null;
+        if (address && serverPassOk(c.pass)) return { address, pass: c.pass, own: false };
+        const home = serverAddress(this.d.home);
+        const claim = home ? serverClaim(this.d.getId ? this.d.getId() : '') : null;
+        return claim ? { address: home, pass: claim, own: true } : null;
     }
+
+    /** Is this PC one of the server's - so that what it asks is counted for it? Not while the server turns it away. */
+    on() {
+        const cfg = this.config();
+        return Boolean(cfg) && !(cfg.own && this.state().why === 'address');
+    }
+
+    /** Something changed that may let a turned-away copy in (this page just opened, Torn Trading came on): ask now, not at the next try. */
+    wake() { this.again = true; }
 
     /** Your part of your Torn limit as the server last gave it (null = on its own). */
     grant() {
@@ -98,7 +121,7 @@ export class ServerLink {
 
     /** The server is switched off, or its address or password changed: what was kept under the old one goes. */
     forget() {
-        for (const key of [SERVER_CONFIG_KEY, SERVER_STATE_KEY, SERVER_GRANT_KEY]) this.d.del(key);
+        for (const key of [SERVER_CONFIG_KEY, SERVER_STATE_KEY, SERVER_GRANT_KEY, SERVER_CALLS_KEY]) this.d.del(key);
         this.grantKept = null;
         this.worthJson = '';
         this.worthAt = 0;
@@ -114,11 +137,12 @@ export class ServerLink {
         if (!cfg || this.busy) return false;
         const now = this.now();
         const before = this.state();
-        if (before.retryAt && now < before.retryAt) return false;
+        if (before.retryAt && now < before.retryAt && !(this.again && before.why === 'address')) return false;
         const since = now - (before.syncAt || 0);
         if (since < SERVER_SYNC_MS && !(this.soon && since >= SL_SOON_MS)) return false;
         this.busy = true;
         this.soon = false;
+        this.again = false;
         try {
             await this.exchange(cfg, before);
         } finally {
@@ -145,7 +169,7 @@ export class ServerLink {
             if (!before.helloOk || !(startedAt - (before.helloAt || 0) < SL_HELLO_EVERY_MS)) {
                 state.helloOk = false;
                 const hello = await this.d.send(`${cfg.address}/state`, { method: 'GET', headers: auth });
-                if (hello.status === 404) throw slWhy('password', 'The server does not know this password.');
+                if (hello.status === 404) throw this.unknown(cfg);
                 if (!hello.ok) throw new Error(`The server answered with status ${hello.status}.`);
                 if (!serverKnowsApps(await hello.json())) throw slWhy('old', 'This server keeps one list a person: it has to be updated first.');
                 state.helloOk = true;
@@ -159,11 +183,13 @@ export class ServerLink {
                 const mark = this.d.getMark() || {};
                 const worthJson = JSON.stringify(serverBody({ want, pieces: this.d.pieces, sendWorth: true }).worth);
                 const sendWorth = page === 0 && (worthJson !== this.worthJson || now - this.worthAt >= SL_WORTH_EVERY_MS || born === null);
-                const body = serverBody({ ver: this.d.version, used: use.used, waiting: use.waiting, want, pieces: this.d.pieces, since: mark.seq, seen: mark.seenAt, sendWorth, now });
+                // What this PC asked of TornW3B and Torn since the last answered exchange: with the first page only.
+                const callsOut = page === 0 ? usageCallsOut(this.d.load(SERVER_CALLS_KEY), now) : null;
+                const body = serverBody({ ver: this.d.version, used: use.used, waiting: use.waiting, want, pieces: this.d.pieces, since: mark.seq, seen: mark.seenAt, sendWorth, now, calls: callsOut });
                 if (!serverOutgoingOk(body, this.d.pieces)) throw new Error('Not sent: the message was not in the agreed shape.');
 
                 const response = await this.d.send(`${cfg.address}/sync`, { method: 'POST', headers: auth, body });
-                if (response.status === 404) throw slWhy('password', 'The server does not know this password.');
+                if (response.status === 404) throw this.unknown(cfg);
                 if (response.status === 426) {
                     // Turned away until Torn Archive is updated. Its Torn use is still counted there, so its part still holds.
                     const said = await response.json().catch(() => null);
@@ -176,6 +202,13 @@ export class ServerLink {
                 const grant = this.keepGrant(answer, got);
                 if (!answer || typeof answer !== 'object' || !grant) throw new Error('The server answered with something else.');
 
+                if (body.calls) {
+                    // Answered: what was sent comes off the sum. Not answered, it stays and goes with the next one.
+                    const sum = Object.values(body.calls).reduce((a, n) => a + n, 0);
+                    if (sum) this.d.save(SERVER_CALLS_KEY, usageCallsSent(this.d.load(SERVER_CALLS_KEY), body.calls, got));
+                    state.callsOut = (Number.isInteger(state.callsOut) ? state.callsOut : 0) + sum;
+                    state.callsSyncs = (Number.isInteger(state.callsSyncs) ? state.callsSyncs : 0) + 1;
+                }
                 if (sendWorth) {
                     this.worthJson = worthJson;
                     this.worthAt = now;
@@ -198,27 +231,39 @@ export class ServerLink {
                 state.beside = (Array.isArray(answer.beside) ? answer.beside : []).filter((name) => typeof name === 'string' && /^[a-z][a-z0-9-]{1,23}$/.test(name)).slice(0, 8);
                 state.besideAt = got;
                 state.whole = use.whole;
+                state.turned = 0;
                 if (!Array.isArray(answer.reads) || answer.reads.length < SERVER_PAGE) break;
             }
         } catch (error) {
             state.error = String(error && error.message ? error.message : error).slice(0, 160);
             state.why = (error && error.why) || null;
             state.needVer = (error && error.needVer) || null;
-            if (state.why) state.retryAt = startedAt + SERVER_RETRY_MS;
+            if (state.why === 'address') {
+                // Not one of the server's PCs: asked again later each time, a few times a day in the end.
+                state.turned = Math.min(99, (Number.isInteger(before.turned) ? before.turned : 0) + 1);
+                state.retryAt = startedAt + SERVER_ADDRESS_RETRY_MS[Math.min(state.turned, SERVER_ADDRESS_RETRY_MS.length) - 1];
+            } else if (state.why) state.retryAt = startedAt + SERVER_RETRY_MS;
         }
         state.born = born;
         this.d.save(SERVER_STATE_KEY, state);
         if (this.d.onChange) this.d.onChange();
     }
 
-    /** For Settings (core/server.js serverLines). The password is not in it. */
+    /** The server said 404: a typed password it does not know, or - with nothing typed - a PC it does not serve. */
+    unknown(cfg) {
+        return cfg.own ? slWhy('address', 'The server does not serve this PC.') : slWhy('password', 'The server does not know this password.');
+    }
+
+    /** For Settings (core/server.js serverLines). The password is not in it, nor the built-in address. */
     status(now = this.now()) {
         const cfg = this.config();
         const typed = this.d.load(SERVER_CONFIG_KEY) || {};
         const state = cfg ? this.state() : {};
         return {
             on: Boolean(cfg),
-            address: cfg ? cfg.address : null,
+            own: Boolean(cfg && cfg.own),
+            builtIn: Boolean(serverAddress(this.d.home)),
+            address: cfg && !cfg.own ? cfg.address : null,
             typed: String(typed.address || ''),
             hasPass: serverPassOk(typed.pass),
             okAt: state.okAt || null,
@@ -236,6 +281,8 @@ export class ServerLink {
             people: Number.isInteger(state.people) ? state.people : null,
             peopleOn: Array.isArray(state.on) ? state.on : [],
             you: state.you || null,
+            callsOut: Number.isInteger(state.callsOut) ? state.callsOut : 0,
+            callsSyncs: Number.isInteger(state.callsSyncs) ? state.callsSyncs : 0,
             now,
         };
     }

@@ -320,7 +320,7 @@ test('the page of our own: its address, with or without the last slash or index.
 
 test('the marks\' CSS and the finders agree on every name, and nothing of Torn Bids\' is left in it', () => {
     assert.equal(typeof MARKS_CSS, 'string');
-    for (const cls of [FLOAT_CLASS, ROW_FLOAT_CLASS, SET_MARK_CLASS, SET_FILL_CLASS, 'tarc-toast', 'tarc-hit', 'tarc-target']) {
+    for (const cls of [FLOAT_CLASS, ROW_FLOAT_CLASS, SET_MARK_CLASS, SET_FILL_CLASS, 'tarc-toast', 'tarc-hit', 'tarc-target', 'tarc-buyhere']) {
         assert.ok(cls.startsWith('tarc-'), cls);
         assert.ok(MARKS_CSS.includes('.' + cls + ' {') || MARKS_CSS.includes('.' + cls + '.') || MARKS_CSS.includes('.' + cls + '['), cls + ' has a rule');
     }

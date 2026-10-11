@@ -43,6 +43,15 @@ export const BOX_CSS = `
 .ta-b h4 span { margin-left: auto; color: var(--muted); font-weight: 400; font-size: 12px; }
 .ta-l { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; padding: 6px 8px; border-radius: 9px; background: var(--raised); border: 1px solid var(--line); }
 .ta-l b { font-weight: 600; } .ta-l .s { grid-column: 1 / -1; color: var(--muted); font-size: 12px; } .ta-l.dim b { color: var(--muted); font-weight: 500; }
+/* A checklist line: the tick, then the piece; under it what you hold of it against your target. */
+.ta-l .lead { display: inline-flex; align-items: center; gap: 7px; }
+.tk { width: 16px; height: 16px; flex: none; display: grid; place-items: center; border-radius: 5px; border: 1.5px solid var(--line2); color: transparent; font: 700 11px/1 var(--sans); }
+.ta-l.done { background: none; } .ta-l.done b { color: var(--text2); font-weight: 500; } .ta-l.done .num { color: var(--good); }
+.ta-l.done .tk { background: var(--good); border-color: transparent; color: #0b130d; }
+.ta-l.away { background: none; border-style: dashed; } .ta-l.away b { color: var(--text2); }
+.ta-l .hold { display: flex; align-items: center; gap: 8px; white-space: nowrap; } .ta-l .hold b { color: var(--text2); }
+.bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
+.bar i { display: block; height: 100%; width: var(--w); border-radius: 2px; background: var(--need); transition: width .3s ease; } .bar.full i { background: var(--good); }
 .it { width: 38px; height: 19px; flex: none; display: inline-grid; place-items: center; }
 .it img { width: 38px; height: 19px; object-fit: contain; display: block; }
 .ta-kv { display: flex; align-items: baseline; gap: 10px; font-size: 12px; color: var(--muted); }

@@ -9,11 +9,14 @@
  * is never synced with (serverKnowsApps).
  *
  * What may be sent is made here and checked here on the way out: player ids, item ids, prices, counts and ages.
- * No name, no key, nothing about your inventory, your money or your books.
+ * No name, no key, nothing about your inventory, your money or your books. And, since 1.2.0, how many requests this
+ * PC made of TornW3B and Torn since the last exchange, by what for (`calls`: counts only - core/usage.js).
  *
  * With no address and password saved none of this runs. With the server silent, what it said ages out and
  * Torn Archive works alone, as before.
  */
+
+import { USAGE_CALLS_TAG, USAGE_CALLS_TAGS_MAX, USAGE_CALLS_COUNT_MAX } from './usage.js';
 
 /** The name Torn Archive gives itself: the server keeps each app's lists under it. */
 export const SERVER_APP = 'torn-archive';
@@ -37,7 +40,7 @@ const SV_MAX_SELLERS = 3000;
 const SV_MAX_NEAR = 200;
 const SV_MAX_BOUGHT = 200;
 const SV_MAX_DIR = 300;
-const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need'];
+const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need', 'calls'];
 /** The server's read of the points market or of a piece's Item Market is used while it is no older than this. */
 export const SERVER_MARKET_FRESH_MS = 3 * 60000;
 const SV_MAX_ROWS = 20;
@@ -55,6 +58,17 @@ export function serverAddress(typed) {
 
 /** A password as the server's set-up makes them: letters and digits, 24 or more. */
 export const serverPassOk = (pass) => typeof pass === 'string' && /^[A-Za-z0-9]{24,200}$/.test(pass);
+
+/**
+ * What Torn Archive says to the server built into it when nothing was typed: whose copy this is. Torn Archive
+ * holds no Public key, so it cannot say a key's word as Torn Trading does. This is no secret: the server lets it
+ * in only from the address where that person's Torn Trading last said its real word, and only for Torn
+ * Archive's own exchange (the server's ARCHIVE_CLAIM).
+ */
+export function serverClaim(id) {
+    const n = /^\d{1,10}$/.test(String(id ?? '')) ? Number(id) : 0;
+    return n > 0 ? 'TornArchiveSameAddress' + String(n).padStart(10, '0') : null;
+}
 
 /** A version as the server takes it. */
 export const serverVersion = (v) => (typeof v === 'string' && /^[0-9A-Za-z.+-]{1,40}$/.test(v) ? v : '');
@@ -120,8 +134,10 @@ export function serverUse(own, { tradingOn = false, beside = [], besideAt = 0, n
  * @param o.want  { sellers: [bazaar], looking: [bazaar], worth: { piece: dollars }, bought: [{ whoId, id, qty, price, t }], dir: [[piece, read at]] }
  * @param o.pieces  the piece ids (strings): nothing else is ever named in `worth`, `bought` or `dir`
  * `worth` is left out unless sendWorth: the server keeps the last one said.
+ * @param o.calls  { tag: n } - this PC's requests since the last answered exchange (usageCallsOut); {} = on and
+ *   nothing asked; null = not said with this message
  */
-export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, now = 0 } = {}) {
+export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, now = 0, calls = null } = {}) {
     const count = (n) => (Number.isFinite(n) && n > 0 ? Math.min(1000, Math.floor(n)) : 0);
     const mine = new Set((pieces || []).map(String));
     const w = want && typeof want === 'object' ? want : {};
@@ -169,6 +185,12 @@ export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces 
         }
         body.worth = worth;
     }
+    if (calls && typeof calls === 'object' && !Array.isArray(calls)) {
+        body.calls = {};
+        for (const [tag, n] of Object.entries(calls).slice(0, USAGE_CALLS_TAGS_MAX)) {
+            if (USAGE_CALLS_TAG.test(tag) && Number.isFinite(n) && n >= 1) body.calls[tag] = Math.min(USAGE_CALLS_COUNT_MAX, Math.floor(n));
+        }
+    }
     return body;
 }
 
@@ -196,6 +218,9 @@ export function serverOutgoingOk(body, pieces = []) {
             if (!Array.isArray(value) || !value.every((m) => Array.isArray(m) && m.length === 2 && m.every(whole) && mine.has(String(m[0])))) return false;
         } else if (key === 'bought') {
             if (!Array.isArray(value) || !value.every((m) => Array.isArray(m) && m.length === 5 && m.every(whole) && m[0] > 0 && mine.has(String(m[1])) && m[2] > 0)) return false;
+        } else if (key === 'calls') {
+            if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > USAGE_CALLS_TAGS_MAX) return false;
+            for (const [tag, n] of Object.entries(value)) if (!USAGE_CALLS_TAG.test(tag) || !Number.isInteger(n) || n < 1 || n > USAGE_CALLS_COUNT_MAX) return false;
         } else if (key === 'worth') {
             if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
             for (const [item, price] of Object.entries(value)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
@@ -378,7 +403,11 @@ const svClock = (at) => { const d = new Date(at); return String(d.getHours()).pa
  */
 export function serverLines(st, now) {
     const off = { on: false, level: 'off', now: st && (st.typed || st.hasPass) ? 'Off until the address and the password are both saved. Torn Archive works alone.' : 'Off. Torn Archive works alone.', key: null, split: null, bazaars: 0 };
+    // Built in, nothing to type: it waits only for Torn to say who you are.
+    if (st && !st.on && st.builtIn) return { ...off, level: 'idle', now: 'Asks the server once Torn has said who you are.' };
     if (!st || !st.on) return off;
+    // Not one of the server's PCs (or not yet): no fault of yours, and nothing for you to do.
+    if (st.why === 'address') return { ...off, level: 'alone', now: 'Working alone. The shared server serves the people its owner added, on the PC where their Torn Trading runs. Torn Archive asks again by itself.' };
     const out = { on: true, level: 'ok', now: '', key: null, split: null, bazaars: st.bazaars || 0 };
     const alone = ' · working alone';
     if (st.why === 'password') return { ...out, level: 'bad', now: 'The server does not know this password. Ask whoever runs your server for yours.' };

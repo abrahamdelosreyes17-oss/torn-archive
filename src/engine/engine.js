@@ -5,13 +5,14 @@
 
 import {
     engineLoad, ENGINE_PARTS, ENGINE_PIECES, BACKFILL_MS, foldItems, foldSummary, foldListings, foldMarket, foldShop, foldBids, foldPoints, foldMoney,
-    foldInventory, foldLog, foldLogTypes, outLogTypes, logTypesAsked, foldTradeList, foldTradeOpen, foldTradeFinished, tradeHasPieces, foldThreads,
+    foldInventory, foldLog, foldLogTypes, outLogTypes, logTypeGroups, foldTradeList, foldTradeOpen, foldTradeFinished, tradeHasPieces, foldThreads,
     foldOwnList, foldReceipt, recordDay, engineInput, offersOf, noteSeenBuy, noteSwap, noteThread, mvOf, foldServer, serverEmpty,
 } from './state.js';
 import { serverShop, serverListReadAt, serverMarketIn, SERVER_QUIET_MS, SERVER_BOUGHT_MS, SERVER_SYNC_MS } from '../core/server.js';
 import { archiveView, viewPiece, setsTraded, ALL_PIECE_IDS } from '../core/view.js';
 import { fillPlan, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE } from '../core/shopping.js';
 import { hotSince } from '../core/verdict.js';
+import { stockAge } from '../core/stock.js';
 import { pointsLogTypes } from '../core/points.js';
 import { desiredList, listDiff, listMatches, putBody, receiptBody, readReceipt, receiptsByTrade } from '../core/tw3b-list.js';
 import { tradeNotice } from '../core/trades.js';
@@ -26,9 +27,15 @@ const EG_DAY = 86400000;
 
 /** How often each thing is read. The pieces' prices follow the setting (1, 2, 5 or 10 minutes). */
 export const READ_EVERY = Object.freeze({
-    self: 6 * EG_HOUR, items: EG_HOUR, types: 7 * EG_DAY, log: 2 * EG_MIN, finished: 5 * EG_MIN, inventory: EG_HOUR,
+    self: 6 * EG_HOUR, items: EG_HOUR, types: 7 * EG_DAY, log: 2 * EG_MIN, finished: 5 * EG_MIN, inventory: 5 * EG_MIN,
     money: EG_MIN, points: EG_MIN, trades: EG_MIN, thread: 10 * EG_MIN, ownList: 10 * EG_MIN, receipts: 30 * EG_MIN, bids: 6 * EG_HOUR,
 });
+// The inventory: everything else is worked out from it, so it is asked before anything that can wait ('high').
+// Torn counts it once an hour for each category and its answer says when it counted: it is asked again the moment
+// that hour is over (EG_INV_AFTER_MS past it), when you make a list or start a run, a little after a buy, and
+// every five minutes besides - two requests each time.
+const EG_INV_AFTER_MS = 5000;
+const EG_INV_AFTER_BUY_MS = 30000;
 /** A read that failed is tried again after this long. */
 export const RETRY_MS = EG_MIN;
 /** A piece you do not need is priced this many times less often than one you do. */
@@ -46,6 +53,13 @@ const EG_HISTORY_WAIT_MS = 3 * EG_MIN;
 /** Log pages read in one go, and finished trades read in full in one go. */
 const EG_LOG_PAGES = 5;
 const EG_TRADES_FULL = 8;
+/** A finished trade gets its receipt by itself this long after it ended (TornW3B lets a receipt be put right for 6 hours). */
+const EG_RECEIPT_WITHIN_MS = 6 * EG_HOUR;
+/** ... tried this many times at most, this far apart. */
+const EG_RECEIPT_TRIES = 3;
+const EG_RECEIPT_GAP_MS = 5 * EG_MIN;
+/** A read TornW3B refuses outright (401, 403) is not asked again every minute. */
+const EG_REFUSED_RETRY_MS = 30 * EG_MIN;
 /** Bazaars confirmed with Torn itself each round: the stops of your list and the cheapest places first. */
 const EG_SHOPS = 12;
 const EG_SYNC_GAP_MS = 2 * EG_MIN;
@@ -101,7 +115,7 @@ export function makeEngine(env) {
     function view() {
         const now = env.now();
         if (cache && now - cache.at < 5000) return cache.view;
-        const v = archiveView(engineInput(S, settings(), now));
+        const v = archiveView(engineInput(S, settings(), now, { logRead: logRead() }));
         const hot = hotSince(S.hot, v.buy.hot, now);
         if (JSON.stringify(hot) !== JSON.stringify(S.hot)) { S.hot = hot; dirty.add('hot'); }
         cache = { at: now, view: v };
@@ -135,7 +149,8 @@ export function makeEngine(env) {
             .then(fn)
             .catch((error) => {
                 // Refused here (paused, or our own limit): not a problem, asked again when there is room.
-                due[name] = env.now() + (egLocal(error) && error.retryAt ? Math.max(5000, error.retryAt - env.now()) : RETRY_MS);
+                const refused = error && (error.http === 401 || error.http === 403);
+                due[name] = env.now() + (egLocal(error) && error.retryAt ? Math.max(5000, error.retryAt - env.now()) : refused ? Math.max(RETRY_MS, Math.min(every, EG_REFUSED_RETRY_MS)) : RETRY_MS);
                 if (egLocal(error)) return;
                 if (key) keyFailed(key, error);
                 sayOnce(name + '-failed', 'Could not read: ' + name, egMsg(error));
@@ -179,9 +194,16 @@ export function makeEngine(env) {
 
     async function readInventory() {
         // Where Torn wants a category named, only the two that hold set pieces are asked for.
-        const rows = await fetchInventory(env.torn, { categories: ['Plushie', 'Flower'], byCategoryFirst: true });
-        foldInventory(S, rows, env.now());
+        let tornAt = 0;
+        const rows = await fetchInventory(env.torn, { categories: ['Plushie', 'Flower'], byCategoryFirst: true, priority: 'high', onStamp: (sec) => { tornAt = tornAt ? Math.min(tornAt, sec * 1000) : sec * 1000; } });
+        const had = S.stock.tornAt || 0;
+        foldInventory(S, rows, env.now(), tornAt);
         touch('stock');
+        tidyList();
+        // Torn's next count, asked for as it is made.
+        const age = stockAge(S.stock);
+        if (age.nextAt > env.now()) due.inventory = Math.min(due.inventory || Infinity, age.nextAt + EG_INV_AFTER_MS);
+        if (tornAt && tornAt !== had && env.say) env.say('note', 'Torn counted your items at ' + new Date(tornAt).toISOString().slice(11, 19) + ' UTC', age.tornAt ? null : 'that time is not trusted until a second read carries the same one');
     }
 
     // ---- your log and your trades ---------------------------------------------------------------------------------------
@@ -197,30 +219,42 @@ export function makeEngine(env) {
 
     async function readLog() {
         const now = env.now();
-        const types = logTypesAsked(S.types);
+        // A few kinds in a request, each sort by itself (state.js logTypeGroups says why).
+        const groups = logTypeGroups(S.types);
         const use = { tag: 't.setslog', priority: 'low' };
         const gap = S.log.gap || null;
         const from = gap ? gap.from : S.log.from || Math.floor((now - BACKFILL_MS) / 1000);
         const priceNow = S.points.listings.length ? S.points.listings[0].cost : 0;
-        let to = gap ? gap.to : null;
+        const got = { ...(S.log.got || {}) };
         let newest = S.log.newest || 0;
-        for (let page = 0; page < EG_LOG_PAGES; page++) {
-            const rows = await fetchLogPage(env.full, { from, to, types, use });
-            const res = foldLog(S, rows, { now, priceNow });
-            for (const u of res.unread) sayOnce('log-row-' + u.type, 'A log row of type ' + u.type + ' ("' + u.title + '") could not be read', 'its data has: ' + u.keys.join(', '));
-            newest = Math.max(newest, res.newest);
-            // A full page: older rows of the same stretch wait behind it.
-            if (rows.length < 100 || !res.oldest) { to = null; break; }
-            to = res.oldest - 1;
+        let pages = 0;
+        // Where this go stopped short: the request it was on, and how far back it had come.
+        let left = null;
+        for (let g = gap && gap.g < groups.length ? gap.g : 0; g < groups.length && !left; g++) {
+            let to = gap && gap.g === g ? gap.to : null;
+            for (;;) {
+                if (pages >= EG_LOG_PAGES) { left = { g, to }; break; }
+                pages += 1;
+                const rows = await fetchLogPage(env.full, { from, to, types: groups[g].ids, use });
+                const res = foldLog(S, rows, { now, priceNow });
+                for (const u of res.unread) sayOnce('log-row-' + u.type, 'A log row of type ' + u.type + ' ("' + u.title + '") could not be read', 'its data has: ' + u.keys.join(', '));
+                newest = Math.max(newest, res.newest);
+                got[groups[g].name] = (got[groups[g].name] || 0) + rows.length;
+                // A full page: older rows of the same stretch wait behind it.
+                if (rows.length < 100 || !res.oldest) break;
+                to = res.oldest - 1;
+            }
         }
         // Bought at a stop of the run: counted there.
         countRun();
-        if (to != null) {
+        if (left) {
             // More rows in this stretch than one go reads: the next go carries on from here, at once.
-            S.log = { ...S.log, gap: { from, to }, newest, at: now };
+            S.log = { ...S.log, gap: { from, to: left.to, g: left.g }, newest, got, at: now };
             due.log = 0;
         } else {
-            S.log = { ...S.log, gap: null, newest, from: newest || from, until: now, at: now, backfilled: true };
+            S.log = { ...S.log, gap: null, newest, got, from: newest || from, until: now, at: now, backfilled: true };
+            // Once per page load, for the zip: what Torn's log has brought, by sort.
+            sayOnce('log-read', 'Your log, read through', groups.map((x) => x.name).filter((n, i, a) => a.indexOf(n) === i).map((n) => n + ': ' + (got[n] || 0) + ' rows').join(' · '));
         }
         touch('log', 'book', 'ledger', 'outs', 'stock', 'run');
     }
@@ -229,14 +263,20 @@ export function makeEngine(env) {
         const now = env.now();
         const use = { tag: 't.setslog', priority: 'normal' };
         const list = await fetchTradesOpen(env.torn, { use });
+        // The first look ever tells of nothing: those trades were open before Torn Archive was there.
+        const first = !(S.trades.seen && S.trades.seen.began) || !Array.isArray(S.trades.told);
         const res = foldTradeList(S, list, now);
         touch('trades', 'names');
         if (res.closed.length) due.finished = 0;
-        const fresh = new Set(res.fresh.map((t) => t.id));
+        if (!Array.isArray(S.trades.told)) S.trades = { ...S.trades, told: [] };
         for (const id of res.read.slice(0, EG_TRADES_FULL)) {
-            const t = foldTradeOpen(S, await fetchTrade(env.torn, id, use));
+            const t = foldTradeOpen(S, await fetchTrade(env.torn, id, use), env.now());
             touch('trades');
-            if (!t || !fresh.has(id) || !tradeHasPieces(t)) continue;
+            // Told of once, when its pieces are in - which is after it was opened, often minutes after.
+            if (!t || !tradeHasPieces(t) || S.trades.told.includes(id)) continue;
+            S.trades = { ...S.trades, told: [...S.trades.told, id].slice(-400) };
+            if (first) continue;
+            cache = null;
             const shown = view().trades.open.find((x) => x.id === id);
             env.notify({ ...tradeNotice(t, shown ? shown.items : t.theirs.length, shown ? shown.total : 0), tradeId: id });
         }
@@ -383,14 +423,43 @@ export function makeEngine(env) {
         }, null);
     }
 
-    /** The list against the newest listings: what is gone or no longer worth it comes off; nothing is ever added. */
+    /**
+     * The list against the newest listings and your stock: what is gone, no longer worth it or already bought
+     * comes off; nothing is ever added. While a run is on, a line keeps what you took on it until Next.
+     */
     function tidyList() {
         if (!S.cart.length) return;
         cache = null;
         const v = view();
-        const res = refreshList(S.cart, v.pieces, (id) => offersOf(S, id, env.now()));
+        const took = S.run.on ? (key) => (S.run.took || {})[key] : null;
+        const res = refreshList(S.cart, v.pieces, (id) => offersOf(S, id, env.now()), took);
         if (res.dropped.length || JSON.stringify(res.cart) !== JSON.stringify(S.cart)) { S.cart = res.cart; touch('cart'); }
+        // Every line gone under a run (sold to someone else, or dear now): there is nowhere left to go.
+        if (!S.cart.length && S.run.on) { S.run = { ...RUN_IDLE }; touch('run'); }
     }
+
+    /**
+     * "Sets to build from my cash" is worked out from your money, and your money moves with every buy and sale. So
+     * the number is kept as it was when the list was made, for as long as there is a list - and worked out afresh
+     * when the list is made again, is empty, or a setting it rests on changes.
+     */
+    function planKeep() {
+        const s = settings();
+        const key = JSON.stringify([s.targetMode, s.which, s.pct, s.shareMax]);
+        const none = () => { if (S.plan.targets) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); } };
+        if (!S.cart.length || s.targetMode === 'number') { none(); return; }
+        if (S.plan.targets && S.plan.key === key) return;
+        none();
+        const v = view();
+        if (!v.ready) return;
+        const targets = {};
+        for (const p of v.pieces) targets[p.set] = p.target;
+        S.plan = { targets, at: env.now(), key };
+        touch('plan');
+    }
+
+    /** Your log is read (a Full key Torn takes): a buy seen on a page waits for its log row. Else the page is all there is. */
+    const logRead = () => keyOk('full') && keyState.full.ok === true;
 
     /** What you bought since the run began, counted on its lines: from the pages you bought on and from Torn's log. */
     function countRun() {
@@ -432,6 +501,7 @@ export function makeEngine(env) {
     async function readReceipts() {
         const rows = await env.own.receipts();
         setKeyState('w3b', { ok: true, error: '' });
+        if (S.w3b.receiptsError) S.w3b = { ...S.w3b, receiptsError: '' };
         const known = new Set(S.w3b.receipts.map(([, r]) => String(r.id)));
         let read = 0;
         for (const r of rows) {
@@ -460,12 +530,52 @@ export function makeEngine(env) {
         touch('w3b');
     }
 
-    function w3bFailed(error) {
+    /** @param what 'list' (your price list: shown on its panel) or 'receipts' (shown with the receipts) */
+    function w3bFailed(error, what = 'list') {
         if (egLocal(error)) return;
         if (error && error.http === 401) setKeyState('w3b', { ok: false, error: 'TornW3B does not know this key' });
-        S.w3b = { ...S.w3b, error: egMsg(error) };
+        S.w3b = { ...S.w3b, [what === 'receipts' ? 'receiptsError' : 'error']: egMsg(error) };
         touch('w3b');
-        env.say('note', 'TornW3B: your own list or receipts', egMsg(error));
+        // Once for each thing it said: the request itself is in the log every time it fails.
+        sayOnce('w3b-' + what + '-' + egMsg(error), what === 'receipts' ? 'TornW3B: your receipts' : 'TornW3B: your own list', egMsg(error) + (error && error.said ? ' · it said: ' + error.said : ''));
+    }
+
+    /** A receipt for one finished trade, made on TornW3B from your list there. */
+    function makeReceipt(id) {
+        const f = S.trades.finished.find((x) => x.id === id);
+        if (!f || flags.receipt) return;
+        flags.receipt = id;
+        env.own.makeReceipt(receiptBody(id, f.rows || [], f.whoId))
+            .then((json) => {
+                const r = readReceipt(json, f.paid);
+                foldReceipt(S, id, r, env.now());
+                touch('w3b');
+                if (!r.ok) env.say('note', "TornW3B's receipt differs from what you paid", 'trade ' + id + ': theirs ' + r.total + ', yours ' + f.paid + (r.missing.length ? ', not on your list: ' + r.missing.join(', ') : ''));
+            })
+            .catch((e) => w3bFailed(e, 'receipts'))
+            .finally(() => { flags.receipt = null; flush(); env.changed(); });
+    }
+
+    /**
+     * A trade that just finished gets its receipt by itself - once your list on TornW3B holds a price for each of
+     * its pieces, since TornW3B makes the receipt from that list. Older trades keep their button.
+     */
+    function autoReceipt(now) {
+        if (flags.receipt || !S.w3b.list) return;
+        const have = new Set(S.w3b.receipts.map(([id]) => id));
+        const listed = new Map(S.w3b.list);
+        const tried = S.w3b.tried || {};
+        for (const f of S.trades.finished) {
+            if (have.has(f.id) || !(now - f.t < EG_RECEIPT_WITHIN_MS)) continue;
+            const t = tried[f.id] || { n: 0, at: 0 };
+            if (t.n >= EG_RECEIPT_TRIES || now - t.at < EG_RECEIPT_GAP_MS) continue;
+            if (!(f.rows || []).length || !(f.rows || []).every((r) => listed.has(String(r.id)))) continue;
+            const kept = Object.fromEntries(Object.entries(tried).filter(([, x]) => now - x.at < 2 * EG_RECEIPT_WITHIN_MS));
+            S.w3b = { ...S.w3b, tried: { ...kept, [f.id]: { n: t.n + 1, at: now } } };
+            touch('w3b');
+            makeReceipt(f.id);
+            return;
+        }
     }
 
     // ---- the loop ---------------------------------------------------------------------------------------------------------
@@ -480,17 +590,19 @@ export function makeEngine(env) {
         run('items', READ_EVERY.items, readItems);
         if (!S.items.at) return;
         const s = settings();
+        planKeep();
         const full = keyOk('full');
+        // Your inventory first: once the count has begun nothing is asked ahead of it.
+        // (It begins after the history is in: your newest buys say what the pieces cost.)
+        const fullPending = full && keyState.full.ok == null;
+        const history = S.ledger.tradesBackfilled && !fullPending && (!(full && keyState.full.ok) || S.log.backfilled);
+        if (history || S.stock.invAt || now - started > EG_HISTORY_WAIT_MS) run('inventory', READ_EVERY.inventory, readInventory);
         if (full && keyState.full.ok == null) run('fullKey', READ_EVERY.self, readFullKey, { key: 'full' });
         if (full && keyState.full.ok) {
             if (now - S.types.at > READ_EVERY.types) run('types', RETRY_MS, readTypes);
             if (S.types.at) run('log', READ_EVERY.log, readLog, { key: 'full' });
         }
         run('finished', READ_EVERY.finished, readFinished);
-        // The count starts from Torn's inventory, after the history is in: your newest buys say what the pieces cost.
-        const fullPending = full && keyState.full.ok == null;
-        const history = S.ledger.tradesBackfilled && !fullPending && (!(full && keyState.full.ok) || S.log.backfilled);
-        if (history || S.stock.invAt || now - started > EG_HISTORY_WAIT_MS) run('inventory', READ_EVERY.inventory, readInventory);
         run('money', READ_EVERY.money, readMoney);
         run('points', READ_EVERY.points, readPoints);
         run('trades', READ_EVERY.trades, readTrades);
@@ -509,7 +621,8 @@ export function makeEngine(env) {
     function stepOwn(now) {
         if (!keyOk('w3b') || !S.self.id) return;
         run('ownList', READ_EVERY.ownList, () => readOwnList().catch((e) => { w3bFailed(e); throw e; }), { key: null });
-        run('receipts', READ_EVERY.receipts, () => readReceipts().catch((e) => { w3bFailed(e); throw e; }), { key: null });
+        run('receipts', READ_EVERY.receipts, () => readReceipts().catch((e) => { w3bFailed(e, 'receipts'); throw e; }), { key: null });
+        autoReceipt(now);
         const s = settings();
         if (!s.w3bSync || !S.w3b.list || flags.w3b || now - syncAt < EG_SYNC_GAP_MS) return;
         const v = view();
@@ -627,11 +740,12 @@ export function makeEngine(env) {
             touch('cart', 'run');
         },
         drop(key) { S.cart = dropLine(S.cart, key); idle(); touch('cart', 'run'); },
-        makeList() { const v = view(); S.cart = fillPlan(v.pieces, (id) => offersOf(S, id, env.now())); idle(); touch('cart', 'run'); },
+        // A list is made from the count as it stands, and Torn is asked for its own at once: the list follows it.
+        makeList() { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); S.cart = fillPlan(v.pieces, (id) => offersOf(S, id, env.now())); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
         clearList() { S.cart = []; idle(); touch('cart', 'run'); },
         run(op) {
             const list = stops();
-            if (op === 'start') S.run = { ...runStart(list), began: env.now() };
+            if (op === 'start') { S.run = { ...runStart(list), began: env.now() }; due.inventory = 0; if (logRead()) due.log = 0; }
             else if (op === 'stop') idle();
             else {
                 countRun();
@@ -651,26 +765,13 @@ export function makeEngine(env) {
             flags.w3b = true;
             (op === 'send' ? sendList() : readOwnList()).catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
         },
-        receipt(tradeId) {
-            const id = String(tradeId);
-            const f = S.trades.finished.find((x) => x.id === id);
-            if (!f || flags.receipt) return;
-            flags.receipt = id;
-            env.own.makeReceipt(receiptBody(id, f.rows || [], f.whoId))
-                .then((json) => {
-                    const r = readReceipt(json, f.paid);
-                    foldReceipt(S, id, r, env.now());
-                    touch('w3b');
-                    if (!r.ok) env.say('note', "TornW3B's receipt differs from what you paid", 'trade ' + id + ': theirs ' + r.total + ', yours ' + f.paid + (r.missing.length ? ', not on your list: ' + r.missing.join(', ') : ''));
-                })
-                .catch(w3bFailed)
-                .finally(() => { flags.receipt = null; flush(); env.changed(); });
-        },
+        receipt(tradeId) { makeReceipt(String(tradeId)); },
     };
 
     function act(name, ...args) {
         if (!actions[name]) return false;
         actions[name](...args);
+        planKeep();
         flush();
         env.changed();
         return true;
@@ -679,8 +780,17 @@ export function makeEngine(env) {
     /** What a Torn page saw: a buy on a bazaar, a press of EXCHANGE, your thread's title. */
     function note(kind, what) {
         const now = env.now();
-        if (kind === 'buy') { noteSeenBuy(S, what, now); countRun(); touch('seen', 'run'); }
-        else if (kind === 'swap') { noteSwap(S, what, now); touch('swaps', 'book'); }
+        if (kind === 'buy') {
+            // What you took is in your stock at once, and off the list (or ticked on it, while a run is on).
+            if (noteSeenBuy(S, what, now, { noLog: !logRead() })) {
+                touch('seen', 'stock');
+                countRun();
+                tidyList();
+                // The log has it within a minute or two: asked for now, not at its next turn.
+                if (logRead()) due.log = Math.min(due.log || 0, now + 20000);
+                due.inventory = Math.min(due.inventory || 0, now + EG_INV_AFTER_BUY_MS);
+            }
+        } else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); }
         else if (kind === 'thread') { noteThread(S, what, now); touch('thread'); }
         flush();
         env.changed();

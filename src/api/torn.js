@@ -319,14 +319,14 @@ export function isCategoryError(error) {
 }
 
 /** Every page of one inventory request (with or without a category). */
-async function fetchInventoryPages(client, params, limit) {
+async function fetchInventoryPages(client, params, limit, { priority = 'normal', onStamp = null } = {}) {
     const out = [];
     let offset = 0;
 
     for (let page = 0; page < 40; page += 1) {
         let data;
         try {
-            data = await client.get('v2/user/inventory', { ...params, limit, offset }, { tag: 't.inventory', priority: 'normal' });
+            data = await client.get('v2/user/inventory', { ...params, limit, offset }, { tag: 't.inventory', priority });
         } catch (error) {
             if (error && Number(error.code) === TORN_ERROR_ACCESS_LEVEL) {
                 throw new TornApiError('This key cannot read your inventory: it needs Limited access.', {
@@ -337,6 +337,9 @@ async function fetchInventoryPages(client, params, limit) {
         }
 
         out.push(...parseInventoryPage(data));
+        // The time Torn's answer carries (seconds), handed on as it came: how old Torn's count is, if it says.
+        const stamp = Number(data && data.inventory && data.inventory.timestamp);
+        if (onStamp && Number.isFinite(stamp) && stamp > 0) onStamp(stamp);
 
         const next = nextInventoryOffset(data);
         if (next === null || next <= offset) break;
@@ -363,25 +366,30 @@ async function fetchInventoryPages(client, params, limit) {
  * spent every hour; only when Torn knows none of them is the whole inventory
  * asked for, and a refusal of that is an error - never an empty inventory.
  *
+ * `priority` ('normal' unless said): Torn Archive asks 'high' - its whole count
+ * stands on this read. `onStamp(seconds)`: told the time each page of Torn's
+ * answer carries, when it carries one.
+ *
  * @returns {Promise<Array>} rows from parseInventoryPage, every page
  */
-export async function fetchInventory(client, { limit = 250, categories = TORN_INVENTORY_CATEGORIES, byCategoryFirst = false } = {}) {
+export async function fetchInventory(client, { limit = 250, categories = TORN_INVENTORY_CATEGORIES, byCategoryFirst = false, priority = 'normal', onStamp = null } = {}) {
+    const how = { priority, onStamp };
     if (byCategoryFirst) {
         const rows = [];
         let known = 0;
         for (const cat of categories) {
             try {
-                rows.push(...(await fetchInventoryPages(client, { cat }, limit)));
+                rows.push(...(await fetchInventoryPages(client, { cat }, limit, how)));
                 known += 1;
             } catch (error) {
                 if (!isCategoryError(error)) throw error;
             }
         }
         if (known === categories.length) return rows;
-        return fetchInventoryPages(client, {}, limit);
+        return fetchInventoryPages(client, {}, limit, how);
     }
     try {
-        return await fetchInventoryPages(client, {}, limit);
+        return await fetchInventoryPages(client, {}, limit, how);
     } catch (error) {
         if (!isCategoryError(error)) throw error;
     }
@@ -389,7 +397,7 @@ export async function fetchInventory(client, { limit = 250, categories = TORN_IN
     const out = [];
     for (const cat of categories) {
         try {
-            out.push(...(await fetchInventoryPages(client, { cat }, limit)));
+            out.push(...(await fetchInventoryPages(client, { cat }, limit, how)));
         } catch (error) {
             if (!isCategoryError(error)) throw error;
         }

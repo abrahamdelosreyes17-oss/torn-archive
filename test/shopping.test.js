@@ -113,3 +113,18 @@ test('a fresh read: gone and dear lines come off, a line shrinks to the stock', 
     const enough = refreshList(cart, [{ ...panda, need: 6 }, crocus], offersOf);
     assert.ok(enough.dropped.some((d) => d.why === 'enough'));
 });
+
+test('a run is on: a line keeps what you took on it, though your need and the listing both fell by it', () => {
+    const line = { key: '274|b:11', id: 274, name: 'Panda Plushie', set: 'plushie', place: 'b:11', im: false, who: 'Bram', whoId: 11, price: 34000, q: 6 };
+    // You bought all 6: Bram's listing is gone and you need 4 more. Off a run the line goes; on one it stays, taken.
+    assert.deepEqual(refreshList([line], [{ ...panda, need: 4 }], () => []).cart, []);
+    const kept = refreshList([line], [{ ...panda, need: 4 }], () => [], () => 6);
+    assert.deepEqual(kept.cart.map((l) => [l.key, l.q]), [['274|b:11', 6]]);
+    assert.deepEqual(kept.dropped, []);
+    // You took 2 of the 6: the 4 left on the listing are still to buy.
+    const part = refreshList([line], [{ ...panda, need: 8 }], () => [{ price: 34000, qty: 4, src: 'bazaar', who: 'Bram', whoId: 11 }], () => 2);
+    assert.deepEqual(part.cart.map((l) => [l.key, l.q]), [['274|b:11', 6]]);
+    // Took 2, and someone else bought the rest: the line is what you took, and nothing more.
+    const rest = refreshList([line], [{ ...panda, need: 8 }], () => [], () => 2);
+    assert.deepEqual(rest.cart.map((l) => [l.key, l.q]), [['274|b:11', 2]]);
+});

@@ -103,10 +103,13 @@ export function archiveView(i) {
     const room = settings.shareMax > 0 ? Math.max(0, share.total * settings.shareMax / 100 - share.inSets) : Infinity;
     const budget = cash == null ? null : Math.min(cash, room);
     const auto = settings.targetMode === 'number' ? null : autoTargets(on, heldOf, budget, (id) => ratePrice(mv(id), settings.pct));
+    // While a list is on hand, the sets it was made for stay: your money moves with every buy and sale (and Torn
+    // says so a minute before your stock does), and a list whose numbers move under you cannot be bought.
+    const kept = auto && i.kept ? i.kept : null;
     for (const set of on) {
         const heldMap = heldOf(set);
         const rate = rateSet(set, mv, settings.pct, pointsPrice, settings.least);
-        const target = auto ? auto[set.key] : settings.target;
+        const target = kept && Number.isInteger(kept[set.key]) ? kept[set.key] : auto ? auto[set.key] : settings.target;
         const stock = setStock(set, heldMap, target);
         const value = setValue(set, pointsPrice);
         const ladder = setLadder(set, offersOf);
@@ -202,7 +205,9 @@ export function archiveView(i) {
     const mineTurn = open.filter((t) => t.state === 'you');
     const trades = {
         open, wait: mineTurn.length, waitMoney: vwSum(mineTurn, (t) => t.total),
-        finished: (i.finished || []).slice(0, 60).map((f) => ({ ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt: receipts.get(String(f.id)) || null })),
+        // listed: your list on TornW3B has a price for each of its pieces - a receipt is made from that list.
+        finished: (i.finished || []).slice(0, 60).map((f) => ({ ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt: receipts.get(String(f.id)) || null, listed: !!(i.w3b && i.w3b.list) && (f.rows || []).length > 0 && (f.rows || []).every((r) => i.w3b.list.has(String(r.id))) })),
+        receiptsError: (i.w3b && i.w3b.receiptsError) || '',
     };
 
     // ---- points ------------------------------------------------------------------------------------------------------
@@ -291,7 +296,7 @@ export function archiveView(i) {
         at: now,
         ready: i.stockAt > 0 && pieces.some((p) => p.mv > 0),
         settings,
-        top: { points: pointsPrice, cheap, usual: level, onHand: money.onHand == null ? null : vwWhole(money.onHand), vault: money.vault == null ? null : vwWhole(money.vault), pricesAt: i.pricesAt || 0, pointsAt: i.pointsAt || 0, stockAt: i.stockAt || 0 },
+        top: { points: pointsPrice, cheap, usual: level, onHand: money.onHand == null ? null : vwWhole(money.onHand), vault: money.vault == null ? null : vwWhole(money.vault), pricesAt: i.pricesAt || 0, pointsAt: i.pointsAt || 0, stockAt: i.stockAt || 0, stock: i.stock || null },
         nav: { full: fullAll, need: pieces.filter((p) => p.need > 0).length, trades: open.length, hot: trades.wait > 0 },
         shop: { open: settings.open, pct: settings.pct, state: verdict.state, lamp: verdict.lamp },
         sets, pieces, buy, trades, points, prices, ledger,

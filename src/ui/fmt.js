@@ -23,6 +23,8 @@ export function hWhen(t) {
     const d = new Date(t);
     return d.getUTCDate() + ' ' + H_MONTHS[d.getUTCMonth()] + ', ' + hTwo(d.getUTCHours()) + ':' + hTwo(d.getUTCMinutes());
 }
+/** Torn's time of day (UTC): "21:40". */
+export const hClock = (t) => (t > 0 ? hTwo(new Date(t).getUTCHours()) + ':' + hTwo(new Date(t).getUTCMinutes()) : '');
 /** A day as the books keep it ("2026-10-09"), or a time: "9 Oct". */
 export function hDay(day) {
     const d = typeof day === 'number' ? new Date(day) : new Date(String(day) + 'T00:00:00Z');

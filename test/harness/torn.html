@@ -6,9 +6,15 @@
   #mainContainer { width: 976px; margin: 0 auto; padding: 16px 0 80px; }
   h1 { font-size: 18px; color: #ddd; }
   .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .itemTile { padding: 14px 10px 10px; background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 4px; }
-  .itemTile img { width: 60px; height: 30px; object-fit: contain; display: block; }
-  .itemTile input { width: 60px; background: #1b1b1b; border: 1px solid #444; color: #ccc; }
+  /* One listing as Torn's bazaar is believed to draw it: the tile, in it the card (picture, name, price, stock and
+     the button that opens the buy menu), and BESIDE the card the buy menu with the quantity box and Buy. */
+  .item___h { background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 4px; }
+  .itemDescription___h { padding: 14px 10px 10px; }
+  .itemDescription___h img { width: 60px; height: 30px; object-fit: contain; display: block; }
+  .itemDescription___h p { margin: 4px 0; }
+  .buyMenu___h { display: none; gap: 6px; align-items: center; padding: 8px 10px; border-top: 1px solid #3a3a3a; background: #232323; }
+  .item___h.open .buyMenu___h { display: flex; }
+  .buyMenu___h input { width: 70px; background: #1b1b1b; border: 1px solid #444; color: #ccc; padding: 3px 6px; }
   button, .btn { background: #555; color: #eee; border: 0; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
   .trade-cont { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .trade-cont ul { list-style: none; margin: 0; padding: 0; }
@@ -27,6 +33,7 @@
 <!--
   Torn Archive's box and marks on stand-in Torn pages (made-up desk, test/fixture-view.js). Nothing is asked of Torn.
     ?page=bazaar&userId=N   a bazaar (the first stop of a made list when userId is left out)   &run=1  a run started
+                            &away=1  one listing of the list is not on the page (further down, or sold)
     ?page=bazaar&im=1       stands in for the Item Market
     ?page=trade#step=view&ID=N   a trade (&money=1: the add-money step)
     ?page=museum   ?page=pmarket   ?page=forum#/p=threads&t=N
@@ -65,22 +72,26 @@ if (page === 'bazaar') {
     const stop = q.get('userId') ? stops.find((s) => String(s.whoId) === q.get('userId')) : stops.find((s) => !s.im);
     if (!q.get('userId') && stop && !q.has('im')) { q.set('userId', stop.whoId); history.replaceState(null, '', '?' + q.toString() + location.hash); }
     // The stop's own lines, two pieces that are not on the list, and one item that is no set piece.
-    const lines = stop ? stop.lines.map((l) => ({ id: l.id, name: l.name, price: l.price, qty: l.q + 3 })) : [];
+    // The first line is the whole listing (buying it takes the listing off the page), the others have more.
+    const lines = stop ? stop.lines.slice(q.has('away') ? 1 : 0).map((l, i) => ({ id: l.id, name: l.name, price: l.price, qty: i === 0 ? l.q : l.q + 3 })) : [];
     const extra = view.pieces.filter((p) => !lines.some((l) => String(l.id) === String(p.id))).slice(0, 3).map((p, i) => ({ id: p.id, name: p.name, price: Math.round(p.worth * (i === 0 ? 0.9 : 1.2)), qty: 5 }));
     const cards = [...lines, ...extra, { id: 206, name: 'Xanax', price: 830000, qty: 2 }];
     main.innerHTML = `<h1>${q.has('im') ? 'Item Market' : esc((stop && stop.who) || 'Someone') + "'s Bazaar"}</h1><div class="tiles">` + cards.map((c) =>
-        `<div class="itemTile" data-id="${c.id}">${pic(c.id)}<p class="name___x">${esc(c.name)}</p><p>${money(c.price)}</p><p class="stock">(${c.qty} in stock)</p><input type="text" value=""> <button aria-label="Buy: ${esc(c.name)}">Buy</button></div>`).join('') + '</div>';
-    // "Buy" on the stand-in takes what is typed off the stock, as Torn's page would after the purchase.
+        `<div class="item___h" data-id="${c.id}"><div class="itemDescription___h" data-testid="item-description">${pic(c.id)}<p class="name___x">${esc(c.name)}</p><p>${money(c.price)}</p><p class="stock">(${c.qty} in stock)</p><button class="open" aria-label="Buy: ${esc(c.name)}">Open the buy menu</button></div>`
+        + `<div class="buyMenu___h"><input class="input-money buyAmountInput___h" type="text" value="1"> <button class="buy___h">Buy</button></div></div>`).join('') + '</div>';
+    // The stand-in's own buttons: the menu opens, and "Buy" takes what is typed off the stock, as Torn's page would
+    // after the purchase (a listing bought out leaves the page).
     main.addEventListener('click', (e) => {
-        const b = e.target.closest('button[aria-label^="Buy"]');
-        if (!b) return;
-        const card = b.closest('.itemTile');
-        const typed = Number(card.querySelector('input').value.replace(/\D/g, '')) || 0;
-        const stock = card.querySelector('.stock');
+        const tile = e.target.closest('.item___h');
+        if (!tile) return;
+        if (e.target.closest('button.open')) { tile.classList.toggle('open'); return; }
+        if (!e.target.closest('button.buy___h')) return;
+        const input = tile.querySelector('input');
+        const typed = Number(input.value.replace(/\D/g, '')) || 0;
+        const stock = tile.querySelector('.stock');
         const left = Number(stock.textContent.replace(/\D/g, '')) - typed;
-        if (typed <= 0) return;
-        if (left <= 0) card.remove(); else stock.textContent = `(${left} in stock)`;
-        card.querySelector('input') && (card.querySelector('input').value = '');
+        if (typed <= 0 || left < 0) return;
+        if (left <= 0) tile.remove(); else { stock.textContent = `(${left} in stock)`; input.value = '1'; }
     });
 } else if (page === 'trade') {
     const id = (location.hash.match(/ID=(\d+)/) || [])[1];

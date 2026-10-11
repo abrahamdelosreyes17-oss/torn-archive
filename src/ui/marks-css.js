@@ -9,8 +9,8 @@
  * tarc- (they were ttv2- there). No token variable is used: every colour is
  * written out, as it was; --tarc-fr is set by float.js and has its fallback.
  *
- * Left behind in PAGE_CSS (Torn Bids' own): the buying-run marks (buyhere,
- * buybar), the trade page's send rows and their Fill, the bazaar owner's
+ * Left behind in PAGE_CSS (Torn Bids' own): the buying-run strip on a card
+ * (buybar; its ring came over as tarc-buyhere in 1.2.0), the trade page's send rows and their Fill, the bazaar owner's
  * status, the asking-price chips (bztag, bzchips, bzsell), the price boxes'
  * tones, the Fill button of your bazaar and the Item Market (fillbox, fillbtn,
  * fillmark, filltag, fillset) and the chat mark.
@@ -222,6 +222,32 @@ export const MARKS_CSS = `
 .tarc-setmark[data-state="bad"] { border-color: rgba(255, 120, 120, 0.6); background: #3a1414; color: #ffc9c9; }
 .tarc-setmark[data-state="good"] { border-color: rgba(111, 220, 127, 0.55); background: #12301a; color: #b9f3c2; }
 
+/*
+ * A listing to buy for your sets, ringed as Torn Trading rings the listing to buy for a trade (the same blue,
+ * the same glow). Paint only: nothing of Torn's card is sized or moved.
+ *   data-tarc-ring="top"   on your list: the full ring and its glow
+ *   data-tarc-ring="need"  a piece you need, under its worth, not on the list: thinner, no glow
+ *   data-tarc-ring="over"  you are typing more than you need: amber
+ */
+.tarc-buyhere {
+    position: relative !important;
+    box-shadow:
+        inset 0 0 0 2px #5aa7ff,
+        inset 0 0 0 9999px rgba(90, 167, 255, 0.12),
+        0 0 14px rgba(90, 167, 255, 0.35) !important;
+    transition: box-shadow 0.15s ease;
+}
+.tarc-buyhere[data-tarc-ring="need"] {
+    box-shadow:
+        inset 0 0 0 1px #5aa7ff,
+        inset 0 0 0 9999px rgba(90, 167, 255, 0.06) !important;
+}
+.tarc-buyhere[data-tarc-ring="over"] {
+    box-shadow:
+        inset 0 0 0 2px #f6b74a,
+        inset 0 0 0 9999px rgba(246, 183, 74, 0.1) !important;
+}
+
 /* Fill beside Torn's own box on the museum and the points market: it types, you press Torn's button. */
 .tarc-setfill {
     top: 50%;
@@ -338,6 +364,6 @@ export const MARKS_CSS = `
 @media (prefers-reduced-motion: reduce) {
     .tarc-toast { animation: none !important; }
     .tarc-trader.tarc-trader.tarc-trader[data-tarc-trader-old]::after { animation: none !important; }
-    .tarc-hit { transition: none !important; }
+    .tarc-hit, .tarc-buyhere { transition: none !important; }
 }
 `;

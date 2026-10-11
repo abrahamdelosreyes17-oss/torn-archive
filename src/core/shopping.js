@@ -63,9 +63,14 @@ export const dropLine = (cart, key) => (cart || []).filter((l) => l.key !== key)
 /**
  * The list checked against a fresh read: a line whose listing is gone, or no longer under its worth, comes off;
  * one with less stock or less need shrinks. Nothing is ever added here.
+ *
+ * `tookOf` (a run is on): line key -> units you took on that line since the run began. They are in your stock
+ * now, so the piece's need and the listing's stock both fell by them; the line keeps them, and says "took 5 of
+ * 5" until Next - it does not shrink to nothing under you. A line you took from stays even when its listing is
+ * gone or dear now: what is left of it is then nothing more to buy.
  * @returns { cart, dropped: [{ key, name, why: 'gone' | 'dear' | 'enough' }] }
  */
-export function refreshList(cart, pieces, offersOf) {
+export function refreshList(cart, pieces, offersOf, tookOf = null) {
     const byId = new Map((pieces || []).map((p) => [String(p.id), p]));
     const out = [];
     const dropped = [];
@@ -73,15 +78,18 @@ export function refreshList(cart, pieces, offersOf) {
     for (const l of cart || []) {
         const p = byId.get(String(l.id));
         const offer = ((offersOf && offersOf(l.id)) || []).filter((o) => placeOf(o) === l.place && shWhole(o.qty) > 0).sort((a, b) => a.price - b.price)[0];
+        const took = Math.min(shWhole(l.q), shWhole(tookOf ? tookOf(l.key) : 0));
         const had = taken.get(String(l.id)) || 0;
         const need = p ? shWhole(p.need) - had : 0;
+        const dear = !p || !(p.worth > 0) || (offer && offer.price >= p.worth);
+        if (took && (!offer || dear || need <= 0)) { out.push({ ...l, q: took }); continue; }
         if (!offer) dropped.push({ key: l.key, name: l.name, why: 'gone' });
-        else if (!p || !(p.worth > 0) || offer.price >= p.worth) dropped.push({ key: l.key, name: l.name, why: 'dear' });
+        else if (dear) dropped.push({ key: l.key, name: l.name, why: 'dear' });
         else if (need <= 0) dropped.push({ key: l.key, name: l.name, why: 'enough' });
         else {
-            const q = Math.min(shWhole(l.q), shWhole(offer.qty), need);
-            taken.set(String(l.id), had + q);
-            out.push({ ...l, price: shWhole(offer.price), q, who: offer.who || l.who, whoId: offer.whoId ?? l.whoId });
+            const more = Math.min(shWhole(l.q) - took, shWhole(offer.qty), need);
+            taken.set(String(l.id), had + more);
+            out.push({ ...l, price: shWhole(offer.price), q: took + more, who: offer.who || l.who, whoId: offer.whoId ?? l.whoId });
         }
     }
     return { cart: out, dropped };

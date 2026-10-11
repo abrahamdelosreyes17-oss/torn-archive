@@ -3,7 +3,7 @@
 // changed, and gives the whole thing to the view (core/view.js) through engineInput().
 
 import { SETS, isSetItem, setOfItem, setByKey, isBuyingTitle } from '../core/sets.js';
-import { STOCK_EMPTY, stockApply, stockInventory, stockHeld, eventsFromRows } from '../core/stock.js';
+import { STOCK_EMPTY, stockApply, stockInventory, stockHeld, stockAge, eventsFromRows, eventFromSeen } from '../core/stock.js';
 import { parsePointsMarket, listPrice, recordPrice, bookAdd, bookSettle, entryFromLog } from '../core/points.js';
 import { lotsRead, LOTS_EMPTY } from '../core/lots.js';
 import { poolSetCost } from '../core/books.js';
@@ -44,7 +44,7 @@ const EN_NAMES_KEPT = 1500;
 const EN_LOTS_READ = 300;
 
 /** The parts of the state, each stored under its own name: only what changed is written. */
-export const ENGINE_PARTS = ['self', 'items', 'stock', 'seen', 'swaps', 'offers', 'summary', 'shops', 'bids', 'points', 'money', 'book', 'types', 'log', 'ledger', 'outs', 'trades', 'cart', 'run', 'hot', 'thread', 'w3b', 'hist', 'names', 'server'];
+export const ENGINE_PARTS = ['self', 'items', 'stock', 'seen', 'swaps', 'offers', 'summary', 'shops', 'bids', 'points', 'money', 'book', 'types', 'log', 'ledger', 'outs', 'trades', 'cart', 'plan', 'run', 'hot', 'thread', 'w3b', 'hist', 'names', 'server'];
 
 export function engineEmpty() {
     return {
@@ -64,12 +64,14 @@ export function engineEmpty() {
         log: { from: 0, until: 0, at: 0, backfilled: false, madeRead: false },
         ledger: { rows: [], mugs: [], tradeIds: [], tradesFrom: 0, tradesAt: 0, tradesBackfilled: false },
         outs: [],
-        trades: { open: [], at: 0, seen: null, finished: [], full: {} },
+        trades: { open: [], at: 0, seen: null, finished: [], full: {}, told: null },
         cart: [],
+        // How many sets the list on hand was made for ("from my cash"): kept while the list is, see engine planKeep.
+        plan: { targets: null, at: 0, key: '' },
         run: { ...RUN_IDLE },
         hot: {},
         thread: null,
-        w3b: { list: null, listAt: 0, receipts: [], receiptsAt: 0, lastReceiptAt: 0, error: '' },
+        w3b: { list: null, listAt: 0, receipts: [], receiptsAt: 0, lastReceiptAt: 0, error: '', receiptsError: '', tried: {} },
         hist: { low: {}, pays: [], share: [] },
         names: {},
         server: serverEmpty(),
@@ -294,12 +296,12 @@ export function foldMoney(S, m, now) {
  * Torn's inventory (api/torn.js fetchInventory's rows). The first read starts the count: what happened before it is
  * history, and the units held stand at what your newest buys of them cost (the rest at the market value).
  */
-export function foldInventory(S, rows, now) {
+export function foldInventory(S, rows, now, tornAt = 0) {
     const inv = {};
     for (const r of mergeInventory(rows)) inv[String(r.id)] = r.qty;
     const mv = mvOf(S);
     const first = !(S.stock.invAt > 0);
-    let stock = stockInventory(S.stock, inv, now, ENGINE_PIECES, mv);
+    let stock = stockInventory(S.stock, inv, now, ENGINE_PIECES, mv, tornAt);
     if (first) {
         const pool = {};
         for (const id of ENGINE_PIECES) {
@@ -321,21 +323,55 @@ export function foldInventory(S, rows, now) {
     S.stock = stock;
 }
 
-/** A buy you were seen making on a bazaar page: counted at once, until the log has been read past it. */
-export function noteSeenBuy(S, buy, now) {
-    if (!buy || !EN_PIECE_SET.has(String(buy.id)) || !(enWhole(buy.qty) > 0)) return;
-    S.seen = [...S.seen.filter((b) => now - b.t < 6 * EN_HOUR), { t: enNum(buy.t) || now, id: String(buy.id), qty: enWhole(buy.qty), whoId: buy.whoId ? String(buy.whoId) : '', price: enWhole(buy.price) }].slice(-200);
+/**
+ * A buy you were seen making on a bazaar page: counted at once.
+ * While your log is read it waits beside the count until the log has been read past it (the log has it then).
+ * `noLog` (no Full key, so no log): it goes into the count itself, once, as a log row would - Torn's inventory
+ * may be an hour behind, and adding it on top for hours would count it twice once the inventory has it.
+ * @returns false when it was not taken (not a piece, nothing bought, or told twice)
+ */
+export function noteSeenBuy(S, buy, now, { noLog = false } = {}) {
+    if (!buy || !EN_PIECE_SET.has(String(buy.id)) || !(enWhole(buy.qty) > 0)) return false;
+    const row = { t: enNum(buy.t) || now, id: String(buy.id), qty: enWhole(buy.qty), whoId: buy.whoId ? String(buy.whoId) : '', price: enWhole(buy.price) };
+    if (S.seen.some((b) => b.t === row.t && b.id === row.id && b.whoId === row.whoId && b.qty === row.qty)) return false;
+    if (noLog && enCounting(S)) {
+        S.stock = stockApply(S.stock, eventFromSeen(row), mvOf(S)).state;
+        row.counted = true;
+    }
+    S.seen = [...S.seen.filter((b) => now - b.t < 6 * EN_HOUR), row].slice(-200);
+    return true;
 }
 
-/** A press of EXCHANGE on the museum page: the sets come off the count and their points go into the book at cost. */
-export function noteSwap(S, press, now) {
+/**
+ * A press of EXCHANGE on the museum page: the sets come off the count and their points go into the book at cost.
+ * `noLog`: as for a buy seen on a page - with no log to confirm it, the count itself is moved, once.
+ */
+export function noteSwap(S, press, now, { noLog = false } = {}) {
     const set = press && setByKey(press.set);
     const sets = enWhole(press && press.sets);
     if (!set || !sets) return;
     const t = enNum(press.t) || now;
-    S.swaps = [...S.swaps.filter((p) => now - p.t < 6 * EN_HOUR), { t, set: set.key, sets }].slice(-60);
     const cost = enSetCost(S, set);
+    const row = { t, set: set.key, sets };
+    if (noLog && enCounting(S)) {
+        S.stock = stockApply(S.stock, [{ key: 'seen-swap:' + t + ':' + set.key, t, swap: set.key, sets }], mvOf(S)).state;
+        row.counted = true;
+    }
+    S.swaps = [...S.swaps.filter((p) => now - p.t < 6 * EN_HOUR), row].slice(-60);
     S.book = bookAdd(S.book, { id: 'page:' + t, t, kind: 'made', points: sets * set.points, each: cost > 0 ? cost / set.points : 0, set: set.key, src: 'page' }).slice(-EN_BOOK_KEPT);
+}
+
+/** A buy seen on a page and counted there is not counted again when the log brings the same buy later. */
+const EN_SAME_BUY_MS = 5 * EN_MIN;
+function enNotCounted(S, events) {
+    const used = new Set();
+    return events.filter((e) => {
+        if (!(e.d > 0)) return true;
+        const k = S.seen.findIndex((b, i) => b.counted && !used.has(i) && b.id === String(e.id) && b.qty === e.d && Math.abs(b.t - e.t) < EN_SAME_BUY_MS);
+        if (k < 0) return true;
+        used.add(k);
+        return false;
+    });
 }
 
 // ---- Your log ------------------------------------------------------------------------------------------------------
@@ -368,6 +404,31 @@ const EN_LEDGER_TYPES = [LOG_BAZAAR_BUY, LOG_MARKET_BUY, LOG_BAZAAR_SELL, LOG_MA
 /** Every log type the engine asks for: buys and sales of items, mugs, points made / sold / used, money put away. */
 export function logTypesAsked(types) {
     return [...new Set([...EN_LEDGER_TYPES, LOG_MUGGED, ...(types.made || []), ...(types.sold || []), ...(types.used || []), ...(types.out || [])])];
+}
+
+/** Torn's log is asked for this many kinds in one request, at most. */
+export const LOG_TYPES_AT_ONCE = 8;
+
+/**
+ * The same kinds, as the requests they are asked in: each sort by itself, and never more than LOG_TYPES_AT_ONCE.
+ * On the owner's PC (2026-10-11, 1.1.0) one request naming all 18 kinds came back with no row at all for 14
+ * days - with a working Full key and hundreds of bazaar buys that day - while Torn Trading, which names 8,
+ * gets its rows. That the number was the cause is not proven; asked like this, the log says what each sort
+ * brought (engine readLog).
+ * @returns [{ name, ids }]
+ */
+export function logTypeGroups(types) {
+    const sorts = [
+        ['buys and sales', [...EN_LEDGER_TYPES, LOG_MUGGED]],
+        ['points', [...(types.made || []), ...(types.sold || []), ...(types.used || [])]],
+        ['money put away', types.out || []],
+    ];
+    const out = [];
+    for (const [name, all] of sorts) {
+        const ids = [...new Set(all)];
+        for (let i = 0; i < ids.length; i += LOG_TYPES_AT_ONCE) out.push({ name, ids: ids.slice(i, i + LOG_TYPES_AT_ONCE) });
+    }
+    return out;
 }
 
 function enAddRows(S, rows) {
@@ -450,7 +511,7 @@ export function foldLog(S, logRows, ctx) {
     }
     // Buys, sales and swaps move the stock count and the cost pool; a swap's points take what its pieces cost.
     // Not before Torn's inventory has been read once: until then the log is history, and the count starts there.
-    const applied = enCounting(S) ? stockApply(S.stock, [...eventsFromRows(fresh, EN_PIECE_SET), ...events], mvOf(S)) : { state: S.stock, made: [] };
+    const applied = enCounting(S) ? stockApply(S.stock, [...enNotCounted(S, eventsFromRows(fresh, EN_PIECE_SET)), ...events], mvOf(S)) : { state: S.stock, made: [] };
     S.stock = applied.state;
     const costBy = new Map(applied.made.map((m) => [m.key, m]));
     for (const { entry, set } of swaps) {
@@ -485,22 +546,25 @@ export function foldTradeList(S, trades, now) {
     const by = new Map(S.trades.open.map((t) => [t.id, t]));
     const full = {};
     const open = [];
-    const read = [];
     for (const t of list) {
         const had = by.get(t.id);
-        if (had && S.trades.full[t.id] === t.modified) { open.push(had); full[t.id] = t.modified; }
-        else { read.push(t.id); open.push(had ? { ...had, modified: t.modified } : { ...t, theirs: [], theirMoney: 0, mine: [], myMoney: 0, other: 0 }); if (had) full[t.id] = S.trades.full[t.id]; }
+        open.push(had ? { ...had, modified: t.modified, expires: t.expires } : { ...t, theirs: [], theirMoney: 0, mine: [], myMoney: 0, other: 0 });
+        if (had && S.trades.full[t.id] != null) full[t.id] = S.trades.full[t.id];
     }
+    // Every open trade is read in full again each round, the one read longest ago first. Torn's `modified_at`
+    // does not move when items are put in: the owner's trade of 2026-10-11 was read once, seconds after it was
+    // opened and still empty, and - its time never changing - not again for as long as it was open.
+    const read = list.map((t) => t.id).sort((a, b) => (full[a] || 0) - (full[b] || 0));
     S.trades = { ...S.trades, open, at: now, seen, full };
     return { fresh, closed, read };
 }
 
-/** One open trade read in full (Torn's `trade` object). */
-export function foldTradeOpen(S, trade) {
+/** One open trade read in full (Torn's `trade` object). `full` keeps when: the list above reads the oldest first. */
+export function foldTradeOpen(S, trade, now = 0) {
     const t = parseTrade({ trade }, S.self.id);
     if (!t) return null;
     if (!S.trades.open.some((x) => x.id === t.id)) return null;
-    S.trades = { ...S.trades, open: S.trades.open.map((x) => (x.id === t.id ? t : x)), full: { ...S.trades.full, [t.id]: t.modified } };
+    S.trades = { ...S.trades, open: S.trades.open.map((x) => (x.id === t.id ? t : x)), full: { ...S.trades.full, [t.id]: now || t.modified || 1 } };
     return t;
 }
 
@@ -581,7 +645,7 @@ export function recordDay(S, view, now) {
 // ---- The view's input ----------------------------------------------------------------------------------------------
 
 /** Everything core/view.js's archiveView() takes, from the state. */
-export function engineInput(S, settings, now) {
+export function engineInput(S, settings, now, { logRead = false } = {}) {
     const mv = mvOf(S);
     const itemName = nameOf(S);
     const full = S.trades.full || {};
@@ -589,6 +653,8 @@ export function engineInput(S, settings, now) {
         now, settings,
         held: stockHeld(S.stock, S.seen, S.swaps, S.log.until),
         stockAt: S.stock.invAt || 0,
+        // How old Torn's own count is, and whether your log carries what happened since.
+        stock: { ...stockAge(S.stock), log: !!logRead },
         mv,
         offers: (id) => offersOf(S, id, now),
         priced: (id) => { const o = S.offers[String(id)]; return !!(o && (o.imAt || o.bazAt)) || svIndex(S).has(String(id)); },
@@ -605,8 +671,9 @@ export function engineInput(S, settings, now) {
         finished: S.trades.finished,
         rows: S.ledger.rows,
         cart: S.cart, run: S.run, hotSince: S.hot,
+        kept: settings.targetMode !== 'number' && S.cart.length && S.plan && S.plan.targets ? S.plan.targets : null,
         thread: S.thread,
-        w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error },
+        w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error, receiptsError: S.w3b.receiptsError || '' },
         hist: S.hist,
         names: (id) => S.names[String(id)] || '',
         itemName,

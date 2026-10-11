@@ -37,6 +37,7 @@ usage.nowTorn = usage.torn[59];
 usage.nowW3b = usage.w3b[59];
 const busy = { w3b: false, receipt: null };
 // ?server=ok | old | update | password | down | saved (anything else: off)
+// ?server=ours | alone | asking: the server built into the copy - connected, a PC it does not serve, Torn has not said who you are
 const SERVER_STATES = {
     ok: { okAt: now - 12000, syncAt: now - 12000, reading: 'reading', key: 'working', you: { id: 2000001, name: 'Some_Body' }, peopleOn: [{ id: 2000002, name: 'Other_One' }], need: 34, serverShare: 46, serverUsed: 41, people: 3 },
     old: { syncAt: now - 20000, error: 'This server keeps one list a person: it has to be updated first.', why: 'old' },
@@ -46,6 +47,9 @@ const SERVER_STATES = {
 };
 const serverOf = () => {
     const k = q.get('server');
+    if (k === 'ours') { const st = { on: true, own: true, builtIn: true, address: null, peopleOn: [], error: null, why: null, needVer: null, ...SERVER_STATES.ok, now }; return { ...serverLines(st, now), bazaars: 214, address: '', typed: '', hasPass: false, own: true, builtIn: true, msg: '' }; }
+    if (k === 'alone') { const st = { on: true, own: true, builtIn: true, address: null, error: 'The server does not serve this PC.', why: 'address', syncAt: now - 20000, now }; return { ...serverLines(st, now), bazaars: 0, address: '', typed: '', hasPass: false, own: true, builtIn: true, msg: '' }; }
+    if (k === 'asking') return { ...serverLines({ on: false, builtIn: true, typed: '', hasPass: false }, now), bazaars: 0, address: '', typed: '', hasPass: false, own: false, builtIn: true, msg: '' };
     if (!SERVER_STATES[k]) return { ...serverLines({ on: false, typed: k === 'saved' ? 'x' : '', hasPass: k === 'saved' }, now), bazaars: 0, address: '', typed: k === 'saved' ? 'https://torn-shared.example.workers.dev' : '', hasPass: k === 'saved', msg: k === 'saved' ? 'Not saved. The password is the long one you were given for the server: letters and digits only.' : '' };
     const st = { on: true, address: 'https://torn-shared.example.workers.dev', peopleOn: [], you: null, okAt: null, error: null, why: null, needVer: null, reading: null, key: null, need: null, serverShare: null, serverUsed: null, people: null, ...SERVER_STATES[k], now };
     return { ...serverLines(st, now), bazaars: k === 'ok' ? 214 : 0, address: st.address, typed: st.address, hasPass: true, msg: '' };

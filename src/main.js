@@ -17,7 +17,7 @@ import { TornApiClient } from './api/client.js';
 import { LedgerClient } from './api/ledger.js';
 import { W3bClient } from './api/w3b.js';
 import { Tw3bOwnClient } from './api/tw3b-own.js';
-import { ServerLink, SERVER_CONFIG_KEY } from './api/server-link.js';
+import { ServerLink, SERVER_CONFIG_KEY, SERVER_CALLS_KEY } from './api/server-link.js';
 import { serverMayCall, serverLines } from './core/server.js';
 import { makeEngine, ENGINE_ALL_PIECES } from './engine/engine.js';
 import { ENGINE_PARTS } from './engine/state.js';
@@ -27,7 +27,7 @@ import { tradeNotice } from './core/trades.js';
 import { makeTabId } from './core/leader.js';
 import { hubLeader, HUB_LEAD_KEY, HUB_LEAD_BEAT_MS } from './core/hub-leader.js';
 import { tradingOnPage, tradingRunning, shouldMarkSeen, shouldMarkView, archiveInFront, shareNow, markText, readMark, SHARES, TRADING_SEEN_KEY, TRADING_VIEW_KEY, ARCHIVE_VIEW_KEY, FRONT_MARK, BEHIND_MARK, ALIVE_MARK, shouldMarkAlive, TRADING_LOOK_EVERY_MS, W3B_MARK, W3B_OTHER_MARK, w3bMarkText, readW3bMark } from './core/turns.js';
-import { usageAdd, usageMerge, usageSeries, usageLabel, usageCsv } from './core/usage.js';
+import { usageAdd, usageMerge, usageSeries, usageLabel, usageCsv, usageCallsAdd } from './core/usage.js';
 import { addLogEntries, logText, logAsText } from './core/errlog.js';
 import { speedFiles } from './core/speed.js';
 import { makeZip } from './core/zip.js';
@@ -37,6 +37,8 @@ import { REVEAL_MS } from './ui/mask.js';
 import { mountTornPage, SHARED_VIEW_KEY, SHARED_NOTES_KEY, NOTES_KEEP_MS } from './ui/torn-page.js';
 
 const VERSION = typeof TARC_BUILD_VERSION === 'string' ? TARC_BUILD_VERSION : 'dev';
+/** The shared server's address, built in (build.mjs). '' in a copy built without one. */
+const SERVER_HOME = typeof TARC_SERVER_HOME === 'string' ? TARC_SERVER_HOME : '';
 
 /** Torn Trading's own page: Torn Archive only notes that Torn Trading runs there, and when you look at it. */
 const TRADING_PAGE_URL = 'https://abrahamdelosreyes17-oss.github.io/torn-moneymaker-releases/';
@@ -51,6 +53,8 @@ const store = { get: gmGet, set: gmSet, del: gmDel };
 
 let usagePending = {};
 let usageTimer = 0;
+/** Is the shared server on? Set by the hub: only there are requests made. */
+let serverOn = () => false;
 const refusedAt = [];
 
 function flushUsage() {
@@ -60,10 +64,13 @@ function flushUsage() {
     const pending = usagePending;
     usagePending = {};
     gmSet('usage', usageMerge(gmGet('usage', null), pending));
+    // With the shared server on, the same counts wait in one sum for the next exchange (how many requests of each
+    // kind, and how TornW3B answered; nothing else).
+    if (serverOn()) gmSet(SERVER_CALLS_KEY, usageCallsAdd(gmGet(SERVER_CALLS_KEY, null), pending));
 }
 
 function recordUse(service, tag) {
-    usageAdd(usagePending, usageLabel(tag && String(tag).charAt(0) === service ? tag : service + '.other'));
+    usageAdd(usagePending, usageLabel(tag && (String(tag).charAt(0) === service || String(tag).startsWith('r.' + service + '.')) ? tag : service + '.other'));
     if (!usageTimer) usageTimer = setTimeout(flushUsage, USAGE_FLUSH_MS);
 }
 
@@ -75,7 +82,7 @@ function logLine(kind, where, what, detail = null) {
 function logFailed(service, x) {
     const e = x && x.error;
     if (e && (e.local || e.takingTurns)) return;
-    logLine('error', service === 't' ? 'Torn API' : 'TornW3B', String(x.path || '').split('?')[0] + ': ' + String((e && e.message) || e || 'failed'), e && (e.code || e.http) ? 'code ' + (e.code ?? '') + ' http ' + (e.http ?? '') : null);
+    logLine('error', service === 't' ? 'Torn API' : 'TornW3B', String(x.path || '').split('?')[0] + ': ' + String((e && e.message) || e || 'failed'), e && (e.code || e.http) ? 'code ' + (e.code ?? '') + ' http ' + (e.http ?? '') + (e.said ? ' · it said: ' + e.said : '') : null);
 }
 
 // ---- Torn Trading seen on this page: said to every tab ---------------------------------------------------------------
@@ -120,6 +127,7 @@ function bootHub(tabId) {
     let notice = null;
     let shareAt = 0;
     let shared = '';
+    let notesTaken = null;
     let stepping = false;
     let link = null;
     let serverMsg = '';
@@ -150,6 +158,7 @@ function bootHub(tabId) {
     const w3b = new W3bClient({
         maxPerMinute: SHARES.alone.w3b,
         onSent: (x) => recordUse('w', x.tag),
+        onAnswered: (x) => recordUse('w', 'r.w.' + x.how),
         onFailed: (x) => logFailed('w', x),
         onLocal: () => { refusedAt.push(now()); },
         loadShared: () => ({ recent: w3bWin.load(), cooldownUntil: Number(gmGet('w3bCool', 0)) || 0 }),
@@ -269,6 +278,9 @@ function bootHub(tabId) {
 
     // ---- the shared server: every 30 s, by the tab that reads -----------------------------------------------------
 
+    let greeted = false;
+    let besideWas = false;
+
     link = new ServerLink({
         load: (key) => gmGet(key, null),
         save: gmSet,
@@ -276,6 +288,8 @@ function bootHub(tabId) {
         send: gmSend,
         now,
         version: VERSION,
+        home: SERVER_HOME,
+        getId: () => (engine ? engine.state.self.id : ''),
         pieces: ENGINE_ALL_PIECES,
         getUse: () => ({ used: torn.stats(now()).usedLastMinute, waiting: torn.queue.length + full.queue.length }),
         tradingOn: () => tradingRunning(gmGet(TRADING_SEEN_KEY, 0), now()),
@@ -291,9 +305,11 @@ function bootHub(tabId) {
         },
     });
 
+    serverOn = () => link.on();
+
     function serverDesk() {
         const st = link.status();
-        return { ...serverLines(st, now()), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, msg: serverMsg };
+        return { ...serverLines(st, now()), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
     }
 
     // ---- what Torn's tabs told us ------------------------------------------------------------------------------
@@ -305,18 +321,40 @@ function bootHub(tabId) {
         if (!Array.isArray(q) || !q.length) return;
         const done = new Set(gmGet('notesDone', []));
         let any = false;
+        let moved = false;
         for (const n of q) {
             if (!n || !n.id || done.has(n.id) || t - n.t > NOTES_KEEP_MS) continue;
             done.add(n.id);
             any = true;
             try {
-                if (n.kind === 'act') { if (n.what && n.what.name === 'run') engine.act('run', ...(Array.isArray(n.what.args) ? n.what.args.slice(0, 1) : [])); }
-                else if (n.kind === 'buy' || n.kind === 'swap' || n.kind === 'thread') engine.note(n.kind, n.what);
+                if (n.kind === 'act') { if (n.what && n.what.name === 'run') engine.act('run', ...(Array.isArray(n.what.args) ? n.what.args.slice(0, 1) : [])); moved = true; }
+                else if (n.kind === 'buy' || n.kind === 'swap' || n.kind === 'thread') { engine.note(n.kind, n.what); moved = moved || n.kind !== 'thread'; }
+                // What a Torn tab saw of its page, for the log: it is in the zip.
+                else if (n.kind === 'say' && n.what) logLine('note', 'A Torn page', String(n.what.what || ''), n.what.detail ? String(n.what.detail) : null);
             } catch (error) {
                 logLine('error', 'Torn Archive', 'A note from a Torn page was not taken: ' + n.kind, String((error && error.message) || error));
             }
         }
-        if (any) gmSet('notesDone', [...done].slice(-300));
+        if (!any) return;
+        notesTaken = [...done].slice(-300);
+        gmSet('notesDone', notesTaken);
+        // A buy, a swap or a press of the run: Torn's tabs get the new view now, not at the next redraw (a tab out
+        // of view redraws once a minute), and it names the notes it holds.
+        if (moved) { shareView(true); schedule(); }
+    }
+
+    /** What Torn's tabs show: shared when it changed, and at least once a minute so they know it is alive. */
+    function shareView(now_ = false, view = null) {
+        if (!leading || !engine) return;
+        const t = now();
+        if (!now_ && t - shareAt <= 5000) return;
+        const v = viewForTabs(view || engine.view());
+        const json = JSON.stringify(v);
+        if (!now_ && json === shared && t - shareAt <= 60000) return;
+        shared = json;
+        shareAt = t;
+        if (!notesTaken) notesTaken = gmGet('notesDone', []);
+        gmSet(SHARED_VIEW_KEY, { at: t, v, notes: (Array.isArray(notesTaken) ? notesTaken : []).slice(-60) });
     }
 
     // ---- the desk the hub draws ----------------------------------------------------------------------------------
@@ -360,19 +398,7 @@ function bootHub(tabId) {
         if (!hub || !engine) return;
         const d = desk();
         perfTimed('draw', () => hub.show(d));
-        // What Torn's tabs show: shared when it changed, and at least once a minute so they know it is alive.
-        if (leading) {
-            const t = now();
-            if (t - shareAt > 5000) {
-                const v = viewForTabs(d.view);
-                const json = JSON.stringify(v);
-                if (json !== shared || t - shareAt > 60000) {
-                    shared = json;
-                    shareAt = t;
-                    gmSet(SHARED_VIEW_KEY, { at: t, v });
-                }
-            }
-        }
+        shareView(false, d.view);
     }
 
     // ---- which tab reads ---------------------------------------------------------------------------------------------
@@ -396,6 +422,17 @@ function bootHub(tabId) {
         stepping = true;
         try {
             readNotes();
+            // Torn Trading came on: a server that did not know this PC may know it now.
+            const beside = tradingRunning(gmGet(TRADING_SEEN_KEY, 0), now());
+            if (beside && !besideWas) link.wake();
+            besideWas = beside;
+            // Before this page's first reads the server is told the PC is on, so that it makes room: its own
+            // requests of the last minute come back with the answer and are waited out. Never longer than 5 s.
+            if (!greeted && engine.state.self.id && engine.state.items.at) {
+                greeted = true;
+                link.wake();
+                await Promise.race([link.tick().catch(() => false), new Promise((done) => setTimeout(done, 5000))]);
+            }
             await engine.step();
             // Not before Torn has said who you are and what the pieces are: your own bazaar is left out by your id.
             if (engine.state.self.id && engine.state.items.at) link.tick().catch((error) => logLine('error', 'Torn Shared Server', 'An exchange stopped', String((error && error.message) || error)));

@@ -1,8 +1,11 @@
 // What you hold of each piece, kept right between Torn's inventory reads, and what those units cost.
-// Torn's inventory is up to an hour old, so the count is carried by what happened: a buy in Torn's log, a trade
-// finished, a set swapped at the museum. Torn's own count is taken for a piece only when nothing happened to it in
-// the hour before the read; until then the Archive's count stands. A buy seen on the page counts at once, and
-// leaves again when the log has been read past it (the log has it then). Pure working-out.
+// Torn counts your inventory once an hour for each category (its API's own words: "cached selection, 1 hour per
+// category"), so the count is carried by what happened: a buy in Torn's log, a buy seen on the page, a trade
+// finished, a set swapped at the museum. Torn's own count is taken for a piece when Torn counted AFTER the last
+// thing that happened to it: its answer says when it counted. (Until that time has been seen to stand still
+// between two reads it is not trusted, and the older rule holds: nothing happened to the piece in the hour before
+// the read.) A buy seen on the page counts at once; with your log read it leaves again when the log has been read
+// past it (the log has it then), without one it is counted itself. Pure working-out.
 
 import { poolAdd, poolTake, poolMatch } from './books.js';
 import { setByKey } from './sets.js';
@@ -14,6 +17,13 @@ const SK_STALE_MS = 65 * 60000;
 // A buy seen on the page stays counted until the log has been read this far past it: Torn's log may lag.
 const SK_LAG_MS = 60000;
 const SK_KEYS = 6000;
+/** Torn counts your inventory anew this long after it last did. */
+export const SK_TORN_EVERY_MS = 60 * 60000;
+// Torn's count is taken for a piece when Torn counted this long after the last thing we saw happen to it: a buy
+// seen on the page is timed by this PC's clock, Torn's count by Torn's.
+const SK_CLOCKS_MS = 2 * 60000;
+// The time in Torn's answer is when Torn counted once two reads this far apart carried the same one.
+const SK_SAME_STAMP_MS = 60000;
 
 export const STOCK_EMPTY = Object.freeze({ held: {}, last: {}, pool: {}, done: [], floor: 0, invAt: 0 });
 
@@ -32,7 +42,10 @@ export function stockApply(state, events, eachOf = () => 0) {
     let pool = s.pool;
     const made = [];
     const fresh = [];
+    const base = s.base || {};
     const move = (id, d, t) => {
+        // Torn counted this piece after it happened: its count had it already.
+        if (t <= skNum(base[id])) return;
         held = { ...held, [id]: Math.max(0, skWhole(held[id]) + d) };
         if (t > skNum(last[id])) last = { ...last, [id]: t };
     };
@@ -77,18 +90,40 @@ export function stockApply(state, events, eachOf = () => 0) {
  * brought to it (units never seen bought come in at the market value, units gone leave at the average).
  * @param inv  itemId -> how many, or a function
  * @param ids  the pieces to keep count of
+ * @param tornAt the time in Torn's answer, when it has one (ms)
  */
-export function stockInventory(state, inv, invAt, ids, eachOf = () => 0) {
+export function stockInventory(state, inv, invAt, ids, eachOf = () => 0, tornAt = 0) {
     const s = state && state.held ? state : STOCK_EMPTY;
     const get = typeof inv === 'function' ? inv : (id) => (inv || {})[id];
     const held = { ...s.held };
+    const stamp = skNum(tornAt);
+    // A time that only ever said "now" would move with every read: one that stood still is when Torn counted.
+    const stampOk = !!s.stampOk || (stamp > 0 && stamp === skNum(s.tornAt) && invAt - skNum(s.invAt) >= SK_SAME_STAMP_MS);
+    const at = stampOk ? stamp : 0;
+    const base = { ...(s.base || {}) };
     for (const raw of ids || []) {
         const id = String(raw);
-        if (skNum(s.last[id]) > invAt - SK_STALE_MS) { if (held[id] == null) held[id] = skWhole(get(id)); continue; }
+        const last = skNum(s.last[id]);
+        const newer = at ? at > last + SK_CLOCKS_MS : last <= invAt - SK_STALE_MS;
+        if (!newer) { if (held[id] == null) held[id] = skWhole(get(id)); continue; }
         held[id] = skWhole(get(id));
+        if (at) base[id] = at;
     }
     const pool = poolMatch(s.pool, (id) => held[String(id)], eachOf, (ids || []).map(String));
-    return { ...s, held, pool, invAt };
+    return { ...s, held, pool, base, invAt, tornAt: stamp, stampOk };
+}
+
+/**
+ * How old the count is, for the screen and for when to ask Torn again.
+ * @returns { readAt, tornAt, nextAt, since } - tornAt: when Torn counted (0 = not known); nextAt: when Torn counts
+ *   anew (0 = not known); since: pieces something happened to after Torn counted (their count is carried by us)
+ */
+export function stockAge(state) {
+    const s = state && state.held ? state : STOCK_EMPTY;
+    const tornAt = s.stampOk ? skNum(s.tornAt) : 0;
+    const from = tornAt || skNum(s.invAt) - SK_TORN_EVERY_MS;
+    const since = Object.values(s.last || {}).filter((t) => skNum(t) > from).length;
+    return { readAt: skNum(s.invAt), tornAt, nextAt: tornAt ? tornAt + SK_TORN_EVERY_MS : 0, since };
 }
 
 /**
@@ -112,7 +147,15 @@ export function stockHeld(state, seen, swaps, until = 0) {
 
 /** What was seen on the page and is not in the log yet. With `until` 0 the log is not read: everything waits. */
 export function seenWaiting(list, until = 0) {
-    return (list || []).filter((x) => x && x.t > 0 && !(until > 0 && x.t + SK_LAG_MS < until));
+    // `counted`: already in the count itself (stockApply), with no log to wait for.
+    return (list || []).filter((x) => x && x.t > 0 && !x.counted && !(until > 0 && x.t + SK_LAG_MS < until));
+}
+
+/** A buy seen on the page as a stock event, for when no log is read: [{ key, t, id, d, paid }]. */
+export function eventFromSeen(buy) {
+    const qty = skWhole(buy && buy.qty);
+    if (!buy || !qty || !(buy.t > 0)) return [];
+    return [{ key: 'seen:' + buy.t + ':' + buy.id + ':' + (buy.whoId || ''), t: buy.t, id: String(buy.id), d: qty, paid: qty * skWhole(buy.price) }];
 }
 
 /** Is the count fit to show? Not before Torn's inventory has been read once. */

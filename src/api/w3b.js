@@ -200,6 +200,8 @@ export class W3bClient {
         isVisible = () => true,
         addShared = null,
         onSent = null,
+        // ({ path, tag, how: 'ok' | '429' | 'fail' }): how a request that left was answered (the usage record).
+        onAnswered = null,
         onFailed = null,
         perMinute = null,
         onOver = null,
@@ -222,6 +224,7 @@ export class W3bClient {
         this.onOver = onOver;
         /** ({path, tag}) => void, each request that leaves: the usage record (3.15). */
         this.onSent = onSent;
+        this.onAnswered = onAnswered;
         /** ({path, tag, error}) => void, a request that failed: the problem log (3.15). Never a local refusal. */
         this.onFailed = onFailed;
         /** ({path, tag, error}) => void, a request refused here (error.local): nothing was sent. */
@@ -547,10 +550,15 @@ export class W3bClient {
             }
         }
 
+        const answered = (how) => {
+            if (!this.onAnswered) return;
+            try { this.onAnswered({ path, tag, how }); } catch { /* the usage record is best-effort */ }
+        };
         let response;
         try {
             response = await this.fetchImpl(url.toString());
         } catch (error) {
+            answered('fail');
             throw new W3bError(
                 'TornW3B network error: ' + ((error && error.message) || error),
             );
@@ -559,6 +567,7 @@ export class W3bClient {
         if (response.status === 429) {
             // TornW3B says how long to stay away (Retry-After); without it, the usual minute.
             const until = this.coolDown(w3bRetryAfterMs(w3bHeader(response, 'retry-after'), this.now()) ?? W3B_COOLDOWN_MS);
+            answered('429');
             throw new W3bError('TornW3B rate limit (429).', {
                 http: 429,
                 blocked: true,
@@ -567,16 +576,20 @@ export class W3bClient {
         }
 
         if (!response.ok) {
+            answered('fail');
             throw new W3bError('TornW3B HTTP ' + response.status, {
                 http: response.status,
             });
         }
 
         try {
-            return await response.json();
+            const json = await response.json();
+            answered('ok');
+            return json;
         } catch {
             // Cloudflare answers a challenge page with HTML, not JSON.
             this.coolDown();
+            answered('429');
             throw new W3bError('TornW3B returned a non-JSON page (blocked?).', {
                 blocked: true,
             });

@@ -3,7 +3,7 @@
 // Every part that can change carries data-k: the shell swaps only the parts whose string differs.
 // A press is a data-act (with data-v, data-id); a page to go to is data-go (with data-pane).
 
-import { hEsc, hNum, hMoney, hSigned, hShort, hPct, hRate, hPlural, hWhen, hDay, hIcon, hPic, hOut, hProfileUrl } from './fmt.js';
+import { hEsc, hNum, hMoney, hSigned, hShort, hPct, hRate, hPlural, hWhen, hDay, hClock, hAge, hIcon, hPic, hOut, hProfileUrl } from './fmt.js';
 import { sparkSvg } from './charts.js';
 import { SET_LOOK, viewPiece } from '../core/view.js';
 import { marginWords } from '../core/margin.js';
@@ -251,6 +251,21 @@ const PG_STOP_WORDS = {
     skip: () => 'skipped · still on the list',
 };
 
+/**
+ * How fresh your stock count is, said where you are about to buy on it. Torn counts your items once an hour;
+ * between its counts yours is carried by what you buy and swap.
+ */
+function pgStockAge(v) {
+    const st = v.top.stock;
+    if (!st || !st.readAt) return 'Your items have not been read from Torn yet.';
+    const now = Date.now();
+    const from = st.log ? 'your log and the pages you buy on' : 'the pages you buy on';
+    const since = st.since ? ` ${hPlural(st.since, 'piece')} changed since: counted from ${from}.` : '';
+    const key = st.log ? '' : ` <span class="t-warn">No Full key: a buy made where Torn Archive is not on the page shows only at Torn's next count.</span>`;
+    if (st.tornAt) return `<b>Torn counted your items at ${hClock(st.tornAt)}</b> (${hAge(st.tornAt, now)}) and counts again at ${hClock(st.nextAt)}: it is asked then.${since}${key}`;
+    return `Your items were read from Torn ${hAge(st.readAt, now)}. Torn counts them once an hour; what you buy in between is counted from ${from}.${key}`;
+}
+
 function pgAfterRow(v, p, add, take, extra, i) {
     const max = Math.max(p.target, p.held + add, 1) * 1.04;
     const w = (n) => (n / max * 100).toFixed(1) + '%';
@@ -276,7 +291,8 @@ function pgBuy(d, ui) {
         <div class="panel tint" data-k="run"><div class="ph"><h2>The run</h2><span class="sub">Next counts only what you took</span></div><div class="pb"><div class="rows">${pgRunBar(v)}
           <div class="row"><span class="grow1">${hPlural(v.buy.units, 'piece')} at ${hPlural(S.length, 'stop')}</span><b class="num">${hMoney(v.buy.cost)}</b>${paid ? `<span class="num t-good">leaves ${hSigned(leaves)}, ${hPct(leaves / paid * 100)} ${PG_FEE}</span>` : ''}</div>
           <div class="row"><span class="grow1">Full sets after</span><b class="num" style="font-weight:500">${pgFullWords(v, v.buy.full)}</b></div>
-          ${vault ? `<div class="row">${vault}</div>` : ''}</div></div></div>
+          ${vault ? `<div class="row">${vault}</div>` : ''}
+          <div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div></div></div></div>
         <div class="panel grow" data-k="list-after"><div class="ph"><h2>Your stock after the list</h2><div class="legend">${pgKey('You hold', '#4a5263', 1)}${pgKey('On the list', 'var(--need)', 1)}</div></div><div class="pb flush"><div class="after">${onList.length ? onList.map((p, i) => pgAfterRow(v, p, p.listed, p.listed, 0, i)).join('') : '<div class="af" style="grid-template-columns:minmax(0,1fr);color:var(--muted)"><span>Nothing on the list.</span></div>'}</div></div></div>
       </div></div></section>`;
     }
@@ -292,6 +308,7 @@ function pgBuy(d, ui) {
       <div class="col">
         <div class="panel tint" data-k="rec"><div class="ph"><h2>Fill my stock</h2></div><div class="pb">
           <div class="rec"><div class="hero">${hNum(plan.units)}<small>of the ${hPlural(plan.need, 'piece')} you need ${plan.units === 1 ? 'is' : 'are'} under ${plan.units === 1 ? 'its' : 'their'} worth</small></div><div class="rec-t"><b>${hPlural(plan.stops, 'stop')}</b> · ${hMoney(plan.cost)}<br>${pgFullWords(v, plan.full)}</div><div class="rec-b"><button class="btn go" data-act="make-list"${plan.units ? '' : ' disabled'}>Make the list</button></div></div>
+          <div class="rows"><div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div></div>
         </div></div>
         <div class="panel grow" data-k="buy-t"><div class="ph"><h2>Where each piece is cheapest</h2><span class="sub">press a piece to see every place that sells it</span></div>
           <div class="pb flush">${rows.length ? `<table class="t wrapth">${table}</table>` : pgNone('You need nothing: every set is at its target. "All pieces" lists them anyway.')}</div></div>
@@ -395,7 +412,7 @@ function pgPoints(d, ui) {
           ${sell.quick ? `<div class="row"><span class="grow1"><b>Quickest:</b> ${lotsWords(sell.quick.lots)}</span><b class="num">${about(sell.quick.wait)}</b></div>` : ''}
           <div class="row"><span class="grow1">${sell.quick ? '' : '<b>Quickest:</b> '}One lot of ${hNum(sell.points)}</span><b class="num">${about(sell.one.wait)}</b></div>
           <div class="row"><span class="grow1">Profit over what they cost</span><b class="num ${sell.profit < 0 ? 't-bad' : 't-good'}">${hSigned(sell.profit)}</b></div>
-          <div class="row"><span class="grow1 t-muted">Bank each lot as it sells. ${PG_FEE[0].toUpperCase() + PG_FEE.slice(1)}.</span>${hOut(POINTS_MARKET_URL, 'Points market', 'btn sm out')}</div>`;
+          <div class="row"><span class="grow1 t-muted">Bank each lot as it sells. ${PG_FEE[0].toUpperCase() + PG_FEE.slice(1)}.</span></div>`;
     const seg = `<div class="seg">${[7, 30, 40].map((n) => `<button data-act="range" data-id="pts2" data-v="${n}"${ui.range.pts2 === n ? ' class="on"' : ''}>${n} days</button>`).join('')}</div>`;
     return `<section class="page p-tabs on"><div class="pane g2 on">
       <div class="col">
@@ -404,7 +421,7 @@ function pgPoints(d, ui) {
         <div class="panel" data-k="lots"><div class="ph"><h2>Which lot size sells</h2><span class="sub">lots that left the market, 7 days</span></div><div class="pb flush"><table class="t tight wrapth"><thead><tr><th>Lot size</th><th>Lots gone</th><th class="n">Points in them</th><th class="n">Usual wait at the wall price</th><th>Your own lots</th></tr></thead><tbody>${lots}</tbody></table></div></div>
       </div>
       <div class="col">
-        <div class="panel grow" data-k="ladder"><div class="ph"><h2>The market now</h2><span class="sub">lowest first</span></div><div class="pb flush"><div class="ladder">${pgLadder(v, 9)}</div></div></div>
+        <div class="panel grow" data-k="ladder"><div class="ph"><h2>The market now</h2><span class="sub">lowest first</span><span class="sp"></span>${hOut(POINTS_MARKET_URL, 'Points market', 'btn sm out')}</div><div class="pb flush"><div class="ladder">${pgLadder(v, 9)}</div></div></div>
         <div class="panel ${pt.hold && sell.points ? 'hold' : ''}" data-k="sell"><div class="ph"><h2>Selling your ${hNum(sell.points)} points</h2><span class="sp"></span>${pt.hold && sell.points ? '<span class="badge ahead">cheap today: hold</span>' : pt.cheap && sell.points ? '<span class="badge ahead">cheap today</span>' : ''}</div><div class="pb"><div class="rows">${sellRows}</div></div></div>
       </div></div></section>`;
 }
@@ -505,8 +522,8 @@ function pgLedger(d, ui) {
     }
     if (ui.pane === 3) {
         const hasKey = d.keys && d.keys.w3b && d.keys.w3b.set;
-        const rows = v.trades.finished.map((f) => `<tr><td>${hWhen(f.t)}</td><td><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b></td><td class="n">${hNum(f.units)}</td><td class="n"><b>${hMoney(f.paid)}</b></td><td class="n"><span class="t-muted">${f.rate ? hPct(f.rate) : ''}</span></td><td class="n">${f.receipt && f.receipt.url ? hOut(f.receipt.url, 'Receipt', 'btn sm out') : f.receipt ? '<span class="t-muted">made</span>' : hasKey ? `<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${d.busy && d.busy.receipt === f.id ? ' disabled' : ''}>Make the receipt</button>` : ''}</td></tr>`).join('');
-        return one('rec', 'Receipts', 'one per trade · made on TornW3B, where your sellers can look them up', rows && `<table class="t"><thead><tr><th>When</th><th>Seller</th><th class="n">Pieces</th><th class="n">You paid</th><th class="n">Rate</th><th></th></tr></thead><tbody>${rows}</tbody></table>`, 'No finished trade yet.');
+        const rows = v.trades.finished.map((f) => `<tr><td>${hWhen(f.t)}</td><td><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b></td><td class="n">${hNum(f.units)}</td><td class="n"><b>${hMoney(f.paid)}</b></td><td class="n"><span class="t-muted">${f.rate ? hPct(f.rate) : ''}</span></td><td class="n">${f.receipt && f.receipt.url ? hOut(f.receipt.url, 'Receipt', 'btn sm out') : f.receipt ? '<span class="t-muted">made</span>' : hasKey ? `${f.listed ? '' : '<span class="t-muted" style="margin-right:8px">not priced on your TornW3B list</span>'}<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${d.busy && d.busy.receipt === f.id ? ' disabled' : ''}>Make the receipt</button>` : ''}</td></tr>`).join('');
+        return one('rec', 'Receipts', v.trades.receiptsError ? 'TornW3B does not give your receipts: ' + hEsc(v.trades.receiptsError) : 'one per trade · made on TornW3B by itself, from your list there, when a trade ends', rows && `<table class="t"><thead><tr><th>When</th><th>Seller</th><th class="n">Pieces</th><th class="n">You paid</th><th class="n">Rate</th><th></th></tr></thead><tbody>${rows}</tbody></table>`, 'No finished trade yet.');
     }
     if (ui.pane === 4) {
         const rows = lg.sellers.map((s) => `<tr><td><b>${hOut(hProfileUrl(s.whoId), hEsc(s.who || 'Seller ' + s.whoId))}</b></td><td class="n">${hNum(s.trades)}</td><td class="n">${hNum(s.units)}</td><td class="n"><b>${hMoney(s.paid)}</b></td><td>${hEsc(s.brings)}</td><td>${s.came}</td></tr>`).join('');
@@ -571,13 +588,15 @@ function pgKeyBox([kind, title, rows], d) {
         </div></div>`;
 }
 
-const PG_SERVER_BADGE = { off: ['', 'not set'], ok: ['ok', 'connected'], idle: ['', 'connecting'], warn: ['ahead', 'no answer'], bad: ['bad', 'refused'] };
+const PG_SERVER_BADGE = { off: ['', 'not set'], alone: ['', 'working alone'], ok: ['ok', 'connected'], idle: ['', 'connecting'], warn: ['ahead', 'no answer'], bad: ['bad', 'refused'] };
 
 /** The shared server: its address and your password for it, and what it last said. The password is never shown again. */
 function pgServer(d) {
     const s = d.server || { on: false, level: 'off', now: 'Off. Torn Archive works alone.' };
     const [cls, word] = PG_SERVER_BADGE[s.level] || PG_SERVER_BADGE.off;
-    const box = s.on
+    // Built into this copy: nothing to type, and its address is not shown. One typed in an older copy stays, with Forget.
+    const box = s.builtIn && !(s.on && !s.own) ? ''
+        : s.on
         ? `<div style="display:flex;gap:8px"><span class="inp key" style="letter-spacing:0;color:var(--text)">${hEsc(s.address)}</span><button class="btn" data-act="server-forget">Forget</button></div>`
         // The address on a line of its own: it is long, and is never cut short.
         : `<div style="display:flex"><input class="inp key" type="text" data-server="address" value="${hEsc(s.typed || '')}" placeholder="Its address: https://….workers.dev" autocomplete="off" spellcheck="false" style="letter-spacing:0"></div>
@@ -587,11 +606,11 @@ function pgServer(d) {
     if (s.key) rows.push(['Your key there', hEsc(s.key.text)]);
     if (s.split) rows.push(['Your 100 Torn calls a minute', `your apps <b>${s.split.pc}</b> · the server <b>${s.split.server}</b> · never used <b>${s.split.free}</b>`]);
     if (s.on && s.bazaars) rows.push(['Bazaars from it', `<b>${hNum(s.bazaars)}</b> that sell a piece`]);
-    rows.push(['What it is told', 'Bazaar and item numbers, prices and counts. Never a key, your stock or your money']);
+    rows.push(['What it is told', (s.builtIn ? 'Your Torn id, to know whose copy this is. Then bazaar' : 'Bazaar') + ' and item numbers, prices and counts. Never a key, your stock or your money']);
     rows.push(['What it gives', 'Bazaars, the points market and the Item Market, read from Torn itself with a key of each of you']);
     return `<div class="panel" data-k="server"><div class="ph"><h2>Torn Shared Server</h2><span class="sp"></span><span class="badge ${cls}">${word}</span></div><div class="pb">
           ${box}
-          <table class="t kv" style="margin-top:10px">${rows.map(([th, td]) => `<tr><th>${th}</th><td>${td}</td></tr>`).join('')}</table>
+          <table class="t kv"${box ? ' style="margin-top:10px"' : ''}>${rows.map(([th, td]) => `<tr><th>${th}</th><td>${td}</td></tr>`).join('')}</table>
         </div></div>`;
 }
 
@@ -605,7 +624,7 @@ function pgSettings(d, ui) {
       <div class="tiles" style="--n:3">
         <div class="panel" data-k="sets"><div class="ph"><h2>Sets</h2></div><div class="pb">
           <div class="field"><span class="f-l">Sets to trade</span><span class="seg"><button data-act="which" data-v="plushie"${s.which.plushie ? ' class="on"' : ''}>Plushie</button><button data-act="which" data-v="flower"${s.which.flower ? ' class="on"' : ''}>Flower</button></span></div>
-          <div class="field"><span class="f-l">Sets to build at once</span>${pgSeg('targetMode', s.targetMode, [['cash', 'From my cash and stock'], ['number', 'A number']])}${s.targetMode === 'number' ? pgInput('target', s.target, 56) : ''}</div>
+          <div class="field"><span class="f-l">Sets to build at once<span>from cash: kept as it is while a list is on hand</span></span>${pgSeg('targetMode', s.targetMode, [['cash', 'From my cash and stock'], ['number', 'A number']])}${s.targetMode === 'number' ? pgInput('target', s.target, 56) : ''}</div>
           <div class="field"><span class="f-l">Most of my money in sets and points<span>0 = no limit</span></span>${pgInput('shareMax', s.shareMax, 56, '%')}</div>
           <div class="field"><span class="f-l">Least profit on a set</span>${pgInput('least', hRate(s.least), 56, '%')}</div>
           <div class="field"><span class="f-l">Read prices every</span>${pgSeg('readMin', s.readMin, READ_CHOICES.map((m) => [m, m + ' min']))}</div>

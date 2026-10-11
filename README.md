@@ -30,7 +30,7 @@ Without the Full key the hub still works; costs are then taken at market value w
 | | |
 | --- | --- |
 | Data storage | In Tampermonkey's storage on your computer only. |
-| Data sharing | None, unless you switch Torn Shared Server on (below). TornW3B is asked for public prices by item id; your own price list and receipts are sent to TornW3B only when you set its key. |
+| Data sharing | None, unless Torn Shared Server serves your PC (below). TornW3B is asked for public prices by item id; your own price list and receipts are sent to TornW3B only when you set its key. |
 | Purpose of use | Working out your sets, your trades and your points profit, for you. |
 | Key storage and sharing | Stored in Tampermonkey's storage on your computer. Never shared, never written to a log or a report. |
 | Key access level | Limited; Full is optional (your log). |
@@ -81,8 +81,17 @@ own before it asks, so the two together stay under that limit.
 
 ## Torn Shared Server
 
-Off until you save two things in Settings: the server's address (`https://….workers.dev`) and your password for it.
-It is the same server Torn Trading uses, with the same password. With nothing saved, nothing is sent.
+Nothing to set up, and no box to fill in. It is the same server Torn Trading uses, and it serves only the people
+its owner added. Torn Archive asks that one server (a `workers.dev` address, built into the script) whether this PC
+is one of theirs, and says your Torn id for it - never a key. The server says yes only for a person it reads with
+a key of, and only from the address where that person's Torn Trading checked in within the last week. Anyone else
+is answered as if nothing were there, is told nothing and tells nothing: Settings then says "working alone", and
+Torn Archive asks again by itself (after 5 minutes, 15, an hour, then every 6 hours; at once when Torn Trading
+comes on beside it).
+
+Why it matters: the server reads with your key, and Torn counts your key's requests and your apps' together. Told
+what Torn Archive uses, the server takes less; a Torn Archive it has not heard from can push the two past Torn's
+100 a minute.
 
 | | |
 | --- | --- |
@@ -90,11 +99,25 @@ It is the same server Torn Trading uses, with the same password. With nothing sa
 | What it is never told | A key. How many of anything you hold, your money, your trades, your prices, your profit. Any item that is not a plushie or a flower. |
 | What it gives | Bazaars as Torn itself shows them, read with a key of each of you: a price there is under a minute old, where TornW3B's can be hours old. Torn Archive then leaves those bazaars to the server and does not read them itself. Also the points market (once a minute) and the Item Market's cheapest rows of each piece (every minute for a piece still to buy, every ten for the rest): while the server's read is fresh, Torn Archive does not ask Torn for them. |
 | Your Torn limit | The server reads with your key too, so its part of your 100 a minute is left to it: Torn Archive and Torn Trading together plus the server stay under 80. |
-| Your password | Kept in Tampermonkey's storage like a key. It goes to that one address in a header, is never shown again, and is in no log and no report. |
+| Its address | Built in, never shown on the page, in no log and no report. An address and password typed into an older copy are still used, and can be forgotten in Settings. |
 
 Before anything is told to it, the server is asked what it is. One that keeps a single list a person (the first
 version) is never synced with: a sync from Torn Archive would overwrite what Torn Trading told it. Settings then
 says the server has to be updated first.
+
+## Trades, receipts and the list
+
+- **Open trades** are read again every minute, each one in full. Torn's own "changed at" time for a trade does not
+  move when items are put into it, so nothing else would notice a trade that was opened empty and filled a minute
+  later. When set pieces first show in a trade you are told once.
+- **A receipt** is made on TornW3B by itself when a trade ends, from your price list there - once every piece of the
+  trade is priced on that list, up to three tries five minutes apart, for a trade that ended in the last six hours.
+  A trade with a piece your TornW3B list does not price says so beside its button.
+- **Your log** is asked for a few kinds of row at a time (eight at most a request). The log line "Your log, read
+  through" says how many rows of each sort came in.
+- **"From my cash and stock"**: the number of sets is worked out from your money and what you hold. While a shopping
+  list is on hand that number is kept as it was when the list was made, whatever your money does; it is worked out
+  again when you make the list again, when it is empty, or when you change a setting it rests on.
 
 ## On Torn's pages
 

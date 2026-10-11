@@ -13,11 +13,13 @@ import { resolve, dirname } from 'node:path';
 
 import {
     SERVER_APP, SERVER_SYNC_MS, SERVER_GRANT_STALE_MS, SERVER_KEEP_MS, SERVER_BOUGHT_MS, SERVER_DIR_KEEP_MS, SERVER_TURN_WAIT_MS, SERVER_PAGE,
-    serverAddress, serverPassOk, serverVersion, serverMayCall, serverBody, serverOutgoingOk, serverKnowsApps, serverGrantIn, serverTake,
+    serverAddress, serverPassOk, serverClaim, serverVersion, serverMayCall, serverBody, serverOutgoingOk, serverKnowsApps, serverGrantIn, serverTake,
     serverPrune, serverReadKept, serverShop, serverDirIn, serverListReadAt, serverPerson, serverLines, serverMarketIn, SERVER_MARKET_FRESH_MS,
     serverUse, SERVER_WHOLE, SERVER_BESIDE_FRESH_MS,
 } from '../src/core/server.js';
-import { ServerLink, SERVER_CONFIG_KEY, SERVER_STATE_KEY, SERVER_GRANT_KEY, SERVER_RETRY_MS } from '../src/api/server-link.js';
+import { ServerLink, SERVER_CONFIG_KEY, SERVER_STATE_KEY, SERVER_GRANT_KEY, SERVER_CALLS_KEY, SERVER_RETRY_MS, SERVER_ADDRESS_RETRY_MS } from '../src/api/server-link.js';
+import { createHash } from 'node:crypto';
+import { usageAdd, usageCallsAdd } from '../src/core/usage.js';
 import { engineEmpty, engineLoad, foldServer, foldShop, foldListings, offersOf, shopNow, noteSeenBuy, engineInput, ENGINE_PIECES, SHOP_KEEP_MS } from '../src/engine/state.js';
 import { archiveSettings } from '../src/core/settings.js';
 import { TornApiClient } from '../src/api/client.js';
@@ -324,7 +326,7 @@ test('one exchange: the server is asked what it is first, then told; the passwor
         assert.ok(!c.url.includes(PASS), 'never in an address');
         assert.ok(!JSON.stringify(c.body).includes(PASS), 'never in the message');
     }
-    assert.deepEqual(r.syncs()[0].body, { app: 'torn-archive', ver: '1.0.0', used: 7, waiting: 2, sellers: [501], trades: [], looking: [501], since: 0, seen: 0, going: [], bought: [], worth: { [SHEEP]: 612 } });
+    assert.deepEqual(r.syncs()[0].body, { app: 'torn-archive', ver: '1.0.0', used: 7, waiting: 2, sellers: [501], trades: [], looking: [501], since: 0, seen: 0, going: [], bought: [], worth: { [SHEEP]: 612 }, calls: {} });
     assert.equal(r.took.length, 1);
     assert.deepEqual(r.link.grant(), { at: NOW, need: 30, serverShare: 50, serverTimes: [] });
     const st = r.link.status();
@@ -598,4 +600,166 @@ test('a Torn Trading on this PC that tells the server nothing: its whole limit i
     r.trading = false;
     await r.tick(SERVER_SYNC_MS);
     assert.equal(r.syncs()[3].body.used, 7);
+});
+
+// ---- what this PC asked, told to the server -----------------------------------------------------------------------------
+
+test('the counts in the message: tags and whole numbers only, 60 tags at most, none over 5,000; anything else is not sent', () => {
+    const body = serverBody({ ver: '1.2.0', pieces: PIECES, now: NOW, calls: { 't.inventory': 4, 'w.sets': 12.9, 'r.w.429': 1, 'w.big': 99999, 'x.junk': 3, 'W.Sets': 2, 't.zero': 0, 't.text': 'many' } });
+    assert.deepEqual(body.calls, { 't.inventory': 4, 'w.sets': 12, 'r.w.429': 1, 'w.big': 5000 });
+    assert.equal(serverOutgoingOk(body, PIECES), true);
+    assert.deepEqual(serverBody({ pieces: PIECES, now: NOW, calls: {} }).calls, {}, 'on, and nothing asked');
+    assert.equal('calls' in serverBody({ pieces: PIECES, now: NOW }), false, 'not said with this message');
+    for (const bad of [{ 'x.junk': 1 }, { 't.inventory': 0 }, { 't.inventory': 1.5 }, { 't.inventory': 5001 }, { 't.inventory': 'Lion Plushie' }, ['t.inventory'], 'text']) {
+        assert.equal(serverOutgoingOk({ ...body, calls: bad }, PIECES), false, JSON.stringify(bad));
+    }
+});
+
+test('the counts go with the first page of an exchange and come off only when the server answered', async () => {
+    const r = rig({ answer: okAnswer() });
+    r.link.saveConfig(ADDRESS, PASS);
+    const add = (counts) => {
+        const pending = {};
+        for (const [tag, n] of Object.entries(counts)) for (let i = 0; i < n; i += 1) usageAdd(pending, tag, r.t);
+        r.link.d.save(SERVER_CALLS_KEY, usageCallsAdd(r.link.d.load(SERVER_CALLS_KEY), pending, r.t));
+    };
+    add({ 't.inventory': 2, 'w.sets': 3, 'r.w.ok': 3 });
+    assert.equal(await r.tick(), true);
+    assert.deepEqual(r.syncs()[0].body.calls, { 't.inventory': 2, 'w.sets': 3, 'r.w.ok': 3 });
+    assert.deepEqual(r.link.d.load(SERVER_CALLS_KEY), { since: null, n: {} }, 'answered: taken off');
+    assert.equal(r.link.status().callsOut, 8);
+
+    // Nothing asked since: said as an empty list, so the server counts the minute as on.
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.deepEqual(r.syncs()[1].body.calls, {});
+
+    // The server does not answer: the counts wait, and go with the next exchange that is answered - once.
+    add({ 't.sets': 5 });
+    r.answer = (call) => (call.url.endsWith('/state') ? { status: 200, body: { apps: true, now: r.t } } : { status: 500, body: null });
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.deepEqual(r.syncs()[2].body.calls, { 't.sets': 5 });
+    assert.deepEqual(r.link.d.load(SERVER_CALLS_KEY).n, { 't.sets': 5 }, 'not answered: kept');
+    add({ 't.sets': 1 });
+    r.answer = okAnswer();
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.deepEqual(r.syncs()[3].body.calls, { 't.sets': 6 });
+    assert.deepEqual(r.link.d.load(SERVER_CALLS_KEY).n, {});
+    assert.equal(r.link.status().callsOut, 14);
+
+    // The server switched off: nothing waits for another one.
+    add({ 't.sets': 2 });
+    r.link.forget();
+    assert.equal(r.link.d.load(SERVER_CALLS_KEY), null);
+});
+
+// ---- nothing typed: the server built into the copy ------------------------------------------------------------------------
+
+const CLAIM = 'TornArchiveSameAddress0002000001';
+
+test('what Torn Archive says instead of a password: its fixed words and your Torn id, in the shape the server\'s door takes', () => {
+    assert.equal(serverClaim('2000001'), CLAIM);
+    assert.equal(serverClaim(2000001), CLAIM);
+    assert.equal(serverPassOk(CLAIM), true);
+    for (const bad of ['', null, undefined, 0, '0', 'abc', '12 3', '12345678901']) assert.equal(serverClaim(bad), null, String(bad));
+});
+
+test('nothing typed: the built-in server is asked as whoever Torn says you are - and a PC it does not serve is told nothing, and asked again later each time', async () => {
+    const r = rig({ answer: () => ({ status: 404, body: null }) });
+    r.link.d.home = ADDRESS;
+    r.link.d.getId = () => r.id || '';
+    // Torn has not said who you are: nothing is sent.
+    assert.equal(r.link.config(), null);
+    assert.equal(await r.tick(), false);
+    assert.equal(r.sent.length, 0);
+    assert.equal(serverLines(r.link.status(), r.t).level, 'idle');
+    assert.equal(r.link.status().builtIn, true);
+
+    r.id = '2000001';
+    assert.equal(await r.tick(), true);
+    assert.deepEqual(r.sent.map((c) => [c.method, c.url, c.headers.Authorization]), [['GET', ADDRESS + '/state', 'Bearer ' + CLAIM]]);
+    assert.equal(r.syncs().length, 0, 'turned away at the question: nothing was told');
+    let st = r.link.status();
+    assert.equal(st.why, 'address');
+    assert.equal(st.address, null, 'the built-in address is not shown');
+    assert.equal(r.link.on(), false, 'its requests are not counted for a server that does not serve it');
+    const lines = serverLines(st, r.t);
+    assert.equal(lines.level, 'alone');
+    assert.equal(lines.on, false);
+    assert.match(lines.now, /^Working alone\./);
+    assert.ok(!JSON.stringify(st).includes(ADDRESS));
+
+    // Asked again after 5 minutes, then 15, then an hour, then every 6 hours.
+    for (const wait of SERVER_ADDRESS_RETRY_MS) {
+        const n = r.sent.length;
+        assert.equal(await r.tick(wait - 1000), false, 'not before ' + wait / 60000 + ' min');
+        assert.equal(await r.tick(1000), true);
+        assert.equal(r.sent.length, n + 1);
+    }
+    const n = r.sent.length;
+    assert.equal(await r.tick(SERVER_ADDRESS_RETRY_MS[3] - 1000), false);
+    // Torn Trading came on, or the page was opened again: asked now.
+    r.link.wake();
+    assert.equal(await r.tick(), true);
+    assert.equal(r.sent.length, n + 1);
+
+    // The server knows this PC now: connected, with nothing typed and nothing shown.
+    r.answer = okAnswer();
+    r.link.wake();
+    assert.equal(await r.tick(MIN), true);
+    st = r.link.status();
+    assert.equal(st.on && st.own && st.error === null, true);
+    assert.equal(st.address, null);
+    assert.equal(r.link.on(), true);
+    assert.equal(r.syncs()[0].headers.Authorization, 'Bearer ' + CLAIM);
+    assert.equal(serverLines(st, r.t).level, 'ok');
+    assert.equal(r.store.has(SERVER_CONFIG_KEY), false, 'nothing was saved as typed');
+
+    // An address and password typed in an older copy go first.
+    r.link.saveConfig(ADDRESS, PASS);
+    assert.equal(await r.tick(MIN), true);
+    assert.equal(r.sent[r.sent.length - 1].headers.Authorization, 'Bearer ' + PASS);
+    assert.equal(r.link.status().own, false);
+});
+
+const WORLD_FILE = resolve(HERE, '..', '..', 'server', 'test', 'server-world.js');
+const serverWorld = existsSync(WORLD_FILE) ? await import(pathToFileURL(WORLD_FILE).href) : null;
+const skipWorld = serverWorld ? false : 'the server folder is not beside this one';
+
+test('against the server\'s own door: Torn Archive is let in on the PC where your Torn Trading runs, with nothing typed - and nowhere else', { skip: skipWorld }, async () => {
+    const { newWorld, KEY_ABE, KEY_VINCENT, WHO } = serverWorld;
+    const word = (key) => createHash('sha256').update('torn-shared-server:1:' + key, 'utf8').digest('hex');
+    const HOME = 'aaaaaaaaaaaaaaaa';
+    const ELSEWHERE = 'bbbbbbbbbbbbbbbb';
+    const BIDS = { app: 'torn-bids', ver: '3.26.2', used: 5, sellers: [11] };
+    const world = newWorld();
+    // Torn says whose each key is; then this person's Torn Trading checks in from home.
+    await world.host.enter(word(KEY_VINCENT), 'POST', '/sync', BIDS, ELSEWHERE);
+    await world.run(world.t + 60000);
+    let from = ELSEWHERE;
+    const answer = async (call) => {
+        const out = await world.host.enter(call.headers.Authorization.replace('Bearer ', ''), call.method, new URL(call.url).pathname, call.body, from);
+        return out ? { status: out.status, body: out.body } : { status: 404, body: null };
+    };
+    const r = rig({ answer, want: { sellers: [501], looking: [501], worth: Object.fromEntries(PIECES.map((id) => [id, 1000])) }, use: { used: 31, waiting: 0 }, version: '1.2.0' });
+    r.link.d.home = ADDRESS;
+    r.link.d.getId = () => String(WHO[KEY_ABE].id);
+
+    // Their Torn Trading has never been seen: not served.
+    assert.equal(await r.tick(), true);
+    assert.equal(r.link.status().why, 'address');
+    // It checks in from home; Torn Archive, on another PC, is still not served.
+    assert.equal((await world.host.enter(word(KEY_ABE), 'POST', '/sync', BIDS, HOME)).status, 200);
+    r.link.wake();
+    assert.equal(await r.tick(MIN), true);
+    assert.equal(r.link.status().why, 'address');
+    // On the same PC: let in, as that person, and its Torn use is counted with Torn Trading's.
+    from = HOME;
+    r.link.wake();
+    assert.equal(await r.tick(MIN), true);
+    const st = r.link.status();
+    assert.equal(st.error, null);
+    assert.deepEqual(st.you, WHO[KEY_ABE]);
+    assert.ok(st.need >= 31 + 5, 'the server leaves room for both apps: ' + st.need);
+    assert.deepEqual(st.beside, ['torn-bids']);
+    assert.equal(serverLines(st, r.t).level, 'ok');
 });

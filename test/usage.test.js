@@ -35,3 +35,29 @@ test('usage: a day of minutes, then hours for a week; the chart splits one servi
     // A week later, all gone.
     assert.equal(Object.keys(usageMerge(s, {}, NOW + 8 * 86400000).h).length, 0);
 });
+
+// ---- the counts for the shared server -----------------------------------------------------------------------------------
+
+test('the counts for the server: one sum by tag, the biggest 60 sent, what was sent taken off, an hour-old sum let go', async () => {
+    const { usageCallsAdd, usageCallsOut, usageCallsSent, USAGE_CALLS_KEEP_MS, usageLabel, usageCsv } = await import('../src/core/usage.js');
+    const T = Date.UTC(2026, 9, 11, 17);
+    const m = Math.floor(T / 60000);
+    let kept = usageCallsAdd(null, { [m]: { 't.inventory': 2, 'w.sets': 4, 'r.w.ok': 3, 'r.w.429': 1 }, [m + 1]: { 't.inventory': 1, 'Bad Tag': 9, 't.none': 0 } }, T);
+    assert.deepEqual(kept, { since: T, n: { 't.inventory': 3, 'w.sets': 4, 'r.w.ok': 3, 'r.w.429': 1 } });
+    assert.deepEqual(Object.keys(usageCallsOut(kept, T)), ['w.sets', 'r.w.ok', 't.inventory', 'r.w.429'], 'the biggest first');
+    // Counted while the answer was awaited: stays, and is young again.
+    kept = usageCallsAdd(kept, { [m + 2]: { 't.inventory': 5 } }, T + 1000);
+    kept = usageCallsSent(kept, { 't.inventory': 3, 'w.sets': 4, 'r.w.ok': 3, 'r.w.429': 1 }, T + 2000);
+    assert.deepEqual(kept, { since: T + 2000, n: { 't.inventory': 5 } });
+    assert.deepEqual(usageCallsOut(kept, T + 2000 + USAGE_CALLS_KEEP_MS), { 't.inventory': 5 });
+    assert.deepEqual(usageCallsOut(kept, T + 2001 + USAGE_CALLS_KEEP_MS), {}, 'an hour unsent: let go');
+    const many = {};
+    for (let i = 0; i < 70; i += 1) many['t.a' + i] = 70 - i;
+    many['t.huge'] = 9000;
+    const out = usageCallsOut({ since: T, n: many }, T);
+    assert.equal(Object.keys(out).length, 60);
+    assert.equal(out['t.huge'], 5000);
+    // How TornW3B answered is its own label, in the export under TornW3B, in no chart.
+    assert.equal(usageLabel('r.w.429'), 'r.w.429');
+    assert.match(usageCsv({ m: { [m]: { 'r.w.429': 2 } }, h: {} }), /TornW3B,Refused \(429 or a blocked page\),r\.w\.429,2/);
+});
