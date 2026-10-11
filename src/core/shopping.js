@@ -36,16 +36,55 @@ export function fillPlan(pieces, offersOf) {
         if (!left || !(p.worth > 0)) continue;
         const all = [...((offersOf && offersOf(p.id)) || [])].filter((o) => shWhole(o.price) > 0 && shWhole(o.qty) > 0).sort((a, b) => a.price - b.price);
         const seen = new Set();
+        // The Item Market's rows, cheapest first with everything else: what falls to them is one line.
+        let imQ = 0;
+        let imCost = 0;
+        let imRow = null;
+        let imAt = 0;
         for (const o of all) {
             if (!left || o.price >= p.worth) break;
+            const q = Math.min(left, shWhole(o.qty));
+            if (placeOf(o) === IM_PLACE) { if (!imRow) { imRow = o; imAt = out.length; } imQ += q; imCost += q * shWhole(o.price); left -= q; continue; }
             // One line per place: a second listing of the same seller at another price is left for the next read.
             if (seen.has(placeOf(o))) continue;
             seen.add(placeOf(o));
-            const q = Math.min(left, shWhole(o.qty));
             out.push(shLine(p, o, q));
             left -= q;
         }
+        if (imQ) out.splice(imAt, 0, shLine(p, { ...imRow, price: Math.ceil(imCost / imQ) }, imQ));
     }
+    return out;
+}
+
+/**
+ * What one place has of a piece for you. A bazaar: its cheapest listing. The Item Market: it is one page with a
+ * row for every price, so it is its rows under the piece's worth taken together - `qty` all of them, `price`
+ * what each of the cheapest `want` costs on average (none under the worth: its cheapest row, which is then dear).
+ * @returns null when the place lists none
+ */
+export function placeOffer(offers, place, worth, want = 0) {
+    const rows = (offers || []).filter((o) => placeOf(o) === place && shWhole(o.qty) > 0 && shWhole(o.price) > 0).sort((a, b) => a.price - b.price);
+    if (!rows.length) return null;
+    if (place !== IM_PLACE) return rows[0];
+    const under = rows.filter((o) => worth > 0 && o.price < worth);
+    if (!under.length) return rows[0];
+    const qty = under.reduce((s, o) => s + shWhole(o.qty), 0);
+    let left = Math.min(qty, shWhole(want) || qty);
+    const units = left;
+    let cost = 0;
+    for (const o of under) { const q = Math.min(left, shWhole(o.qty)); cost += q * shWhole(o.price); left -= q; if (!left) break; }
+    return { ...under[0], price: Math.ceil(cost / units), qty };
+}
+
+/**
+ * `units` of a piece spread over the Item Market's rows under its worth, cheapest first: how many fall to each
+ * of `rows` (in the order given; a row over the worth gets none).
+ */
+export function imShares(rows, worth, units) {
+    const order = (rows || []).map((o, i) => ({ o, i })).filter((x) => worth > 0 && x.o.price < worth && shWhole(x.o.qty) > 0).sort((a, b) => a.o.price - b.o.price || a.i - b.i);
+    const out = (rows || []).map(() => 0);
+    let left = shWhole(units);
+    for (const { o, i } of order) { const q = Math.min(left, shWhole(o.qty)); out[i] = q; left -= q; if (!left) break; }
     return out;
 }
 
@@ -54,8 +93,11 @@ export function toggleLine(cart, piece, offer) {
     const key = lineKey(piece.id, placeOf(offer));
     const list = cart || [];
     if (list.some((l) => l.key === key)) return list.filter((l) => l.key !== key);
-    const q = Math.min(shWhole(offer.qty), shWhole(piece.need) - onList(list, piece.id));
-    return q > 0 ? [...list, shLine(piece, offer, q)] : list;
+    const want = shWhole(piece.need) - onList(list, piece.id);
+    // The Item Market: whichever of its rows was pressed, the line is its rows under the worth, cheapest first.
+    const o = placeOf(offer) === IM_PLACE ? placeOffer(piece.offers || [offer], IM_PLACE, piece.worth, want) || offer : offer;
+    const q = Math.min(shWhole(o.qty), want);
+    return q > 0 ? [...list, shLine(piece, o, q)] : list;
 }
 
 export const dropLine = (cart, key) => (cart || []).filter((l) => l.key !== key);
@@ -77,10 +119,10 @@ export function refreshList(cart, pieces, offersOf, tookOf = null) {
     const taken = new Map();
     for (const l of cart || []) {
         const p = byId.get(String(l.id));
-        const offer = ((offersOf && offersOf(l.id)) || []).filter((o) => placeOf(o) === l.place && shWhole(o.qty) > 0).sort((a, b) => a.price - b.price)[0];
         const took = Math.min(shWhole(l.q), shWhole(tookOf ? tookOf(l.key) : 0));
         const had = taken.get(String(l.id)) || 0;
         const need = p ? shWhole(p.need) - had : 0;
+        const offer = placeOffer((offersOf && offersOf(l.id)) || [], l.place, p ? p.worth : 0, Math.min(shWhole(l.q) - took, Math.max(0, need)));
         const dear = !p || !(p.worth > 0) || (offer && offer.price >= p.worth);
         if (took && (!offer || dear || need <= 0)) { out.push({ ...l, q: took }); continue; }
         if (!offer) dropped.push({ key: l.key, name: l.name, why: 'gone' });
@@ -120,7 +162,19 @@ export function stopsOf(cart, worthOf) {
 export const RUN_IDLE = Object.freeze({ on: false, at: 0, took: {}, place: null });
 
 export function runStart(stops) {
-    return stops && stops.length ? { on: true, at: 0, took: {}, place: stops[0].place } : { ...RUN_IDLE };
+    return stops && stops.length ? { on: true, at: 0, took: {}, place: stops[0].place, order: stops.map((s) => s.place) } : { ...RUN_IDLE };
+}
+
+/**
+ * The stops in the order the run began in. They are sorted by what they save, and that moves with every read (a
+ * listing partly sold, a price changed): a stop that slid ahead of the one you stand on would read "skipped" and
+ * never be reached. A place new to the list goes last.
+ */
+export function runOrder(stops, run) {
+    if (!run || !run.on || !Array.isArray(run.order)) return stops || [];
+    const at = new Map(run.order.map((place, i) => [place, i]));
+    const rank = (s) => (at.has(s.place) ? at.get(s.place) : run.order.length);
+    return (stops || []).map((s, i) => [s, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
 }
 
 /** The stop the run stands on, found again by its place: the list may have been re-sorted by a fresh read. */
@@ -153,6 +207,15 @@ export const tookAt = (run, stop) => (stop ? stop.lines.reduce((s, l) => s + Mat
  */
 export function runView(run, stops) {
     const list = stops || [];
+    // Over, and summed when it ended: what was taken has left the list, so the lines are what is still to buy.
+    if (run && run.done && run.sum) {
+        const rows = list.map((s) => ({ ...s, took: 0, state: '' }));
+        return {
+            stops: rows, at: -1, began: true,
+            units: shWhole(run.sum.units), cost: rows.reduce((s, r) => s + r.cost, 0), gain: rows.reduce((s, r) => s + r.gain, 0),
+            got: shWhole(run.sum.got), skipped: shWhole(run.sum.skipped),
+        };
+    }
     const at = runAt(run, list);
     const began = !!(run && (run.on || run.done));
     const past = (i) => began && (run.done || i < at);

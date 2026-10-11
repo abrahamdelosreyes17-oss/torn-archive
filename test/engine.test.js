@@ -464,6 +464,26 @@ test('with a Full key: a buy seen on the page counts at once, and its row in Tor
     assert.equal(piece(r.view(), 186).held, before + 2);
 });
 
+test('with a Full key: in the minutes after the log brings a buy seen on the page, it is still one buy (the owner, 2026-10-11: "the need and everything is fake")', async (t) => {
+    const r = rig(t);
+    const before = piece(await r.ready(), 186).held;
+    r.fake.buy(3000005, 186, 2);
+    r.engine.note('buy', { t: Date.now(), id: '186', qty: 2, price: 880, whoId: '3000005' });
+    const shown = [];
+    for (let k = 0; k < 16; k++) { await r.go(15000); shown.push(piece(r.view(), 186).held); }
+    assert.deepEqual(shown.filter((n) => n !== before + 2), [], 'every look in the four minutes after the buy shows it once');
+});
+
+test('with a Full key: the page saw more than was bought - the log says how many, and the count follows the log at once', async (t) => {
+    const r = rig(t);
+    const before = piece(await r.ready(), 186).held;
+    r.fake.buy(3000005, 186, 2);
+    r.engine.note('buy', { t: Date.now(), id: '186', qty: 9, price: 880, whoId: '3000005' });
+    assert.equal(piece(r.view(), 186).held, before + 9, 'the page is all there is, for a moment');
+    await r.go(40000);
+    assert.equal(piece(r.view(), 186).held, before + 2, 'the log has the buy: its number stands');
+});
+
 test('a line you bought: off the list at once with no run on; ticked on it, and kept, while a run is on', async (t) => {
     const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
     await r.ready();
@@ -588,4 +608,87 @@ test('"from my cash": the sets a list was made for stay while the list is on han
     // A list made now is made for that.
     r.engine.act('makeList');
     assert.deepEqual(r.view().pieces.map((p) => [p.id, p.target]), after);
+});
+
+// ---- the buying list, after the owner's report of 2026-10-11 ("its still stale items, and non existent items") ----------
+
+test('a piece open on "Sold by": every bazaar its table shows is asked of Torn itself, and Read now asks them again', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    const baz = (x) => x.offers.slice(0, 14).filter((o) => o.src !== 'market').length;
+    const p = r.view().pieces.filter((x) => baz(x) > 1).sort((a, b) => baz(b) - baz(a))[0];
+    assert.ok(p, 'a piece sold by more than one bazaar');
+    const shown = p.offers.slice(0, 14).filter((o) => o.src !== 'market').map((o) => String(o.whoId));
+    const asked = (since) => new Set(r.torn('/v2/user', (c) => BAZAAR_READ(c) && c.t >= since).map((c) => String(c.query.id)));
+    let since = Date.now();
+    r.engine.act('look', String(p.id));
+    await r.go(2 * MIN);
+    assert.deepEqual(shown.filter((id) => !asked(since).has(id)), [], 'each bazaar of the table was read from Torn');
+    const rows = piece(r.view(), p.id).offers.filter((o) => o.src !== 'market' && shown.includes(String(o.whoId)));
+    assert.ok(rows.length > 0 && rows.every((o) => o.from === 'torn'), 'and the rows left say so: none is TornW3B\'s copy');
+    since = Date.now() + 1;
+    await r.wait(1);
+    r.engine.act('readNow');
+    await r.go(MIN);
+    assert.deepEqual(shown.filter((id) => !asked(since).has(id)), [], 'Read now reads them again');
+});
+
+test('a run ends: what you took leaves the list once, and its count stands on the next looks', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    r.engine.act('run', 'start');
+    const stops = r.view().buy.run.stops;
+    assert.ok(stops.length > 1, 'more than one stop');
+    const first = stops[0].lines[0];
+    r.engine.note('buy', { t: Date.now(), id: String(first.id), qty: first.q, price: first.price, whoId: String(first.whoId) });
+    for (let i = 0; i < stops.length; i++) r.engine.act('run', 'next');
+    assert.equal(r.engine.state.run.done, true);
+    assert.deepEqual(r.engine.state.run.took, {});
+    assert.equal(r.engine.state.run.sum.got, first.q);
+    assert.ok(!r.engine.state.cart.some((l) => l.key === first.key), 'the line bought whole is off the list');
+    const left = r.engine.state.cart.reduce((s, l) => s + l.q, 0);
+    await r.go(3 * MIN);
+    assert.equal(r.view().buy.run.got, first.q, 'the same count three minutes on');
+    assert.ok(r.engine.state.cart.reduce((s, l) => s + l.q, 0) <= left, 'nothing comes back onto the list by itself');
+    // Closed and opened again: the summed run is read back as it was.
+    r.restart();
+    assert.equal(r.engine.state.run.sum.got, first.q);
+});
+
+test('a buy on the Item Market\'s page during a run is counted on the Item Market\'s line', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    const any = r.engine.state.cart[0];
+    assert.ok(any, 'the list has a line');
+    // A line of the Item Market, as Add makes it.
+    const key = `${any.id}|im`;
+    r.engine.state.cart = [...r.engine.state.cart.filter((l) => l.key !== key), { ...any, key, place: 'im', im: true, who: null, whoId: null, q: 3 }];
+    r.engine.act('run', 'start');
+    r.engine.note('buy', { t: Date.now(), id: String(any.id), qty: 2, price: any.price, im: true });
+    assert.equal(r.engine.state.run.took[key], 2);
+    assert.equal(r.engine.state.run.took[any.key] || 0, 0, 'and not on a bazaar\'s line');
+});
+
+test('a finished trade Torn will not hand over does not hold up the trades after it; after three tries it is left out and said', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    const a = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 2 }] }));
+    const b = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 186, qty: 3 }] }));
+    await r.go(2 * MIN);
+    const real = r.fake.fetch;
+    r.fake.fetch = (url, init) => (String(url).includes(`/v2/user/${a}/trade`) ? Promise.reject(new Error('down')) : real(url, init));
+    r.fake.finishTrade(a, { pay: 2 * payOf(r.world, 384) });
+    await r.wait(2000);
+    r.fake.finishTrade(b, { pay: 3 * payOf(r.world, 186) });
+    await r.go(20 * MIN);
+    const done = r.view().trades.finished.map((x) => x.id);
+    assert.ok(done.includes(b), 'the trade after it is in');
+    assert.ok(!done.includes(a), 'the one Torn refused is not');
+    assert.equal(r.said.filter((s) => /finished trade could not be read/.test(s.what)).length, 1, 'said once');
+    // Torn answers again: nothing is asked for twice, and the later trade is still there once.
+    r.fake.fetch = real;
+    await r.go(5 * MIN);
+    assert.equal(r.view().trades.finished.filter((x) => x.id === b).length, 1);
 });

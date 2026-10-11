@@ -47,6 +47,11 @@ your browser. Nothing is sent to that site.
   into its own quantity box - the ones open now, and each other one as you open it or scroll to it. It never
   scrolls for you, never opens a box and never presses Buy; a second press puts back what was there. Typing a
   number sends nothing to Torn.
+- Opened from a link of Torn Archive's that names a listing (the hub's "Sold by", a stop of your run), the page is
+  brought to that listing once, when it is on the page, and it pulses until you press anything.
+- **Your stock** stands on its own on the other side of Torn's page while you are on a bazaar or the Item Market,
+  where that side has room: each piece, what you hold now and what the set needs, moving as you buy. A piece
+  turns red when the number in its open Buy box is more than you need. Torn's box is never changed for you.
 - **Copy** puts text on your clipboard. You paste and send it.
 - A link opens one page, on your press.
 - Torn's pages are read as they are in front of you. No page is loaded in the background, and nothing is asked of

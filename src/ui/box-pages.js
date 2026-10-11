@@ -56,6 +56,46 @@ function bxCheck(p, { n, right = '', cls = '', sub = '', held, act = '' }) {
 }
 
 /**
+ * Your stock on its own, beside Torn's page while you buy (the owner, 2026-10-11: "my separate overlay with live
+ * tracking ... a warning that turns red if im buying more than i need"). Every piece of the sets you build: what
+ * you hold now - a buy seen here a moment ago counted in - against what the set needs. A piece turns red when the
+ * number in its open Buy box is more than you need.
+ * @param live { pend: { itemId: units }, typed: { itemId: units in an open Buy box here }, here: [itemId on this page] }
+ * @returns { head, html, over: [{ id, name, typed, need }] }
+ */
+export function boxStock(v, live = {}) {
+    const pend = live.pend || {};
+    const typed = live.typed || {};
+    const here = new Set((live.here || []).map(String));
+    const whole = (n) => Math.max(0, Math.floor(Number(n) || 0));
+    const over = [];
+    let togo = 0;
+    let body = '';
+    for (const s of v.sets) {
+        let full = Infinity;
+        let rows = '';
+        for (const p of s.pieces) {
+            const id = String(p.id);
+            const held = p.held + whole(pend[id]);
+            const target = Math.max(0, p.held + p.need - p.ahead);
+            const need = Math.max(0, target - held);
+            const t = whole(typed[id]);
+            const more = t > need ? t - need : 0;
+            if (more) over.push({ id, name: p.name, typed: t, need });
+            togo += need;
+            full = Math.min(full, held);
+            const cls = more ? 'over' : need > 0 ? 'need' : held > target ? 'ahead' : 'ok';
+            const say = more ? `typing ${hNum(t)} · ${hNum(more)} too many` : t ? `typing ${hNum(t)} of ${hNum(need)}` : need > 0 ? `need ${hNum(need)}` : held > target ? `${hNum(held - target)} ahead` : 'enough';
+            const w = target ? Math.min(100, Math.round((held / target) * 100)) : 100;
+            rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
+        }
+        body += bxHead(`${hEsc(s.label)} sets`, `${hNum(Number.isFinite(full) ? full : 0)} full of ${hNum(s.target)}`) + rows;
+    }
+    const warn = over.length ? `<div class="ta-hold st-over"><b>More than you need.</b> ${over.map((o) => `${hEsc(o.name)}: ${hNum(o.typed)} typed, ${o.need ? `you need ${hNum(o.need)}` : 'you need no more'}`).join(' · ')}</div>` : '';
+    return { head: over.length ? 'more than you need' : togo ? `${hNum(togo)} to go` : 'every piece is in', html: warn + body, over };
+}
+
+/**
  * Someone's bazaar, or the Item Market: the checklist of what to buy here, each piece with what you hold of it.
  * @param cards [{ itemId, price, qty, typed, hasBox }] the listings on the page, in page order
  * @param place 'b:' + the owner's id, or 'im'
@@ -85,6 +125,8 @@ export function boxBazaar(v, cards, place, live = {}) {
     const rows = [];
     const fill = [];
     const onPage = new Set();
+    // Units already given to cards of the same piece further up the page (the Item Market has a row for every price).
+    const usedOn = new Map();
     let any = false;
     cards.forEach((c, i) => {
         const p = viewPiece(v, c.itemId);
@@ -93,29 +135,40 @@ export function boxBazaar(v, cards, place, live = {}) {
         const id = String(p.id);
         const line = lineOf(id);
         // The Item Market lists one piece many times: only the listings worth taking are marked.
-        if (im && (line ? c.price > line.price : !(p.need > 0 && c.price < p.worth))) return;
+        if (im && !(c.price > 0 && c.price < p.worth && (line || p.need > 0))) return;
         const first = !onPage.has(id);
         onPage.add(id);
         const need = Math.max(0, p.need - gotOf(id));
         const taken = line ? takenOn(line) : 0;
         const left = line ? line.q - taken : need > 0 && c.price > 0 && c.price < p.worth ? need : 0;
         // Never more than the listing holds, as the page says it now.
-        const take = first ? (c.qty > 0 ? Math.min(left, c.qty) : left) : 0;
+        // On the Item Market the piece's rows share what is left, in the order the page has them. A card that does
+        // not say its stock (a category tile there) gets no number: "buy 150 here" where three exist is a guess.
+        const used = usedOn.get(id) || 0;
+        const open = Math.max(0, left - used);
+        const blind = im && !(c.qty > 0);
+        const take = first || im ? (c.qty > 0 ? Math.min(open, c.qty) : blind ? 0 : open) : 0;
+        usedOn.set(id, used + take);
         const cap = line ? take : need;
         let text;
         let state;
         let ring = '';
         if (c.typed > cap && c.typed > 0) { text = cap ? `typing ${hNum(c.typed)} · you ${line ? 'listed' : 'need'} ${hNum(cap)}` : `typing ${hNum(c.typed)} · you need no more`; state = 'over'; ring = 'over'; }
         else if (take > 0 && c.typed === take) { text = `${hNum(take)} typed · press Buy`; state = line ? 'top' : ''; ring = line ? 'top' : 'need'; }
-        else if (line && take > 0) { text = `on your list · buy ${hNum(take)}${take < left ? ' · all it has' : ''}`; state = 'top'; ring = 'top'; }
-        else if (line && taken > 0) { text = `took ${hNum(taken)} ✓`; state = 'good'; }
-        else if (take > 0) { text = `need ${hNum(need)} · worth ${hMoney(p.worth)}`; state = ''; ring = 'need'; }
-        else if (need > 0) { text = `need ${hNum(need)} · over its worth`; state = 'ok'; }
-        else if (p.ahead > 0) { text = `${hNum(p.ahead)} ahead already`; state = 'ahead'; }
-        else { text = 'enough for now'; state = 'ok'; }
+        // The owner, 2026-10-11: "it says need 150 ... but it only has a few things there. Can it just tell me how
+        // much I need from that bazaar". So the mark says what to take HERE, never the whole of what you need.
+        else if (line && take > 0) { text = `buy ${hNum(take)} here · on your list${take < open ? ' · all it has' : ''}`; state = 'top'; ring = 'top'; }
+        else if (blind && open > 0) { text = 'under its worth · open it for the stock'; state = ''; ring = 'need'; }
+        else if (line && taken > 0 && first) { text = `took ${hNum(taken)} ✓`; state = 'good'; }
+        else if (take > 0) { text = `buy ${hNum(take)} here${take < open ? ' · all it has' : ''}`; state = ''; ring = 'need'; }
+        else if (im && need > 0) { text = 'no more needed from this row'; state = 'ok'; }
+        else if (need > 0) { text = 'none here · over its worth'; state = 'ok'; }
+        else if (p.ahead > 0) { text = `none here · ${hNum(p.ahead)} ahead already`; state = 'ahead'; }
+        else { text = 'none here · enough for now'; state = 'ok'; }
         marks.push({ i, text, state, ring });
         if (take > 0) fill.push({ i, n: take });
-        if (first && (take > 0 || taken > 0)) rows.push({ p, c, i, take, line, taken, short: take < left });
+        // The Item Market: each price row you are to buy from is a row of the box, with its own number and price.
+        if (first ? take > 0 || taken > 0 : take > 0) rows.push({ p, c, i, take, line, taken: first ? taken : 0, short: take < open });
     });
     // On your list here, and not on the page as it stands: further down the bazaar (Torn draws only the listings
     // near the screen), or sold since the list was made.

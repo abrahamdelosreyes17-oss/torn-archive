@@ -43,9 +43,9 @@ export function fixtureInput(now = Date.UTC(2026, 9, 10, 14, 30), over = {}) {
         for (let j = 0; j < n; j++) {
             const [who, whoId] = SELLERS[(first + j * step) % SELLERS.length];
             const price = j ? Math.max(Math.round(baz * (1 + 0.0045 * j + R2() * 0.004) / 10) * 10, Math.ceil(pay * 1.001 / 10) * 10 + 10 * j) : baz;
-            list.push({ price, qty: j ? 2 + Math.floor(R2() * 22) : id === 274 ? 6 : id === 263 ? 12 : 1 + Math.floor(R() * 38), src: 'bazaar', who, whoId });
+            list.push({ price, qty: j ? 2 + Math.floor(R2() * 22) : id === 274 ? 6 : id === 263 ? 12 : 1 + Math.floor(R() * 38), src: 'bazaar', who, whoId, at: j < 2 ? now - 40000 : now - (4 + j * 5) * MIN, from: j < 2 ? 'torn' : 'w3b' });
         }
-        list.push({ price: Math.round(mv * (id === 274 || id === 263 ? 1.03 : 1.014 + R() * 0.04)), qty: 3 + Math.floor(R2() * 30), src: 'market' });
+        list.push({ price: Math.round(mv * (id === 274 || id === 263 ? 1.03 : 1.014 + R() * 0.04)), qty: 3 + Math.floor(R2() * 30), src: 'market', at: now - 90000, from: 'torn' });
         offers[id] = list;
     });
 

@@ -72,6 +72,14 @@ export const BOX_CSS = `
 .lk { color: #9cc6ff; cursor: pointer; text-decoration: none; } .lk:hover { color: #c9bfff; }
 .num { font-variant-numeric: tabular-nums; }
 .t-good { color: var(--good); } .t-bad { color: #ff8a87; }
+/* Your stock, on its own beside the page: a row a piece, its count moving as you buy. Red = more than you need. */
+.st-r { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1px 8px; padding: 3px 8px; border-radius: 8px; border: 1px solid transparent; }
+.st-r .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); } .st-r.here .n { color: var(--text); font-weight: 600; }
+.st-r .x { grid-column: 2; color: var(--muted); font-size: 11.5px; white-space: nowrap; } .st-r .bar { grid-column: 3; width: 54px; flex: none; }
+.st-r.need .x { color: var(--need); } .st-r.ahead .x { color: var(--warn); } .st-r.ok .x { color: var(--good); }
+.st-r.over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .st-r.over .x, .st-r.over b { color: #ff8a87; font-weight: 600; } .st-r.over .bar i { background: #ff7878; }
+.ta-hold.st-over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .ta-hold.st-over b { color: #ff8a87; }
+.ta.ts .ta-h { cursor: default; } .ta.ts .ta-b { gap: 3px; } .ta.ts .ta-b h4 { margin-top: 5px; }
 .pill { position: fixed; z-index: 99990; right: 12px; bottom: 56px; height: 34px; padding: 0 12px 0 6px; display: inline-flex; align-items: center; gap: 8px; border-radius: 999px;
   border: 1px solid var(--line2); background: var(--panel); color: var(--text); font: 600 12px/1 var(--sans); box-shadow: 0 8px 24px rgba(0,0,0,.5); cursor: pointer; white-space: nowrap; }
 .pill:hover { background: var(--raised); }

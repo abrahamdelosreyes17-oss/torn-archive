@@ -10,7 +10,7 @@ import { marginWords } from '../core/margin.js';
 import { VERDICT_WORDS } from '../core/verdict.js';
 import { TURN_WORDS } from '../core/trades.js';
 import { lotsWords, waitWords } from '../core/lots.js';
-import { placeOf, lineKey } from '../core/shopping.js';
+import { placeOf, lineKey, imShares, IM_PLACE } from '../core/shopping.js';
 import { bazaarUrl } from '../core/feed.js';
 import { itemMarketUrl, MUSEUM_URL, POINTS_MARKET_URL, tradeViewUrl } from '../sources/route.js';
 import { TORN_PER_MINUTE_ALONE, W3B_PER_MINUTE_ALONE } from '../core/turns.js';
@@ -89,6 +89,7 @@ function pgTodo(v, t) {
     if (t.kind === 'buy') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Under their worth, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
     if (t.kind === 'swap') return row(tone.brand, ic('brand'), `<b>Swap ${hPlural(t.n, 'set')}.</b> ${hNum(t.points)} points.`, hOut(MUSEUM_URL, 'Museum', 'btn sm out'));
     if (t.kind === 'hold') return row(tone.warn, ic('points'), `<b>Hold your points.</b> Under the usual ${hMoney(t.usual)}.`, '<button class="btn sm" data-go="points">Points</button>');
+    if (t.loss) return row(tone.warn, ic('points'), `<b>Your ${hNum(t.n)} points would sell at a loss.</b> They cost you ${hMoney(t.each)} each, the market pays ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
     return row(tone.good, ic('points'), `<b>Sell ${hNum(t.n)} points.</b> At ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
 }
 
@@ -213,12 +214,20 @@ function pgWhere(v, p, lines) {
     if (!p) return '';
     const hist = sparkSvg(p.hist, 'var(--muted)', 54, 20);
     const under = p.offers.filter((o) => o.price < p.worth);
-    const rows = p.offers.slice(0, 14).map((o) => {
+    const shown = p.offers.slice(0, 14);
+    // The Item Market is one line for all its rows: each row says its own part of it, cheapest first.
+    const imLine = lines.get(lineKey(p.id, IM_PLACE));
+    const want = Math.max(0, p.need - p.listed);
+    const imPart = imShares(shown.map((o) => (o.src === 'market' ? o : { price: 0, qty: 0 })), p.worth, imLine ? imLine.q : want);
+    const rows = shown.map((o, k) => {
+        const im = o.src === 'market';
         const key = lineKey(p.id, placeOf(o));
-        const on = lines.get(key);
-        const q = Math.min(o.qty, Math.max(0, p.need - p.listed));
+        const on = im ? (imLine && imPart[k] ? { q: imPart[k] } : null) : lines.get(key);
+        const q = im ? (imLine ? 0 : imPart[k]) : Math.min(o.qty, want);
         const btn = on ? `<button class="btn sm" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}" title="Take it off the list">${on.q} on list ✓</button>` : o.price < p.worth && q ? `<button class="btn sm go" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}">Add ${q}</button>` : '';
-        return `<div class="wl ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span><span class="wl-a">${btn}</span></div>`;
+        // Torn's own answer, or TornW3B's older copy of that bazaar: said on the row, with its age.
+        const age = o.at ? `<span class="n num ${o.from === 'w3b' ? 't-warn' : 't-muted'}" title="${o.from === 'w3b' ? "TornW3B's copy of this bazaar: Torn itself has not been asked yet" : 'Read from Torn itself'}">${o.from === 'w3b' ? 'TornW3B · ' : ''}${hAge(o.at, v.at).replace(' ago', '')}</span>` : '<span></span>';
+        return `<div class="wl ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
     }).join('');
     const u = p.under.units;
     const foot = (under.length ? `<b>${hNum(u)}</b> under its worth in ${hPlural(p.under.places, 'place')}` : 'Nowhere under its worth now')
@@ -226,7 +235,7 @@ function pgWhere(v, p, lines) {
         + (p.offers.some((o) => o.price < p.pay) ? ' Violet: cheaper than you pay sellers.' : '');
     return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
     <div class="wl-s">Worth <b>${hMoney(p.worth)}</b> to you · you pay sellers <b>${hMoney(p.pay)}</b></div>
-    ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span></span></div>${rows}` : pgNone('Nobody lists it now.')}
+    ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span class="n">Checked</span><span></span></div>${rows}` : pgNone('Nobody lists it now.')}
     <div class="wl-s foot">${foot}</div></div>`;
 }
 
@@ -299,6 +308,8 @@ function pgBuy(d, ui) {
     const all = ui.pane === 1;
     const rows = v.pieces.filter((p) => all || p.need).sort((a, b) => (b.target ? b.need / b.target : 0) - (a.target ? a.need / a.target : 0));
     const sel = viewPiece(v, ui.sel) || rows[0] || v.pieces[0] || null;
+    // Read by the hub after the draw: the piece whose sellers are shown.
+    ui.shown = sel ? String(sel.id) : '';
     const plan = v.buy.plan;
     const table = rows.length ? '<thead><tr><th>Piece</th><th class="n">Need</th><th class="n">Cheapest</th><th>Where</th><th class="n">Under its worth</th><th class="n">On your list</th></tr></thead><tbody>' + rows.map((p) => {
         const low = p.low;

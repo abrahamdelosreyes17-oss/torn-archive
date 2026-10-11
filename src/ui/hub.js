@@ -222,6 +222,8 @@ export function mountHub(doc, actions) {
         if (!desk) return;
         drawShell();
         const html = hubPage(desk, ui);
+        // The piece whose sellers are on the screen: its bazaars are checked with Torn itself (told at most once a minute).
+        if (ui.page === 'buy' && ui.shown) act('look', ui.shown);
         if (!fresh && html === shown) { drawCharts(false); return; }
         shown = html;
         const whole = patch(html, fresh);
@@ -266,7 +268,7 @@ export function mountHub(doc, actions) {
         if (a === 'set') act('set', { [id]: setValue(id, v) });
         else if (a === 'which') { const which = { ...desk.view.settings.which }; which[v] = !which[v]; act('set', { which }); }
         else if (a === 'pick') { ui.sel = id; const p = desk.view.pieces.find((x) => String(x.id) === id); go('buy', p && p.need ? 0 : 1); }
-        else if (a === 'sel') { ui.sel = id; draw(false); }
+        else if (a === 'sel') { ui.sel = id; act('look', id); draw(false); }
         else if (a === 'trade') { ui.trade = id; draw(false); }
         else if (a === 'range') { ui.range[id] = Number(v); draw(false); }
         else if (a === 'unit') { ui.unit = v; draw(false); }

@@ -39,6 +39,16 @@ test('unplanned buys are counted from the page the way planned ones are: a card\
     assert.deepEqual(gone.bought, [], 'Dahlia gone, nothing pressed: someone else - not counted');
     const pressed = stockBuys(r.seen, [card('1', 'Hammer', 50, 7)], new Set(['2|900']));
     assert.deepEqual(pressed.bought, [{ itemId: '2', name: 'Dahlia', price: 900, qty: 3 }]);
+    // Torn Archive 1.2.2: gone counts for no more than the number in the Buy box when Torn's Buy was pressed.
+    const part = stockBuys({ '2|900': { qty: 2518, itemId: '2', price: 900, name: 'Dahlia' } }, [], new Map([['2|900', 500]]));
+    assert.deepEqual(part.bought.map((b) => b.qty), [500], 'a listing of 2,518 gone with 500 typed: 500, never 2,518');
+    assert.deepEqual(stockBuys({ '2|900': { qty: 3, itemId: '2', price: 900, name: 'Dahlia' } }, [], new Map([['2|900', 500]])).bought.map((b) => b.qty), [3], 'never more than it had');
+    assert.deepEqual(stockBuys({ '2|900': { qty: 3, itemId: '2', price: 900, name: 'Dahlia' } }, [], new Map()).bought, [], 'Buy never pressed: opened, closed, scrolled past - nothing');
+    // And a stock that fell counts only on a listing you pressed in: someone else may have bought.
+    const fell = { '1|50': { qty: 10, itemId: '1', price: 50, name: 'Hammer' } };
+    assert.deepEqual(stockBuys(fell, [card('1', 'Hammer', 50, 4)], new Map(), new Set()).bought, [], 'fell with no press of yours: not your buy');
+    assert.deepEqual(stockBuys(fell, [card('1', 'Hammer', 50, 4)], new Map(), new Set(['1|50'])).bought.map((b) => b.qty), [6]);
+    assert.equal(stockBuys(fell, [card('1', 'Hammer', 50, 4)], new Map(), new Set()).seen['1|50'].qty, 4, 'its new stock is what the next look starts from');
     // A card whose stock the page does not say is never counted.
     const unknown = stockBuys({ '3|10': { qty: 1, itemId: '3', price: 10, name: 'X' } }, [card('3', 'X', 10, 1, { qtyAssumed: true })]);
     assert.deepEqual(unknown.bought, []);

@@ -71,6 +71,23 @@ test('a buy seen on the page counts at once, and leaves when the log has been re
     assert.equal(seenWaiting(seen, T0 + 3 * MIN).length, 0);
 });
 
+test('a buy seen on the page is not added on top of a count Torn made after it', () => {
+    // Two reads carrying the same time: that time is when Torn counted.
+    let s = stockInventory(STOCK_EMPTY, { 263: 3 }, T0, ids, mv, T0 - MIN);
+    s = stockInventory(s, { 263: 3 }, T0 + 2 * MIN, ids, mv, T0 - MIN);
+    const seen = [{ t: T0 + 3 * MIN, id: 263, qty: 4 }];
+    assert.equal(stockHeld(s, seen, [], 0)(263), 7, 'Torn counted before the buy: the buy is added');
+    s = stockInventory(s, { 263: 7 }, T0 + 70 * MIN, ids, mv, T0 + 60 * MIN);
+    assert.equal(stockHeld(s, seen, [], 0)(263), 7, 'Torn counted after it: 7, not 11');
+    assert.equal(stockHeld(s, [{ t: T0 + 65 * MIN, id: 263, qty: 2 }], [], 0)(263), 9, 'a buy after that count is added');
+});
+
+test('a buy seen on the page whose row in the log is in the count: no longer added beside it', () => {
+    const s = stockInventory(STOCK_EMPTY, { 263: 3 }, T0, ids, mv);
+    assert.equal(stockHeld(s, [{ t: T0 + MIN, id: 263, qty: 4, logged: 'row-1' }], [], 0)(263), 3);
+    assert.equal(seenWaiting([{ t: T0 + MIN, id: 263, qty: 4, logged: 'row-1' }], 0).length, 0);
+});
+
 test('the Ledger\'s rows become stock events, pieces only', () => {
     const rows = [
         { id: 'a:0', t: T0, itemId: '263', qty: 4, each: 14000, side: 'buy' },

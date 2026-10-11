@@ -70,12 +70,18 @@ export function takenUnits(line) {
  * and it is not counted). A card whose stock the page does not say is never
  * counted. `seen` carries each card's last stock between reads.
  *
+ * Torn Archive 1.2.2 (the owner's page, 2026-10-11: buys shown that he never made): a count is never a guess.
+ * A listing that is gone counts for no more than the number that stood in its Buy box when you pressed Torn's Buy
+ * (`gone` as a Map), and a stock that fell counts only on a listing you pressed in (`pressedIn`): other buyers
+ * take from the same bazaar while you look at it.
+ *
  * @param {object} seen - key ('itemId|price') -> {qty, itemId, price, name}
  * @param {Array<{itemId, name, listingPrice, qty, qtyAssumed}>} cards - this read
- * @param {Set<string>} [pressed] - keys of the cards you pressed a button on
+ * @param {Set<string>|Map<string, number>} [gone] - listings gone after your press: their keys, or key -> the most you can have taken
+ * @param {Set<string>|null} [pressedIn] - keys of the listings you pressed in; null = a fallen stock always counts
  * @returns {{bought: Array<{itemId, name, price, qty}>, seen: object}}
  */
-export function stockBuys(seen, cards, pressed = new Set()) {
+export function stockBuys(seen, cards, gone = new Set(), pressedIn = null) {
     const now = {};
     for (const c of cards || []) {
         if (!c || c.qtyAssumed || !(Number(c.qty) > 0) || !(Number(c.listingPrice) > 0)) continue;
@@ -86,8 +92,13 @@ export function stockBuys(seen, cards, pressed = new Set()) {
     const bought = [];
     for (const [key, was] of Object.entries(seen || {})) {
         const is = now[key];
-        if (is && is.qty < was.qty) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty: was.qty - is.qty });
-        else if (!is && pressed.has(key)) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty: was.qty });
+        if (is && is.qty < was.qty) {
+            if (!pressedIn || pressedIn.has(key)) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty: was.qty - is.qty });
+        } else if (!is && gone.has(key)) {
+            const most = gone instanceof Map ? Math.floor(Number(gone.get(key)) || 0) : was.qty;
+            const qty = Math.min(was.qty, most);
+            if (qty > 0) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty });
+        }
     }
     return { bought, seen: now };
 }

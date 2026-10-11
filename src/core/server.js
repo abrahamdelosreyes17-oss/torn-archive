@@ -59,15 +59,35 @@ export function serverAddress(typed) {
 /** A password as the server's set-up makes them: letters and digits, 24 or more. */
 export const serverPassOk = (pass) => typeof pass === 'string' && /^[A-Za-z0-9]{24,200}$/.test(pass);
 
+/** A word this copy made for itself, once (48 hex): what the server knows the copy by after it was let in. */
+export const serverDeviceOk = (device) => typeof device === 'string' && /^[0-9a-f]{48}$/.test(device);
+
 /**
  * What Torn Archive says to the server built into it when nothing was typed: whose copy this is. Torn Archive
  * holds no Public key, so it cannot say a key's word as Torn Trading does. This is no secret: the server lets it
- * in only from the address where that person's Torn Trading last said its real word, and only for Torn
- * Archive's own exchange (the server's ARCHIVE_CLAIM).
+ * in only from an address it has seen that person at, and only for Torn Archive's own exchange (the server's
+ * ARCHIVE_CLAIM). With `device`, the copy's own word goes after the id: a copy the server let in once is known
+ * by it afterwards wherever it asks from - an address changes, the copy is the same.
  */
-export function serverClaim(id) {
+export function serverClaim(id, device = '') {
     const n = /^\d{1,10}$/.test(String(id ?? '')) ? Number(id) : 0;
-    return n > 0 ? 'TornArchiveSameAddress' + String(n).padStart(10, '0') : null;
+    return n > 0 ? 'TornArchiveSameAddress' + String(n).padStart(10, '0') + (serverDeviceOk(device) ? 'x' + device : '') : null;
+}
+
+/**
+ * Turned away by the server, and Torn has said "too many": the most Torn Archive lets itself make a minute, so
+ * that it and the server's careful part of the same key fit in Torn's limit. It says what it uses meanwhile, this
+ * often, and the server takes that much less (the server's HINT_MOST is this number: budget.js).
+ */
+export const SERVER_CAREFUL_MOST = 40;
+export const SERVER_HINT_MS = 60000;
+
+/** What a turned-away copy says: how much of your Torn limit it uses. Nothing else. */
+export function serverHint({ ver = '', used = 0, waiting = 0 } = {}) {
+    const count = (n) => (Number.isFinite(n) && n > 0 ? Math.min(1000, Math.floor(n)) : 0);
+    const body = { app: SERVER_APP, used: count(used), waiting: count(waiting) };
+    if (serverVersion(ver)) body.ver = serverVersion(ver);
+    return body;
 }
 
 /** A version as the server takes it. */
@@ -233,6 +253,8 @@ export function serverOutgoingOk(body, pieces = []) {
 
 /** Does GET /state say this server keeps each app's lists apart? An older one does not, and is never synced with. */
 export const serverKnowsApps = (state) => !!state && typeof state === 'object' && state.apps === true;
+/** Does this server know a copy by its own word (serverClaim's `device`)? One that does not would turn the longer claim away. */
+export const serverKnowsCopies = (state) => !!state && typeof state === 'object' && state.copies === true;
 
 /**
  * The server's part of your limit from its answer, with its clock turned into this PC's.
@@ -407,7 +429,11 @@ export function serverLines(st, now) {
     if (st && !st.on && st.builtIn) return { ...off, level: 'idle', now: 'Asks the server once Torn has said who you are.' };
     if (!st || !st.on) return off;
     // Not one of the server's PCs (or not yet): no fault of yours, and nothing for you to do.
-    if (st.why === 'address') return { ...off, level: 'alone', now: 'Working alone. The shared server serves the people its owner added, on the PC where their Torn Trading runs. Torn Archive asks again by itself.' };
+    if (st.why === 'address') {
+        return { ...off, level: 'alone', now: st.careful
+            ? `Working alone, and carefully: Torn said "too many", so Torn Archive keeps to ${SERVER_CAREFUL_MOST} requests a minute at most for now and tells the server what it uses. It asks again by itself.`
+            : 'Working alone. The shared server serves the people its owner added, on a PC it has seen them at. Torn Archive asks again by itself.' };
+    }
     const out = { on: true, level: 'ok', now: '', key: null, split: null, bazaars: st.bazaars || 0 };
     const alone = ' · working alone';
     if (st.why === 'password') return { ...out, level: 'bad', now: 'The server does not know this password. Ask whoever runs your server for yours.' };

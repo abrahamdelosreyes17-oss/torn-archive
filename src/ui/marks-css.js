@@ -220,7 +220,9 @@ export const MARKS_CSS = `
 .tarc-setmark[data-where="note"] { height: 22px; padding: 0 10px; border-radius: 11px; font-size: 12px; line-height: 20px; transform: translateY(-50%); }
 .tarc-setmark[data-state="top"] { border-color: #5aa7ff; background: #173a63; color: #fff; box-shadow: 0 0 0 1px #5aa7ff, 0 0 10px rgba(90, 167, 255, 0.5); }
 .tarc-setmark[data-state="ok"] { border-color: rgba(160, 168, 184, 0.45); background: #1c2029; color: #c3c9d4; }
-.tarc-setmark[data-state="ahead"], .tarc-setmark[data-state="over"] { border-color: rgba(246, 183, 74, 0.6); background: #33260c; color: #ffd98a; }
+.tarc-setmark[data-state="ahead"] { border-color: rgba(246, 183, 74, 0.6); background: #33260c; color: #ffd98a; }
+/* More typed than you need: red (the owner, 2026-10-11: "a warning that turns red if im buying more than i need"). */
+.tarc-setmark[data-state="over"] { border-color: rgba(255, 120, 120, 0.7); background: #3a1414; color: #ffc9c9; }
 .tarc-setmark[data-state="bad"] { border-color: rgba(255, 120, 120, 0.6); background: #3a1414; color: #ffc9c9; }
 .tarc-setmark[data-state="good"] { border-color: rgba(111, 220, 127, 0.55); background: #12301a; color: #b9f3c2; }
 
@@ -246,9 +248,17 @@ export const MARKS_CSS = `
 }
 .tarc-buyhere[data-tarc-ring="over"] {
     box-shadow:
-        inset 0 0 0 2px #f6b74a,
-        inset 0 0 0 9999px rgba(246, 183, 74, 0.1) !important;
+        inset 0 0 0 2px #ff7878,
+        inset 0 0 0 9999px rgba(255, 120, 120, 0.12) !important;
 }
+
+/*
+ * The listing a link of ours named (the hub's "Sold by", a stop of your run): it pulses until you press anything.
+ * An outline, so it takes no room and leaves the ring's own paint alone.
+ */
+[data-tarc-pulse] { outline: 2px solid rgba(90, 167, 255, 0.95); outline-offset: 1px; animation: tarc-pulse 1.1s ease-in-out infinite; }
+@keyframes tarc-pulse { 0%, 100% { outline-color: rgba(90, 167, 255, 0.95); outline-offset: 1px; } 50% { outline-color: rgba(90, 167, 255, 0.25); outline-offset: 5px; } }
+@media (prefers-reduced-motion: reduce) { [data-tarc-pulse] { animation: none; } }
 
 /*
  * The points market (mockup Z7): a hairline in Torn's list, on the edge between two rows - where your listing

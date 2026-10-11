@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { archiveView, viewForTabs, viewPiece } from '../src/core/view.js';
 import { fillPlan, stopsOf, runStart, IM_PLACE } from '../src/core/shopping.js';
 import { threadCheck } from '../src/core/sets.js';
-import { boxWaiting, boxBazaar, boxTrade, boxMuseum, boxPoints, boxForum } from '../src/ui/box-pages.js';
+import { boxWaiting, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum } from '../src/ui/box-pages.js';
 import { tornPageKind } from '../src/ui/torn-page.js';
 import { fixtureInput } from './fixture-view.js';
 
@@ -40,7 +40,7 @@ test('a bazaar on your list: its lines with Fill, the next stop on the Next butt
     const out = boxBazaar(v, cards, stop.place);
     assert.equal(out.where, 'a bazaar');
     assert.equal(out.marks.length, stop.lines.length, 'only set pieces are marked');
-    assert.ok(out.marks.every((m) => m.state === 'top' && /on your list · buy \d/.test(m.text)));
+    assert.ok(out.marks.every((m) => m.state === 'top' && /^buy \d[\d,]* here · on your list/.test(m.text)));
     for (const [i, l] of stop.lines.entries()) assert.ok(out.html.includes(`data-act="fill-card" data-v="${i}" data-n="${l.q}"`), 'Fill types the number of the line itself');
     assert.ok(out.html.includes('data-act="run-next"') && out.html.includes('data-act="run-stop"'));
     assert.ok(!out.html.includes('Next stop</span>'), 'the next stop is named once, on its button');
@@ -242,4 +242,65 @@ test('the points market: full sets not swapped yet are named as the bigger lot t
     const more = 120 + 3 * sets[0].points;
     assert.ok(boxPoints(made, true).html.includes(`Or wait for a bigger lot</span><b class="num">${more.toLocaleString('en-US')} with your 3 full sets</b>`));
     assert.ok(!boxPoints({ ...made, sets: sets.map((s) => ({ ...s, full: 0 })) }, true).html.includes('bigger lot'));
+});
+
+test('your stock on its own: each piece and what you hold now, a buy seen here counted in, red when more is typed than you need', () => {
+    const v = shared(fixtureInput(NOW));
+    const set = v.sets[0];
+    const p = set.pieces.find((x) => x.need > 0);
+    assert.ok(p, 'a piece that is needed');
+    const plain = boxStock(v, {});
+    assert.deepEqual(plain.over, []);
+    assert.match(plain.head, /^[\d,]+ to go$/);
+    assert.ok(plain.html.includes(`<span class="x">need ${p.need.toLocaleString('en-US')}</span>`));
+    for (const s of v.sets) assert.ok(plain.html.includes(`${s.label} sets`));
+    // A buy seen here a moment ago: the count moves at once, and what is needed falls with it.
+    const bought = boxStock(v, { pend: { [p.id]: 1 } });
+    assert.ok(bought.html.includes(`<b class="num">${(p.held + 1).toLocaleString('en-US')}</b>`));
+    assert.ok(p.need === 1 ? !bought.html.includes(`need ${p.need}<`) : bought.html.includes(`<span class="x">need ${(p.need - 1).toLocaleString('en-US')}</span>`));
+    // Typing what you need: said, not red. One more: red, in the row and at the top.
+    const fine = boxStock(v, { typed: { [p.id]: p.need }, here: [p.id] });
+    assert.deepEqual(fine.over, []);
+    assert.ok(fine.html.includes(`typing ${p.need.toLocaleString('en-US')} of ${p.need.toLocaleString('en-US')}`) && fine.html.includes('st-r need here'));
+    const over = boxStock(v, { typed: { [p.id]: p.need + 7 }, here: [p.id] });
+    assert.deepEqual(over.over, [{ id: String(p.id), name: p.name, typed: p.need + 7, need: p.need }]);
+    assert.equal(over.head, 'more than you need');
+    assert.ok(over.html.includes('st-r over here') && over.html.includes('7 too many') && over.html.startsWith('<div class="ta-hold st-over"><b>More than you need.</b>'));
+    // A piece you have enough of, and a Buy box opened on it (Torn puts 1 in it): one too many.
+    const full = set.pieces.find((x) => x.need === 0);
+    if (full) assert.equal(boxStock(v, { typed: { [full.id]: 1 } }).over.length, 1);
+});
+
+test('a listing says what to take from this bazaar, not the whole of what you need', () => {
+    const v = shared(fixtureInput(NOW));
+    const p = v.pieces.find((x) => x.need > 3 && x.worth > 100);
+    assert.ok(p);
+    // Not on a list, under its worth, and the listing holds only 3.
+    const few = boxBazaar(v, [{ itemId: p.id, price: p.worth - 50, qty: 3, typed: 0, hasBox: false }], 'b:999999');
+    assert.equal(few.marks[0].text, 'buy 3 here · all it has');
+    const many = boxBazaar(v, [{ itemId: p.id, price: p.worth - 50, qty: p.need + 50, typed: 0, hasBox: false }], 'b:999999');
+    assert.equal(many.marks[0].text, `buy ${p.need.toLocaleString('en-US')} here`);
+    const dear = boxBazaar(v, [{ itemId: p.id, price: p.worth + 50, qty: 3, typed: 0, hasBox: false }], 'b:999999');
+    assert.equal(dear.marks[0].text, 'none here · over its worth');
+});
+
+test('the Item Market\'s page: each price row under the worth gets its own part of what you need, cheapest first; a card that does not say its stock gets no number', () => {
+    const v = shared(fixtureInput(NOW));
+    const p = v.pieces.find((x) => x.need > 6 && x.worth > 100);
+    assert.ok(p);
+    const card = (price, qty) => ({ itemId: p.id, price, qty, typed: 0, hasBox: false });
+    const b = boxBazaar(v, [card(p.worth - 90, 2), card(p.worth - 50, 3), card(p.worth - 10, p.need + 40), card(p.worth + 10, 9)], IM_PLACE);
+    assert.deepEqual(b.marks.map((m) => m.text), [
+        'buy 2 here · all it has', 'buy 3 here · all it has', `buy ${(p.need - 5).toLocaleString('en-US')} here`,
+    ], 'the row over the worth is not marked at all');
+    assert.deepEqual(b.fill, [{ i: 0, n: 2 }, { i: 1, n: 3 }, { i: 2, n: p.need - 5 }]);
+    assert.equal(b.fill.reduce((s, f) => s + f.n, 0), p.need, 'together what you need, and no more');
+    // Enough further up the page: a later row is not asked for.
+    const full = boxBazaar(v, [card(p.worth - 90, p.need + 5), card(p.worth - 50, 30)], IM_PLACE);
+    assert.deepEqual(full.marks.map((m) => m.text), [`buy ${p.need.toLocaleString('en-US')} here`, 'no more needed from this row']);
+    assert.deepEqual(full.fill, [{ i: 0, n: p.need }]);
+    // The category view: a price, no stock. No number is made up for it.
+    const blind = boxBazaar(v, [card(p.worth - 90, 0)], IM_PLACE);
+    assert.deepEqual(blind.marks.map((m) => m.text), ['under its worth · open it for the stock']);
+    assert.deepEqual(blind.fill, []);
 });

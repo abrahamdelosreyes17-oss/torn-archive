@@ -105,9 +105,12 @@ export function stockInventory(state, inv, invAt, ids, eachOf = () => 0, tornAt 
         const id = String(raw);
         const last = skNum(s.last[id]);
         const newer = at ? at > last + SK_CLOCKS_MS : last <= invAt - SK_STALE_MS;
-        if (!newer) { if (held[id] == null) held[id] = skWhole(get(id)); continue; }
+        // With no time from Torn to trust, its count is still no more than an hour old: what happened before that
+        // is in it, and is not added again when it is learned of later (a trade finished while the hub was closed).
+        const floor = Math.max(skNum(base[id]), invAt - SK_STALE_MS);
+        if (!newer) { if (held[id] == null) { held[id] = skWhole(get(id)); if (!at) base[id] = floor; } continue; }
         held[id] = skWhole(get(id));
-        if (at) base[id] = at;
+        base[id] = at || floor;
     }
     const pool = poolMatch(s.pool, (id) => held[String(id)], eachOf, (ids || []).map(String));
     return { ...s, held, pool, base, invAt, tornAt: stamp, stampOk };
@@ -137,10 +140,13 @@ export function stockHeld(state, seen, swaps, until = 0) {
     const s = state && state.held ? state : STOCK_EMPTY;
     const extra = {};
     const add = (id, d) => { extra[id] = (extra[id] || 0) + d; };
-    for (const b of seenWaiting(seen, until)) add(String(b.id), skWhole(b.qty));
+    // Torn counted the piece after it happened (by more than two clocks can differ): its count has it already.
+    const base = s.base || {};
+    const inCount = (id, t) => t + SK_CLOCKS_MS <= skNum(base[String(id)]);
+    for (const b of seenWaiting(seen, until)) if (!inCount(b.id, b.t)) add(String(b.id), skWhole(b.qty));
     for (const p of seenWaiting(swaps, until)) {
         const set = setByKey(p.set);
-        if (set) for (const pc of set.pieces) add(String(pc.id), -skWhole(p.sets));
+        if (set) for (const pc of set.pieces) if (!inCount(pc.id, p.t)) add(String(pc.id), -skWhole(p.sets));
     }
     return (id) => Math.max(0, skWhole(s.held[String(id)]) + (extra[String(id)] || 0));
 }
@@ -148,7 +154,8 @@ export function stockHeld(state, seen, swaps, until = 0) {
 /** What was seen on the page and is not in the log yet. With `until` 0 the log is not read: everything waits. */
 export function seenWaiting(list, until = 0) {
     // `counted`: already in the count itself (stockApply), with no log to wait for.
-    return (list || []).filter((x) => x && x.t > 0 && !x.counted && !(until > 0 && x.t + SK_LAG_MS < until));
+    // `logged`: its row in Torn's log is in the count - the same buy, not a second one.
+    return (list || []).filter((x) => x && x.t > 0 && !x.counted && !x.logged && !(until > 0 && x.t + SK_LAG_MS < until));
 }
 
 /** A buy seen on the page as a stock event, for when no log is read: [{ key, t, id, d, paid }]. */

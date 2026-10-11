@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { TornApiClient, TornApiError, TORN_API_BASE, TORN_ERROR_KEY_INVALID, TORN_ERROR_RATE_LIMIT, redactKey } from '../src/api/client.js';
+import { TornApiClient, TornApiError, TORN_API_BASE, TORN_ERROR_KEY_INVALID, TORN_ERROR_RATE_LIMIT, redactKey, CEIL_MIN, CEIL_LEARN_FROM, CEIL_BACK, CEIL_BACK_EVERY_MS } from '../src/api/client.js';
 const KEY = 'abcdef1234567890';
 
 function jsonResponse(body, { ok = true, status = 200 } = {}) {
@@ -238,4 +238,90 @@ test('priority lanes: with the shared window nearly full, a low call waits and a
     assert.equal(client.laneLimit(0), 65);
     assert.equal(client.laneLimit(1), 80);
     assert.equal(client.laneLimit(2), 85);
+});
+
+// ---- what Torn's "too many" teaches ----------------------------------------------------------------------------------
+
+const T0 = Date.UTC(2026, 9, 11, 18, 0, 0);
+const madeBefore = (client, n, now) => { client.recent = Array.from({ length: n }, (_, i) => now - 59000 + i * 500); };
+
+test('after a "too many" the client holds under what it had made, comes back a step per quiet half hour, and slower the second time', () => {
+    const client = makeClient(null);
+    assert.equal(client.ceilNow(T0), null);
+    assert.equal(client.limitNow(T0), 85);
+    madeBefore(client, 60, T0);
+    client.learn(T0);
+    // Several refusals in one go are one "too many".
+    client.learn(T0 + 500);
+    client.learn(T0 + 30000);
+    assert.equal(client.ceilNow(T0), 42);
+    assert.equal(client.limitNow(T0), 42);
+    assert.equal(client.laneLimit(2, T0), 42);
+    assert.equal(client.laneLimit(1, T0), 37);
+    assert.equal(client.laneLimit(0, T0), 22);
+    assert.equal(client.stats(T0).ceil, 42);
+    assert.equal(client.ceilNow(T0 + CEIL_BACK_EVERY_MS - 1), 42);
+    assert.equal(client.ceilNow(T0 + CEIL_BACK_EVERY_MS), 42 + CEIL_BACK);
+    assert.equal(client.ceilNow(T0 + 4 * CEIL_BACK_EVERY_MS), 82);
+    assert.equal(client.ceilNow(T0 + 5 * CEIL_BACK_EVERY_MS), null, 'back at its pace: nothing held');
+    assert.equal(client.limitNow(T0 + 5 * CEIL_BACK_EVERY_MS), 85);
+
+    // A second one two hours on, from what it was held to: lower, and each step takes an hour.
+    const second = T0 + 4 * CEIL_BACK_EVERY_MS;
+    madeBefore(client, 82, second);
+    client.learn(second);
+    assert.equal(client.ceilNow(second), 57);
+    assert.equal(client.ceilNow(second + CEIL_BACK_EVERY_MS), 57);
+    assert.equal(client.ceilNow(second + 2 * CEIL_BACK_EVERY_MS), 67);
+    // Never under the least, however often.
+    madeBefore(client, CEIL_LEARN_FROM, second + 5 * 60000);
+    client.learn(second + 5 * 60000);
+    assert.equal(client.ceilNow(second + 5 * 60000), Math.max(CEIL_MIN, Math.floor(0.7 * CEIL_LEARN_FROM)));
+});
+
+test('having made little itself the client learns nothing: the limit was spent elsewhere', () => {
+    const client = makeClient(null);
+    madeBefore(client, CEIL_LEARN_FROM - 1, T0);
+    client.learn(T0);
+    assert.equal(client.ceilNow(T0), null);
+    // While it runs behind Torn Trading on a small share, a ceiling above the share changes nothing.
+    madeBefore(client, 60, T0);
+    client.learn(T0);
+    client.maxPerMinute = 12;
+    assert.equal(client.limitNow(T0), 12);
+    client.maxPerMinute = 85;
+    assert.equal(client.limitNow(T0), 42);
+});
+
+test('Torn\'s answer "too many" is what teaches it, and every tab holds to the same', async () => {
+    let shared = null;
+    const options = { loadCeil: () => shared, saveCeil: (c) => { shared = JSON.parse(JSON.stringify(c)); }, dedupTtlMs: 0 };
+    const fetchImpl = recordingFetch(async () => jsonResponse({ error: { code: TORN_ERROR_RATE_LIMIT, error: 'Too many requests' } }));
+    const one = makeClient(fetchImpl, options);
+    const two = makeClient(recordingFetch(async () => jsonResponse({ ok: 1 })), options);
+    madeBefore(one, 49, Date.now());
+    await assert.rejects(() => one.get('torn', { selections: 'items' }), (error) => error instanceof TornApiError && error.code === TORN_ERROR_RATE_LIMIT);
+    assert.equal(one.ceilNow(), 35);
+    assert.equal(two.ceilNow(), 35, 'the other tab');
+    assert.equal(two.stats().remaining, 35);
+    // A refusal made here during the shared pause was not Torn's: nothing more is learned from it.
+    const was = JSON.stringify(shared);
+    await assert.rejects(() => one.get('torn', { selections: 'shops' }), (error) => error.paused === true);
+    assert.equal(JSON.stringify(shared), was);
+    // What is in storage is not trusted blindly.
+    shared = { most: 'x' };
+    assert.equal(two.ceilNow(), null);
+});
+
+test('turned away by the shared server and held by a "too many": the careful pace, and only then', () => {
+    let away = false;
+    const client = makeClient(null, { turnedAway: () => away, carefulMost: 40 });
+    away = true;
+    assert.equal(client.limitNow(T0), 85, 'turned away alone changes nothing: most copies are nobody the server serves');
+    madeBefore(client, 85, T0);
+    client.learn(T0);
+    assert.equal(client.ceilNow(T0), 59);
+    assert.equal(client.limitNow(T0), 40);
+    away = false;
+    assert.equal(client.limitNow(T0), 59);
 });

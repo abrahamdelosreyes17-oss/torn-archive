@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.2.1
+// @version      1.2.2
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.2.1';
+    const TARC_BUILD_VERSION = '1.2.2';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -1008,6 +1008,26 @@
         [TORN_ERROR_UNAVAILABLE]: 2 * 60 * 1000,
     };
 
+    /*
+     * What Torn's "too many" teaches (the owner, 2026-10-11: "cant it just be smart ... in the way it asks").
+     * Torn counts every tool a player runs against one limit, and this client sees only its own requests. So after
+     * a "too many" it holds itself to CEIL_LOWER of what it had made in that minute, never under CEIL_MIN, and takes
+     * CEIL_BACK more for each quiet stretch: half an hour at first, twice as long for each further "too many" inside
+     * a day. Having made fewer than CEIL_LEARN_FROM itself, it learns nothing: the limit was spent elsewhere, and
+     * slowing this copy would not have helped. Kept in storage, so every tab holds to the same.
+     */
+    const CEIL_LOWER = 0.7;
+    const CEIL_MIN = 20;
+    const CEIL_LEARN_FROM = 30;
+    const CEIL_BACK = 10;
+    const CEIL_BACK_EVERY_MS = 30 * 60000;
+    const CEIL_FORGET_MS = 24 * 60 * 60000;
+    const CEIL_SLOWEST = 4;
+    /** Several refusals in one go are one "too many". */
+    const CEIL_ONCE_MS = 60000;
+
+    const ceilOk = (c) => !!c && typeof c === 'object' && Number.isFinite(c.most) && Number.isFinite(c.at) && Number.isInteger(c.hits) && c.hits > 0 && Number.isFinite(c.struckAt);
+
     /** A hidden tab waiting for a slot checks again this often. */
     const HIDDEN_POLL_MS = 1000;
 
@@ -1104,6 +1124,13 @@
          * @param {function} [options.savePause] - ({until, code}) => void
          * @param {function} [options.isVisible] - () => boolean; a request never
          *   leaves a hidden tab, even one that was queued while it was visible
+         * @param {function} [options.loadCeil] - () => {most, at, hits, struckAt}: the
+         *   ceiling learned from Torn's "too many", shared by every tab
+         * @param {function} [options.saveCeil] - ({most, at, hits, struckAt}) => void
+         * @param {function} [options.turnedAway] - () => boolean; the shared server
+         *   does not let this copy in (api/server-link.js): while it holds a
+         *   learned ceiling it also keeps under carefulMost
+         * @param {number} [options.carefulMost]
          * @param {function} [options.isPaused] - () => boolean; true while Torn
          *   Bids runs: nothing is sent, a queued request is not sent either, and
          *   the call rejects with a PausedError (the two scripts take turns)
@@ -1125,8 +1152,19 @@
             onFailed = null,
             isPaused = () => false,
             mayCall = null,
+            loadCeil = null,
+            saveCeil = null,
+            turnedAway = null,
+            carefulMost = 40,
         } = {}) {
             this.isPaused = isPaused;
+            this.loadCeil = loadCeil;
+            this.saveCeil = saveCeil;
+            this.turnedAway = turnedAway;
+            this.carefulMost = carefulMost;
+            /** The pace with nothing learned: a ceiling back at it is no ceiling. */
+            this.ceilTop = maxPerMinute;
+            this.ceil = null;
             /** (now, this tab's calls of the last minute) => boolean: room beside the shared server's part of your limit (core/server.js). */
             this.mayCall = mayCall;
             /** () => void, a call is being held back for it. */
@@ -1166,8 +1204,68 @@
             const window = this.recent.filter((t) => now - t < 60000);
             return {
                 usedLastMinute: window.length,
-                remaining: Math.max(0, this.maxPerMinute - window.length),
+                remaining: Math.max(0, this.limitNow(now) - window.length),
+                /** Held under its pace since a "too many" (null = it is not). */
+                ceil: this.ceilNow(now),
             };
+        }
+
+        /** The learned ceiling as it was last set: this tab's or storage's, the later. */
+        ceilKept() {
+            let kept = this.ceil;
+            if (this.loadCeil) {
+                try {
+                    const shared = this.loadCeil();
+                    if (ceilOk(shared) && (!kept || shared.struckAt >= kept.struckAt)) kept = shared;
+                } catch {
+                    // Sharing is best-effort.
+                }
+            }
+            return kept;
+        }
+
+        /** The learned ceiling now (null = none): a step up for each quiet stretch, gone once it is back at the pace. */
+        ceilNow(now = Date.now()) {
+            const kept = this.ceilKept();
+            if (!kept) return null;
+            const wait = CEIL_BACK_EVERY_MS * 2 ** Math.min(CEIL_SLOWEST, kept.hits - 1);
+            const most = kept.most + CEIL_BACK * Math.max(0, Math.floor((now - kept.at) / wait));
+            return most >= this.ceilTop ? null : most;
+        }
+
+        /** Torn said "too many": hold under what was made in the minute before. */
+        learn(now = Date.now()) {
+            const had = this.ceilKept();
+            if (had && now - had.struckAt < CEIL_ONCE_MS) return;
+            this.syncWindow(now);
+            const used = this.recent.filter((t) => now - t < 60000).length;
+            if (used < CEIL_LEARN_FROM) return;
+            this.ceil = {
+                most: Math.max(CEIL_MIN, Math.floor(CEIL_LOWER * Math.min(this.ceilNow(now) ?? Infinity, used))),
+                at: now,
+                hits: had && now - had.struckAt < CEIL_FORGET_MS ? had.hits + 1 : 1,
+                struckAt: now,
+            };
+            if (this.saveCeil) {
+                try {
+                    this.saveCeil(this.ceil);
+                } catch {
+                    // This tab still holds to it.
+                }
+            }
+        }
+
+        /** The most requests a minute right now: the share, what Torn's "too many" taught, and the careful pace. */
+        limitNow(now = Date.now()) {
+            const ceil = this.ceilNow(now);
+            if (ceil === null) return this.maxPerMinute;
+            let away = false;
+            try {
+                away = !!(this.turnedAway && this.turnedAway());
+            } catch {
+                // A hook that throws does not stop the reads.
+            }
+            return Math.min(this.maxPerMinute, ceil, away ? this.carefulMost : Infinity);
         }
 
         /**
@@ -1193,9 +1291,9 @@
         }
 
         /** How many of the window's slots this lane may fill. */
-        laneLimit(priority = API_PRIORITY.normal) {
+        laneLimit(priority = API_PRIORITY.normal, now = Date.now()) {
             const reserve = priority >= API_PRIORITY.high ? 0 : priority >= API_PRIORITY.normal ? NORMAL_RESERVE : LOW_RESERVE;
-            return Math.max(1, this.maxPerMinute - reserve);
+            return Math.max(1, this.limitNow(now) - reserve);
         }
 
         /**
@@ -1222,7 +1320,7 @@
                     continue;
                 }
 
-                const limit = this.laneLimit(priority);
+                const limit = this.laneLimit(priority, now);
                 if (this.recent.length < limit) {
                     this.recent.push(now);
                     if (this.addToWindow) {
@@ -1434,6 +1532,7 @@
             const rateLimited = code === TORN_ERROR_RATE_LIMIT || (error instanceof TornApiError && error.http === 429);
             const ms = rateLimited ? this.rateLimitBackoffMs : TORN_PAUSE_MS[code];
             if (!ms || error.paused) return 0;
+            if (rateLimited) this.learn();
             const until = Date.now() + ms;
             if (until <= this.pause.until) return until;
             this.pause = { until, code };
@@ -3120,15 +3219,35 @@
     /** A password as the server's set-up makes them: letters and digits, 24 or more. */
     const serverPassOk = (pass) => typeof pass === 'string' && /^[A-Za-z0-9]{24,200}$/.test(pass);
 
+    /** A word this copy made for itself, once (48 hex): what the server knows the copy by after it was let in. */
+    const serverDeviceOk = (device) => typeof device === 'string' && /^[0-9a-f]{48}$/.test(device);
+
     /**
      * What Torn Archive says to the server built into it when nothing was typed: whose copy this is. Torn Archive
      * holds no Public key, so it cannot say a key's word as Torn Trading does. This is no secret: the server lets it
-     * in only from the address where that person's Torn Trading last said its real word, and only for Torn
-     * Archive's own exchange (the server's ARCHIVE_CLAIM).
+     * in only from an address it has seen that person at, and only for Torn Archive's own exchange (the server's
+     * ARCHIVE_CLAIM). With `device`, the copy's own word goes after the id: a copy the server let in once is known
+     * by it afterwards wherever it asks from - an address changes, the copy is the same.
      */
-    function serverClaim(id) {
+    function serverClaim(id, device = '') {
         const n = /^\d{1,10}$/.test(String(id ?? '')) ? Number(id) : 0;
-        return n > 0 ? 'TornArchiveSameAddress' + String(n).padStart(10, '0') : null;
+        return n > 0 ? 'TornArchiveSameAddress' + String(n).padStart(10, '0') + (serverDeviceOk(device) ? 'x' + device : '') : null;
+    }
+
+    /**
+     * Turned away by the server, and Torn has said "too many": the most Torn Archive lets itself make a minute, so
+     * that it and the server's careful part of the same key fit in Torn's limit. It says what it uses meanwhile, this
+     * often, and the server takes that much less (the server's HINT_MOST is this number: budget.js).
+     */
+    const SERVER_CAREFUL_MOST = 40;
+    const SERVER_HINT_MS = 60000;
+
+    /** What a turned-away copy says: how much of your Torn limit it uses. Nothing else. */
+    function serverHint({ ver = '', used = 0, waiting = 0 } = {}) {
+        const count = (n) => (Number.isFinite(n) && n > 0 ? Math.min(1000, Math.floor(n)) : 0);
+        const body = { app: SERVER_APP, used: count(used), waiting: count(waiting) };
+        if (serverVersion(ver)) body.ver = serverVersion(ver);
+        return body;
     }
 
     /** A version as the server takes it. */
@@ -3294,6 +3413,8 @@
 
     /** Does GET /state say this server keeps each app's lists apart? An older one does not, and is never synced with. */
     const serverKnowsApps = (state) => !!state && typeof state === 'object' && state.apps === true;
+    /** Does this server know a copy by its own word (serverClaim's `device`)? One that does not would turn the longer claim away. */
+    const serverKnowsCopies = (state) => !!state && typeof state === 'object' && state.copies === true;
 
     /**
      * The server's part of your limit from its answer, with its clock turned into this PC's.
@@ -3468,7 +3589,11 @@
         if (st && !st.on && st.builtIn) return { ...off, level: 'idle', now: 'Asks the server once Torn has said who you are.' };
         if (!st || !st.on) return off;
         // Not one of the server's PCs (or not yet): no fault of yours, and nothing for you to do.
-        if (st.why === 'address') return { ...off, level: 'alone', now: 'Working alone. The shared server serves the people its owner added, on the PC where their Torn Trading runs. Torn Archive asks again by itself.' };
+        if (st.why === 'address') {
+            return { ...off, level: 'alone', now: st.careful
+                ? `Working alone, and carefully: Torn said "too many", so Torn Archive keeps to ${SERVER_CAREFUL_MOST} requests a minute at most for now and tells the server what it uses. It asks again by itself.`
+                : 'Working alone. The shared server serves the people its owner added, on a PC it has seen them at. Torn Archive asks again by itself.' };
+        }
         const out = { on: true, level: 'ok', now: '', key: null, split: null, bazaars: st.bazaars || 0 };
         const alone = ' · working alone';
         if (st.why === 'password') return { ...out, level: 'bad', now: 'The server does not know this password. Ask whoever runs your server for yours.' };
@@ -3554,7 +3679,15 @@
      * The server's address is built into the released copy (build.mjs), and with nothing typed Torn Archive says
      * whose copy it is instead of a password (core/server.js serverClaim): the server lets it in on the PC where
      * that person's Torn Trading runs, and turns everyone else away - they are asked again a few times a day, and
-     * nothing but the Torn id was said. An address and password typed in an older copy still go first. The password
+     * nothing but the Torn id was said. Once the server has said it knows copies, a word this copy made for itself
+     * goes with the id (SERVER_DEVICE_KEY): a copy that was let in once is known by it afterwards, wherever it asks from.
+     *
+     * Turned away, and Torn has said "too many" (the client's learned ceiling): Torn Archive keeps itself to a
+     * careful pace (the client, core/server.js SERVER_CAREFUL_MOST) and says once a minute what it uses. The server
+     * answers that as it answers any stranger - not found - and, where it holds this person's key, takes that much
+     * less of it. Nothing is said while Torn Archive asks Torn nothing.
+     *
+     * An address and password typed in an older copy still go first. The password
      * is kept in Tampermonkey's storage like a key: it goes to that one address in a header, is never shown again,
      * and is in no log and no zip.
      *
@@ -3570,6 +3703,10 @@
     const SERVER_GRANT_KEY = 'server.grant';
     /** This PC's request counts waiting to be sent (core/usage.js usageCallsAdd). */
     const SERVER_CALLS_KEY = 'server.calls';
+    /** This copy's own word (core/server.js serverClaim). Made once and kept: it is what the server knows the copy by. */
+    const SERVER_DEVICE_KEY = 'server.device';
+    /** true once the server has said it knows a copy by its word: until then the id is said alone, as an older server expects. */
+    const SERVER_COPIES_KEY = 'server.copies';
     const SL_MAX_PAGES = 5;
     /** What the pieces are worth is said again when it changed, and at least this often. */
     const SL_WORTH_EVERY_MS = 10 * 60000;
@@ -3601,6 +3738,8 @@
          * @param {() => void} d.forget - what was kept of the server goes (its address or password changed)
          * @param {string} [d.home] - the server's address built into this copy ('' = none: the boxes in Settings)
          * @param {() => string} [d.getId] - your Torn id, once Torn has said it
+         * @param {() => string} [d.random] - 48 hex characters nobody could guess, for this copy's own word
+         * @param {() => boolean} [d.lowered] - has Torn said "too many", so that the client holds itself under its pace
          * @param {() => void} [d.onChange]
          * @param {() => number} [d.now]
          */
@@ -3621,8 +3760,54 @@
             const address = c ? serverAddress(c.address) : null;
             if (address && serverPassOk(c.pass)) return { address, pass: c.pass, own: false };
             const home = serverAddress(this.d.home);
-            const claim = home ? serverClaim(this.d.getId ? this.d.getId() : '') : null;
+            const claim = home ? serverClaim(this.d.getId ? this.d.getId() : '', this.device()) : null;
             return claim ? { address: home, pass: claim, own: true } : null;
+        }
+
+        /** This copy's own word: made the first time it is needed, then always the same. '' = none could be made, or the server has not said it knows copies. */
+        device() {
+            if (this.d.load(SERVER_COPIES_KEY) !== true) return '';
+            if (this.deviceKept === undefined) {
+                let device = this.d.load(SERVER_DEVICE_KEY);
+                if (!serverDeviceOk(device)) {
+                    device = this.d.random ? this.d.random() : '';
+                    if (serverDeviceOk(device)) this.d.save(SERVER_DEVICE_KEY, device);
+                    else device = '';
+                }
+                this.deviceKept = device;
+            }
+            return this.deviceKept;
+        }
+
+        /** Not one of the server's PCs as far as it says: Torn Archive works alone. */
+        turnedAway() {
+            const cfg = this.config();
+            return Boolean(cfg && cfg.own && this.state().why === 'address');
+        }
+
+        /** Turned away, and Torn has said "too many": the careful pace, and the server is told what is used. */
+        careful() {
+            return this.turnedAway() && Boolean(this.d.lowered && this.d.lowered());
+        }
+
+        /** What Torn Archive uses, said to a server that does not let it in. Answered "not found" unless that changed. */
+        async hint(cfg, before, now) {
+            if (now - (before.hintAt || 0) < SERVER_HINT_MS || !this.careful()) return false;
+            const use = this.d.getUse() || {};
+            const body = serverHint({ ver: this.d.version, used: use.used, waiting: use.waiting });
+            if (!(body.used + body.waiting > 0)) return false;
+            this.busy = true;
+            this.d.save(SERVER_STATE_KEY, { ...before, hintAt: now });
+            try {
+                const response = await this.d.send(`${cfg.address}/sync`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.pass}` }, body });
+                // Let in after all: the whole exchange at the next look, not at the next try hours on.
+                if (response.status === 200) this.again = true;
+            } catch {
+                // Said again a minute on.
+            } finally {
+                this.busy = false;
+            }
+            return true;
         }
 
         /** Is this PC one of the server's - so that what it asks is counted for it? Not while the server turns it away. */
@@ -3680,7 +3865,10 @@
             if (!cfg || this.busy) return false;
             const now = this.now();
             const before = this.state();
-            if (before.retryAt && now < before.retryAt && !(this.again && before.why === 'address')) return false;
+            if (before.retryAt && now < before.retryAt && !(this.again && before.why === 'address')) {
+                if (cfg.own && before.why === 'address') await this.hint(cfg, before, now);
+                return false;
+            }
             const since = now - (before.syncAt || 0);
             if (since < SERVER_SYNC_MS && !(this.soon && since >= SL_SOON_MS)) return false;
             this.busy = true;
@@ -3714,7 +3902,10 @@
                     const hello = await this.d.send(`${cfg.address}/state`, { method: 'GET', headers: auth });
                     if (hello.status === 404) throw this.unknown(cfg);
                     if (!hello.ok) throw new Error(`The server answered with status ${hello.status}.`);
-                    if (!serverKnowsApps(await hello.json())) throw slWhy('old', 'This server keeps one list a person: it has to be updated first.');
+                    const what = await hello.json();
+                    if (!serverKnowsApps(what)) throw slWhy('old', 'This server keeps one list a person: it has to be updated first.');
+                    // From the next look on this copy says its own word with its id.
+                    if (cfg.own && serverKnowsCopies(what) && this.d.load(SERVER_COPIES_KEY) !== true) this.d.save(SERVER_COPIES_KEY, true);
                     state.helloOk = true;
                     state.helloAt = startedAt;
                 }
@@ -3813,6 +4004,7 @@
                 syncAt: state.syncAt || null,
                 error: state.error || null,
                 why: state.why || null,
+                careful: this.careful(),
                 needVer: state.needVer || null,
                 reading: state.reading || null,
                 key: state.key || null,
@@ -4621,9 +4813,12 @@
             const id = String(raw);
             const last = skNum(s.last[id]);
             const newer = at ? at > last + SK_CLOCKS_MS : last <= invAt - SK_STALE_MS;
-            if (!newer) { if (held[id] == null) held[id] = skWhole(get(id)); continue; }
+            // With no time from Torn to trust, its count is still no more than an hour old: what happened before that
+            // is in it, and is not added again when it is learned of later (a trade finished while the hub was closed).
+            const floor = Math.max(skNum(base[id]), invAt - SK_STALE_MS);
+            if (!newer) { if (held[id] == null) { held[id] = skWhole(get(id)); if (!at) base[id] = floor; } continue; }
             held[id] = skWhole(get(id));
-            if (at) base[id] = at;
+            base[id] = at || floor;
         }
         const pool = poolMatch(s.pool, (id) => held[String(id)], eachOf, (ids || []).map(String));
         return { ...s, held, pool, base, invAt, tornAt: stamp, stampOk };
@@ -4653,10 +4848,13 @@
         const s = state && state.held ? state : STOCK_EMPTY;
         const extra = {};
         const add = (id, d) => { extra[id] = (extra[id] || 0) + d; };
-        for (const b of seenWaiting(seen, until)) add(String(b.id), skWhole(b.qty));
+        // Torn counted the piece after it happened (by more than two clocks can differ): its count has it already.
+        const base = s.base || {};
+        const inCount = (id, t) => t + SK_CLOCKS_MS <= skNum(base[String(id)]);
+        for (const b of seenWaiting(seen, until)) if (!inCount(b.id, b.t)) add(String(b.id), skWhole(b.qty));
         for (const p of seenWaiting(swaps, until)) {
             const set = setByKey(p.set);
-            if (set) for (const pc of set.pieces) add(String(pc.id), -skWhole(p.sets));
+            if (set) for (const pc of set.pieces) if (!inCount(pc.id, p.t)) add(String(pc.id), -skWhole(p.sets));
         }
         return (id) => Math.max(0, skWhole(s.held[String(id)]) + (extra[String(id)] || 0));
     }
@@ -4664,7 +4862,8 @@
     /** What was seen on the page and is not in the log yet. With `until` 0 the log is not read: everything waits. */
     function seenWaiting(list, until = 0) {
         // `counted`: already in the count itself (stockApply), with no log to wait for.
-        return (list || []).filter((x) => x && x.t > 0 && !x.counted && !(until > 0 && x.t + SK_LAG_MS < until));
+        // `logged`: its row in Torn's log is in the count - the same buy, not a second one.
+        return (list || []).filter((x) => x && x.t > 0 && !x.counted && !x.logged && !(until > 0 && x.t + SK_LAG_MS < until));
     }
 
     /** A buy seen on the page as a stock event, for when no log is read: [{ key, t, id, d, paid }]. */
@@ -5320,16 +5519,55 @@
             if (!left || !(p.worth > 0)) continue;
             const all = [...((offersOf && offersOf(p.id)) || [])].filter((o) => shWhole(o.price) > 0 && shWhole(o.qty) > 0).sort((a, b) => a.price - b.price);
             const seen = new Set();
+            // The Item Market's rows, cheapest first with everything else: what falls to them is one line.
+            let imQ = 0;
+            let imCost = 0;
+            let imRow = null;
+            let imAt = 0;
             for (const o of all) {
                 if (!left || o.price >= p.worth) break;
+                const q = Math.min(left, shWhole(o.qty));
+                if (placeOf(o) === IM_PLACE) { if (!imRow) { imRow = o; imAt = out.length; } imQ += q; imCost += q * shWhole(o.price); left -= q; continue; }
                 // One line per place: a second listing of the same seller at another price is left for the next read.
                 if (seen.has(placeOf(o))) continue;
                 seen.add(placeOf(o));
-                const q = Math.min(left, shWhole(o.qty));
                 out.push(shLine(p, o, q));
                 left -= q;
             }
+            if (imQ) out.splice(imAt, 0, shLine(p, { ...imRow, price: Math.ceil(imCost / imQ) }, imQ));
         }
+        return out;
+    }
+
+    /**
+     * What one place has of a piece for you. A bazaar: its cheapest listing. The Item Market: it is one page with a
+     * row for every price, so it is its rows under the piece's worth taken together - `qty` all of them, `price`
+     * what each of the cheapest `want` costs on average (none under the worth: its cheapest row, which is then dear).
+     * @returns null when the place lists none
+     */
+    function placeOffer(offers, place, worth, want = 0) {
+        const rows = (offers || []).filter((o) => placeOf(o) === place && shWhole(o.qty) > 0 && shWhole(o.price) > 0).sort((a, b) => a.price - b.price);
+        if (!rows.length) return null;
+        if (place !== IM_PLACE) return rows[0];
+        const under = rows.filter((o) => worth > 0 && o.price < worth);
+        if (!under.length) return rows[0];
+        const qty = under.reduce((s, o) => s + shWhole(o.qty), 0);
+        let left = Math.min(qty, shWhole(want) || qty);
+        const units = left;
+        let cost = 0;
+        for (const o of under) { const q = Math.min(left, shWhole(o.qty)); cost += q * shWhole(o.price); left -= q; if (!left) break; }
+        return { ...under[0], price: Math.ceil(cost / units), qty };
+    }
+
+    /**
+     * `units` of a piece spread over the Item Market's rows under its worth, cheapest first: how many fall to each
+     * of `rows` (in the order given; a row over the worth gets none).
+     */
+    function imShares(rows, worth, units) {
+        const order = (rows || []).map((o, i) => ({ o, i })).filter((x) => worth > 0 && x.o.price < worth && shWhole(x.o.qty) > 0).sort((a, b) => a.o.price - b.o.price || a.i - b.i);
+        const out = (rows || []).map(() => 0);
+        let left = shWhole(units);
+        for (const { o, i } of order) { const q = Math.min(left, shWhole(o.qty)); out[i] = q; left -= q; if (!left) break; }
         return out;
     }
 
@@ -5338,8 +5576,11 @@
         const key = lineKey(piece.id, placeOf(offer));
         const list = cart || [];
         if (list.some((l) => l.key === key)) return list.filter((l) => l.key !== key);
-        const q = Math.min(shWhole(offer.qty), shWhole(piece.need) - onList(list, piece.id));
-        return q > 0 ? [...list, shLine(piece, offer, q)] : list;
+        const want = shWhole(piece.need) - onList(list, piece.id);
+        // The Item Market: whichever of its rows was pressed, the line is its rows under the worth, cheapest first.
+        const o = placeOf(offer) === IM_PLACE ? placeOffer(piece.offers || [offer], IM_PLACE, piece.worth, want) || offer : offer;
+        const q = Math.min(shWhole(o.qty), want);
+        return q > 0 ? [...list, shLine(piece, o, q)] : list;
     }
 
     const dropLine = (cart, key) => (cart || []).filter((l) => l.key !== key);
@@ -5361,10 +5602,10 @@
         const taken = new Map();
         for (const l of cart || []) {
             const p = byId.get(String(l.id));
-            const offer = ((offersOf && offersOf(l.id)) || []).filter((o) => placeOf(o) === l.place && shWhole(o.qty) > 0).sort((a, b) => a.price - b.price)[0];
             const took = Math.min(shWhole(l.q), shWhole(tookOf ? tookOf(l.key) : 0));
             const had = taken.get(String(l.id)) || 0;
             const need = p ? shWhole(p.need) - had : 0;
+            const offer = placeOffer((offersOf && offersOf(l.id)) || [], l.place, p ? p.worth : 0, Math.min(shWhole(l.q) - took, Math.max(0, need)));
             const dear = !p || !(p.worth > 0) || (offer && offer.price >= p.worth);
             if (took && (!offer || dear || need <= 0)) { out.push({ ...l, q: took }); continue; }
             if (!offer) dropped.push({ key: l.key, name: l.name, why: 'gone' });
@@ -5404,7 +5645,19 @@
     const RUN_IDLE = Object.freeze({ on: false, at: 0, took: {}, place: null });
 
     function runStart(stops) {
-        return stops && stops.length ? { on: true, at: 0, took: {}, place: stops[0].place } : { ...RUN_IDLE };
+        return stops && stops.length ? { on: true, at: 0, took: {}, place: stops[0].place, order: stops.map((s) => s.place) } : { ...RUN_IDLE };
+    }
+
+    /**
+     * The stops in the order the run began in. They are sorted by what they save, and that moves with every read (a
+     * listing partly sold, a price changed): a stop that slid ahead of the one you stand on would read "skipped" and
+     * never be reached. A place new to the list goes last.
+     */
+    function runOrder(stops, run) {
+        if (!run || !run.on || !Array.isArray(run.order)) return stops || [];
+        const at = new Map(run.order.map((place, i) => [place, i]));
+        const rank = (s) => (at.has(s.place) ? at.get(s.place) : run.order.length);
+        return (stops || []).map((s, i) => [s, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
     }
 
     /** The stop the run stands on, found again by its place: the list may have been re-sorted by a fresh read. */
@@ -5437,6 +5690,15 @@
      */
     function runView(run, stops) {
         const list = stops || [];
+        // Over, and summed when it ended: what was taken has left the list, so the lines are what is still to buy.
+        if (run && run.done && run.sum) {
+            const rows = list.map((s) => ({ ...s, took: 0, state: '' }));
+            return {
+                stops: rows, at: -1, began: true,
+                units: shWhole(run.sum.units), cost: rows.reduce((s, r) => s + r.cost, 0), gain: rows.reduce((s, r) => s + r.gain, 0),
+                got: shWhole(run.sum.got), skipped: shWhole(run.sum.skipped),
+            };
+        }
         const at = runAt(run, list);
         const began = !!(run && (run.on || run.done));
         const past = (i) => began && (run.done || i < at);
@@ -5868,6 +6130,9 @@
     }
 
     /** What was stored, laid over a fresh state: a part of the wrong kind is left out. */
+    /** The mark on a buy seen by a copy that reads Torn's open buy form (1.2.2 on). */
+    const EN_SEEN_V = 2;
+
     function engineLoad(stored) {
         const S = engineEmpty();
         for (const part of ENGINE_PARTS) {
@@ -5876,6 +6141,11 @@
             if (Array.isArray(S[part]) ? Array.isArray(v) : typeof v === 'object') S[part] = Array.isArray(v) ? v : { ...S[part], ...v };
         }
         if (!S.thread || !S.thread.title) S.thread = null;
+        // 1.2.0 and 1.2.1 took the opening of a listing's Buy box for a buy. What those copies "saw" and was still
+        // waiting beside the count is not kept: a real buy is in Torn's log and in its inventory count.
+        S.seen = S.seen.filter((b) => b && (b.counted || b.v === EN_SEEN_V));
+        // A run that ended under 1.2.1 kept its counts beside a list already made shorter by them: it is let go.
+        if (S.run && S.run.done && !S.run.sum) S.run = { on: false, at: 0, took: {}, place: null };
         S.server = { ...S.server, shops: serverReadKept(S.server.shops) };
         return S;
     }
@@ -6018,24 +6288,40 @@
         const o = S.offers[key] || {};
         const out = [];
         const done = new Set();
-        const add = (whoId, price, units, at) => {
+        // `at`: when the bazaar was last looked at, and `from` by whom - 'torn' (Torn itself, by you or the server) or
+        // 'w3b' (TornW3B's copy). The screen says both: a row is never shown as newer than it is.
+        const add = (whoId, price, units, at, from) => {
             let qty = units;
             // What you were seen buying there since comes off, until the next read shows the bazaar as it is.
             for (const b of S.seen) if (String(b.id) === key && String(b.whoId || '') === String(whoId) && b.t > at) qty -= enWhole(b.qty);
-            if (qty > 0) out.push({ price, qty, src: 'bazaar', who: S.names[whoId] || null, whoId });
+            if (qty > 0) out.push({ price, qty, src: 'bazaar', who: S.names[whoId] || null, whoId, at, from });
         };
         if (o.bazAt && now - o.bazAt < LISTINGS_KEEP_MS) {
             for (const r of o.baz || []) {
                 done.add(String(r.whoId));
                 const shop = shopNow(S, r.whoId, now);
-                if (shop && shop.at > o.bazAt) {
+                // TornW3B's row is as old as TornW3B's own last look at that bazaar, not as new as our asking for its
+                // list: Torn's own read wins whenever it is the newer of the two (until 1.2.2 a list asked for after
+                // Torn's read brought a sold-out listing back, and a buy of yours with it).
+                const rowAt = Math.min(enNum(r.at) || o.bazAt, o.bazAt);
+                if (shop && shop.at > rowAt) {
                     const it = shop.items[key];
                     // Torn says this bazaar no longer has it: sold out or taken down.
-                    if (it) add(r.whoId, it.price, it.qty, shop.at);
+                    if (it) add(r.whoId, it.price, it.qty, shop.at, 'torn');
                 } else {
-                    add(r.whoId, r.price, r.qty, o.bazAt);
+                    add(r.whoId, r.price, r.qty, rowAt, 'w3b');
                 }
             }
+        }
+        // Bazaars you read from Torn yourself that TornW3B's list no longer names (its row grew old, or forty cheaper
+        // ones came): they are still there, as Torn last showed them - for as long as a row of TornW3B's would count.
+        for (const whoId of Object.keys(S.shops)) {
+            if (done.has(whoId) || whoId === String(S.self.id)) continue;
+            const shop = shopNow(S, whoId, now);
+            const it = shop && now - shop.at < LISTING_FRESH_MS ? shop.items[key] : null;
+            if (!it) continue;
+            done.add(whoId);
+            add(whoId, it.price, it.qty, shop.at, 'torn');
         }
         // Bazaars TornW3B's list does not name, read from Torn by the server.
         for (const s of svIndex(S).get(key) || []) {
@@ -6043,9 +6329,9 @@
             done.add(s.whoId);
             const shop = shopNow(S, s.whoId, now);
             const it = shop && shop.items[key];
-            if (it) add(s.whoId, it.price, it.qty, shop.at);
+            if (it) add(s.whoId, it.price, it.qty, shop.at, 'torn');
         }
-        if (o.imAt && now - o.imAt < MARKET_KEEP_MS) for (const l of o.im || []) out.push({ price: l.price, qty: l.qty, src: 'market' });
+        if (o.imAt && now - o.imAt < MARKET_KEEP_MS) for (const l of o.im || []) out.push({ price: l.price, qty: l.qty, src: 'market', at: o.imAt, from: 'torn' });
         return out;
     }
 
@@ -6116,11 +6402,16 @@
      */
     function noteSeenBuy(S, buy, now, { noLog = false } = {}) {
         if (!buy || !EN_PIECE_SET.has(String(buy.id)) || !(enWhole(buy.qty) > 0)) return false;
-        const row = { t: enNum(buy.t) || now, id: String(buy.id), qty: enWhole(buy.qty), whoId: buy.whoId ? String(buy.whoId) : '', price: enWhole(buy.price) };
+        const row = { t: enNum(buy.t) || now, id: String(buy.id), qty: enWhole(buy.qty), whoId: buy.whoId ? String(buy.whoId) : '', price: enWhole(buy.price), v: EN_SEEN_V, ...(buy.im ? { im: true } : {}) };
         if (S.seen.some((b) => b.t === row.t && b.id === row.id && b.whoId === row.whoId && b.qty === row.qty)) return false;
         if (noLog && enCounting(S)) {
             S.stock = stockApply(S.stock, eventFromSeen(row), mvOf(S)).state;
             row.counted = true;
+        } else if (!noLog) {
+            // The log was read between the buy and the page's look: its row is in the count already.
+            const claimed = new Set(S.seen.map((b) => b.logged).filter(Boolean));
+            const r = S.ledger.rows.find((x) => x.side === 'buy' && !claimed.has(x.id) && enSameBuy(row, x, EN_SAME_NOW_MS) && enWhole(x.qty) === row.qty);
+            if (r) row.logged = r.id;
         }
         S.seen = [...S.seen.filter((b) => now - b.t < 6 * EN_HOUR), row].slice(-200);
         return true;
@@ -6147,6 +6438,30 @@
 
     /** A buy seen on a page and counted there is not counted again when the log brings the same buy later. */
     const EN_SAME_BUY_MS = 5 * EN_MIN;
+    /** A buy told by the page after its log row was read: the row is its own only this close to it, with the same number. */
+    const EN_SAME_NOW_MS = 2 * EN_MIN;
+    const enSameBuy = (b, r, within) => b.id === String(r.itemId) && Math.abs(b.t - r.t) < within && (!b.whoId || !r.who || b.whoId === String(r.who));
+
+    /**
+     * A buy seen on a page waits beside the count for its row in Torn's log. The moment that row is in, the row is the
+     * buy: what the page saw of it is no longer added on top. (Until 1.2.2 it stayed until the log had been read a
+     * minute past it - with the log asked 20 seconds after a buy and then every two minutes, the same buy stood in the
+     * count twice for two minutes: "need 141", bought, "141 ahead".) The log's number stands where the page's differs.
+     */
+    function enSeenInLog(S, rows) {
+        let seen = S.seen;
+        for (const r of rows) {
+            if (!r || r.side !== 'buy') continue;
+            let k = -1;
+            seen.forEach((b, i) => {
+                if (b.counted || b.logged || !enSameBuy(b, r, EN_SAME_BUY_MS)) return;
+                const better = k < 0 || (b.qty === enWhole(r.qty)) > (seen[k].qty === enWhole(r.qty)) || ((b.qty === enWhole(r.qty)) === (seen[k].qty === enWhole(r.qty)) && Math.abs(b.t - r.t) < Math.abs(seen[k].t - r.t));
+                if (better) k = i;
+            });
+            if (k >= 0) seen = seen.map((b, i) => (i === k ? { ...b, logged: r.id } : b));
+        }
+        S.seen = seen;
+    }
     function enNotCounted(S, events) {
         const used = new Set();
         return events.filter((e) => {
@@ -6287,6 +6602,7 @@
         }
         const fresh = enAddRows(S, pieceRows);
         out.rows = fresh.length;
+        if (enCounting(S)) enSeenInLog(S, fresh);
         enAddOuts(S, outs);
         if (mugs.length) {
             const have = new Set(S.ledger.mugs.map((m) => m.id));
@@ -6858,6 +7174,9 @@
 
         // ---- the sets and their pieces -----------------------------------------------------------------------------------
         const cartList = i.cart || [];
+        // While a run is on a line keeps the units you took on it (it says "took 5 of 5" until Next), and those units
+        // are in your stock: what is still to buy is the list less what was taken.
+        const leftList = i.run && i.run.on ? listAfterRun(cartList, i.run) : cartList;
         const sets = [];
         const pieces = [];
         const heldOf = (set) => { const m = {}; for (const p of set.pieces) m[p.id] = vwWhole(i.held(p.id)); return m; };
@@ -6889,7 +7208,7 @@
                     under: { units: vwSum(under, (o) => vwWhole(o.qty)), places: under.length },
                     other: bid && bid.pct > 0 ? { pct: bid.pct, name: bid.name || '' } : null,
                     hist: (((i.hist && i.hist.low) || {})[p.id] || []).slice(-7).map((d) => d.low),
-                    listed: onList(cartList, p.id),
+                    listed: onList(leftList, p.id),
                 };
             });
             // Shortest first: the piece holding the next set back leads.
@@ -6919,11 +7238,12 @@
         const marginCtx = { mv, pointsPrice, leastPct: settings.least };
         const plan = fillPlan(pieces, offersOf);
         const planStops = stopsOf(plan, worthOf);
-        const stops = stopsOf(cartList, worthOf).map((s) => ({ ...s, margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
+        const stops = runOrder(stopsOf(cartList, worthOf), i.run).map((s) => ({ ...s, margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
         // `took` (line key -> units you took) rides along: the box on a bazaar says it per line.
         const run = { ...runView(i.run, stops), took: (i.run && i.run.took) || {} };
         const hot = hotListings(pieces, offersOf);
-        const cartCost = vwSum(stops, (s) => s.cost);
+        const leftStops = leftList === cartList ? stops : stopsOf(leftList, worthOf);
+        const cartCost = vwSum(leftStops, (s) => s.cost);
         const depthN = Math.min(...sets.map((s) => s.ladder.length), Infinity);
         const depthX = VW_DEPTH_AT.filter((k) => k <= depthN);
         const buy = {
@@ -6932,7 +7252,7 @@
                 full: fullAfter((p) => onList(plan, p.id)),
             },
             stops, run,
-            units: vwSum(stops, (s) => s.units), cost: cartCost, gain: vwSum(stops, (s) => s.gain),
+            units: vwSum(leftStops, (s) => s.units), cost: cartCost, gain: vwSum(leftStops, (s) => s.gain),
             full: fullAfter((p) => p.listed),
             left: listAfterRun(cartList, i.run),
             vault: money.onHand == null ? null : Math.max(0, cartCost - vwWhole(money.onHand)),
@@ -6967,7 +7287,8 @@
         });
         const mineTurn = open.filter((t) => t.state === 'you');
         const trades = {
-            open, wait: mineTurn.length, waitMoney: vwSum(mineTurn, (t) => t.total),
+            // What they still wait for: money already in a trade is not asked for again.
+            open, wait: mineTurn.length, waitMoney: vwSum(mineTurn, (t) => Math.max(0, t.total - vwWhole(t.myMoney))),
             // listed: your list on TornW3B has a price for each of its pieces - a receipt is made from that list.
             finished: (i.finished || []).slice(0, 60).map((f) => ({ ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt: receipts.get(String(f.id)) || null, listed: !!(i.w3b && i.w3b.list) && (f.rows || []).length > 0 && (f.rows || []).every((r) => i.w3b.list.has(String(r.id))) })),
             receiptsError: (i.w3b && i.w3b.receiptsError) || '',
@@ -7053,7 +7374,7 @@
         if (buy.hotUnits) todo.push({ kind: 'hot', tone: '', n: buy.hotUnits, stops: buy.hotStops, pic: hot[0].id, first: firstStops(vwHotStops(hot)), cost: vwSum(hot, (h) => h.q * h.price), full: fullAfter((p) => onList(hot, p.id)) });
         else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
         if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
-        if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice });
+        if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice, each: Math.ceil(book.cost / book.left), loss: pointsPrice > 0 && book.left * pointsPrice < book.cost });
 
         return {
             at: now,
@@ -7660,6 +7981,11 @@
     const EG_REFUSED_RETRY_MS = 30 * EG_MIN;
     /** Bazaars confirmed with Torn itself each round: the stops of your list and the cheapest places first. */
     const EG_SHOPS = 12;
+    /** The piece open on the hub: this many rows of its "Sold by" table are confirmed with Torn, while it was looked at this lately. */
+    const EG_LOOK_ROWS = 14;
+    /** How often one finished trade is asked for before it is left out and said. */
+    const EG_TRADE_TRIES = 3;
+    const EG_LOOK_MS = 10 * EG_MIN;
     const EG_SYNC_GAP_MS = 2 * EG_MIN;
 
     const egMsg = (error) => String((error && error.message) || error || '');
@@ -7695,6 +8021,10 @@
         let hour = (env.load('w3bHour') || []).filter((t) => Number.isFinite(t));
         let keyState = { limited: {}, full: {}, w3b: {}, ...(env.load('keyState') || {}) };
         let cache = null;
+        /** Finished trades Torn would not hand over, and how often (readFinished). */
+        const tradeFails = {};
+        /** The piece open on the hub's "Sold by" table (shopsWanted). Not kept: the next look says it again. */
+        let looked = { id: '', at: 0 };
         let syncAt = 0;
         const flags = { w3b: false, receipt: null };
 
@@ -7888,15 +8218,28 @@
             let newest = from;
             let read = 0;
             let left = false;
+            // The oldest trade that could not be read: the next go starts from it again, so it is not lost.
+            let stuck = 0;
             for (const x of list) {
                 if (!x || x.id == null) continue;
                 const done = Number(x.completed_at ?? x.timestamp ?? x.modified_at) || 0;
                 if (S.ledger.tradeIds.includes(String(x.id))) { newest = Math.max(newest, done); continue; }
+                if (tradeFails[x.id] >= EG_TRADE_TRIES) { newest = Math.max(newest, done); continue; }
                 if (read >= EG_TRADES_FULL) { left = true; break; }
                 read += 1;
-                foldTradeFinished(S, await fetchTrade(env.torn, x.id, use), now);
+                let full = null;
+                // One trade Torn refuses does not stop the ones after it: until 1.2.2 it did, and every later trade
+                // (its pieces, its money) stayed out of the count for as long as that one failed.
+                try { full = await fetchTrade(env.torn, x.id, use); } catch (error) {
+                    tradeFails[x.id] = (tradeFails[x.id] || 0) + 1;
+                    if (tradeFails[x.id] >= EG_TRADE_TRIES) env.say('note', 'A finished trade could not be read from Torn, and is left out', `trade ${x.id}: ${egMsg(error)}`);
+                    else stuck = stuck ? Math.min(stuck, done || from) : done || from;
+                    continue;
+                }
+                foldTradeFinished(S, full, now);
                 newest = Math.max(newest, done);
             }
+            if (stuck) newest = Math.min(newest, Math.max(from, stuck - 1));
             countRun();
             S.ledger = { ...S.ledger, tradesFrom: newest, tradesAt: now, tradesBackfilled: S.ledger.tradesBackfilled || (!left && list.length < 100) };
             touch('ledger', 'trades', 'outs', 'stock', 'names');
@@ -7982,6 +8325,20 @@
             const add = (id) => { if (id != null && id !== '' && !ids.includes(String(id))) ids.push(String(id)); };
             const cur = v.buy.run.stops.find((s) => s.state === 'cur');
             if (cur && !cur.im) add(cur.whoId);
+            // The piece open on the hub's "Sold by" table: every bazaar the table shows is asked of Torn itself, so no
+            // row there is TornW3B's older copy for longer than one round (the owner, 2026-10-11: "i press read now as
+            // well, its still stale items, and non existent items").
+            const seen = looked.id && env.now() - looked.at < EG_LOOK_MS ? viewPiece(v, looked.id) : null;
+            const extra = seen ? seen.offers.slice(0, EG_LOOK_ROWS).filter((o) => o.src !== 'market').length : 0;
+            if (seen) for (const o of seen.offers.slice(0, EG_LOOK_ROWS)) if (o.src !== 'market') add(o.whoId);
+            if (extra) {
+                const rest = [];
+                const more = (id) => { if (id != null && id !== '' && !ids.includes(String(id)) && !rest.includes(String(id))) rest.push(String(id)); };
+                for (const s of v.buy.stops) if (!s.im) more(s.whoId);
+                for (const h of v.buy.hot) if (!h.im) more(h.whoId);
+                for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) more(o.whoId);
+                return [...ids, ...rest.slice(0, EG_SHOPS)];
+            }
             for (const s of v.buy.stops) if (!s.im) add(s.whoId);
             for (const h of v.buy.hot) if (!h.im) add(h.whoId);
             for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) add(o.whoId);
@@ -8061,7 +8418,7 @@
 
         /** What you bought since the run began, counted on its lines: from the pages you bought on and from Torn's log. */
         function countRun() {
-            if (!S.run.on && !S.run.done) return;
+            if (!S.run.on) return;
             const began = S.run.began || 0;
             const got = new Map();
             const add = (key, qty) => got.set(key, (got.get(key) || 0) + qty);
@@ -8071,7 +8428,11 @@
                 else if (r.venue === 'market') add(lineKey(r.itemId, IM_PLACE), r.qty);
             }
             const seen = new Map();
-            for (const b of S.seen) if (b.t >= began && b.whoId) seen.set(lineKey(b.id, 'b:' + b.whoId), (seen.get(lineKey(b.id, 'b:' + b.whoId)) || 0) + b.qty);
+            for (const b of S.seen) {
+                // A buy seen on the Item Market's page is on its one line; a bazaar's on that bazaar's.
+                const key = b.t >= began ? (b.im ? lineKey(b.id, IM_PLACE) : b.whoId ? lineKey(b.id, 'b:' + b.whoId) : null) : null;
+                if (key) seen.set(key, (seen.get(key) || 0) + b.qty);
+            }
             let run = S.run;
             for (const l of S.cart) run = runTook(run, l.key, Math.max(got.get(l.key) || 0, seen.get(l.key) || 0));
             if (run !== S.run) { S.run = run; touch('run'); }
@@ -8307,6 +8668,7 @@
         function readNow() {
             for (const k of Object.keys(due)) due[k] = 0;
             for (const kind of Object.keys(per)) if (kind !== 'listings' && kind !== 'bids') for (const id of Object.keys(per[kind])) per[kind][id].due = 0;
+            if (looked.id) looked = { ...looked, at: env.now() };
             said.clear();
             off.clear();
             step();
@@ -8325,7 +8687,7 @@
 
         // ---- the hub's buttons ------------------------------------------------------------------------------------------------
 
-        const stops = () => { const v = view(); return stopsOf(S.cart, (id) => (viewPiece(v, id) || {}).worth || 0); };
+        const stops = () => { const v = view(); return runOrder(stopsOf(S.cart, (id) => (viewPiece(v, id) || {}).worth || 0), S.run); };
         const idle = () => { S.run = { ...RUN_IDLE }; };
 
         const actions = {
@@ -8348,8 +8710,13 @@
                 else {
                     countRun();
                     S.run = runNext(S.run, list);
-                    // Over: what you took leaves the list, what you skipped stays on it.
-                    if (S.run.done) S.cart = listAfterRun(S.cart, S.run);
+                    // Over: what you took leaves the list, what you skipped stays on it. The run is summed here, once:
+                    // its counts are of the lines as they were, and those lines are shorter from now on.
+                    if (S.run.done) {
+                        const end = runView(S.run, list);
+                        S.cart = listAfterRun(S.cart, S.run);
+                        S.run = { ...S.run, took: {}, sum: { got: end.got, units: end.units, skipped: end.skipped } };
+                    }
                 }
                 touch('cart', 'run');
                 // The stop you are sent to is confirmed with Torn at once.
@@ -8358,6 +8725,7 @@
                 if (cur && !cur.im && per.shops[String(cur.whoId)]) per.shops[String(cur.whoId)].due = 0;
             },
             read: readNow,
+            look(itemId) { const id = String(itemId || ''); if (id === looked.id && env.now() - looked.at < EG_MIN) return; looked = { id, at: env.now() }; step(); },
             w3b(op) {
                 if (flags.w3b) return;
                 flags.w3b = true;
@@ -9434,7 +9802,7 @@
     @container (max-width: 1240px) { .pane.stk { grid-template-columns: minmax(0, 1fr); } .pane.stk .minc { min-height: 260px !important; } }
     .t tr.pick { cursor: pointer; } .t tbody tr.sel, .t tbody tr.sel:hover { background: var(--brand-bg); box-shadow: inset 2px 0 0 var(--brand); }
     .rec { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; } .rec .hero { white-space: nowrap; } .rec-t { flex: 1; min-width: 240px; color: var(--text2); line-height: 1.5; } .rec-t b { color: var(--text); } .rec-b { display: flex; gap: 8px; }
-    .wl { display: grid; grid-template-columns: minmax(0, 1fr) 44px 72px 76px 104px; align-items: center; gap: 8px; padding: 6px 14px; border-top: 1px solid var(--line); white-space: nowrap; color: var(--text2); transition: background .14s; }
+    .wl { display: grid; grid-template-columns: minmax(0, 1fr) 44px 72px 76px 112px 104px; align-items: center; gap: 8px; padding: 6px 14px; border-top: 1px solid var(--line); white-space: nowrap; color: var(--text2); transition: background .14s; }
     .wl:hover { background: rgba(255,255,255,.028); } .wl b { color: var(--text); } .wl .n { text-align: right; }
     .wl.h { color: var(--faint); font: 650 12px var(--sans); } .wl.h:hover { background: none; }
     .wl.cheap b.num { color: #c9bfff; } .wl.on { background: var(--brand-bg); box-shadow: inset 2px 0 0 var(--brand); }
@@ -9855,6 +10223,7 @@
         if (t.kind === 'buy') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Under their worth, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
         if (t.kind === 'swap') return row(tone.brand, ic('brand'), `<b>Swap ${hPlural(t.n, 'set')}.</b> ${hNum(t.points)} points.`, hOut(MUSEUM_URL, 'Museum', 'btn sm out'));
         if (t.kind === 'hold') return row(tone.warn, ic('points'), `<b>Hold your points.</b> Under the usual ${hMoney(t.usual)}.`, '<button class="btn sm" data-go="points">Points</button>');
+        if (t.loss) return row(tone.warn, ic('points'), `<b>Your ${hNum(t.n)} points would sell at a loss.</b> They cost you ${hMoney(t.each)} each, the market pays ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
         return row(tone.good, ic('points'), `<b>Sell ${hNum(t.n)} points.</b> At ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
     }
 
@@ -9979,12 +10348,20 @@
         if (!p) return '';
         const hist = sparkSvg(p.hist, 'var(--muted)', 54, 20);
         const under = p.offers.filter((o) => o.price < p.worth);
-        const rows = p.offers.slice(0, 14).map((o) => {
+        const shown = p.offers.slice(0, 14);
+        // The Item Market is one line for all its rows: each row says its own part of it, cheapest first.
+        const imLine = lines.get(lineKey(p.id, IM_PLACE));
+        const want = Math.max(0, p.need - p.listed);
+        const imPart = imShares(shown.map((o) => (o.src === 'market' ? o : { price: 0, qty: 0 })), p.worth, imLine ? imLine.q : want);
+        const rows = shown.map((o, k) => {
+            const im = o.src === 'market';
             const key = lineKey(p.id, placeOf(o));
-            const on = lines.get(key);
-            const q = Math.min(o.qty, Math.max(0, p.need - p.listed));
+            const on = im ? (imLine && imPart[k] ? { q: imPart[k] } : null) : lines.get(key);
+            const q = im ? (imLine ? 0 : imPart[k]) : Math.min(o.qty, want);
             const btn = on ? `<button class="btn sm" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}" title="Take it off the list">${on.q} on list ✓</button>` : o.price < p.worth && q ? `<button class="btn sm go" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}">Add ${q}</button>` : '';
-            return `<div class="wl ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span><span class="wl-a">${btn}</span></div>`;
+            // Torn's own answer, or TornW3B's older copy of that bazaar: said on the row, with its age.
+            const age = o.at ? `<span class="n num ${o.from === 'w3b' ? 't-warn' : 't-muted'}" title="${o.from === 'w3b' ? "TornW3B's copy of this bazaar: Torn itself has not been asked yet" : 'Read from Torn itself'}">${o.from === 'w3b' ? 'TornW3B · ' : ''}${hAge(o.at, v.at).replace(' ago', '')}</span>` : '<span></span>';
+            return `<div class="wl ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
         }).join('');
         const u = p.under.units;
         const foot = (under.length ? `<b>${hNum(u)}</b> under its worth in ${hPlural(p.under.places, 'place')}` : 'Nowhere under its worth now')
@@ -9992,7 +10369,7 @@
             + (p.offers.some((o) => o.price < p.pay) ? ' Violet: cheaper than you pay sellers.' : '');
         return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
         <div class="wl-s">Worth <b>${hMoney(p.worth)}</b> to you · you pay sellers <b>${hMoney(p.pay)}</b></div>
-        ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span></span></div>${rows}` : pgNone('Nobody lists it now.')}
+        ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span class="n">Checked</span><span></span></div>${rows}` : pgNone('Nobody lists it now.')}
         <div class="wl-s foot">${foot}</div></div>`;
     }
 
@@ -10065,6 +10442,8 @@
         const all = ui.pane === 1;
         const rows = v.pieces.filter((p) => all || p.need).sort((a, b) => (b.target ? b.need / b.target : 0) - (a.target ? a.need / a.target : 0));
         const sel = viewPiece(v, ui.sel) || rows[0] || v.pieces[0] || null;
+        // Read by the hub after the draw: the piece whose sellers are shown.
+        ui.shown = sel ? String(sel.id) : '';
         const plan = v.buy.plan;
         const table = rows.length ? '<thead><tr><th>Piece</th><th class="n">Need</th><th class="n">Cheapest</th><th>Where</th><th class="n">Under its worth</th><th class="n">On your list</th></tr></thead><tbody>' + rows.map((p) => {
             const low = p.low;
@@ -10730,6 +11109,8 @@
             if (!desk) return;
             drawShell();
             const html = hubPage(desk, ui);
+            // The piece whose sellers are on the screen: its bazaars are checked with Torn itself (told at most once a minute).
+            if (ui.page === 'buy' && ui.shown) act('look', ui.shown);
             if (!fresh && html === shown) { drawCharts(false); return; }
             shown = html;
             const whole = patch(html, fresh);
@@ -10774,7 +11155,7 @@
             if (a === 'set') act('set', { [id]: setValue(id, v) });
             else if (a === 'which') { const which = { ...desk.view.settings.which }; which[v] = !which[v]; act('set', { which }); }
             else if (a === 'pick') { ui.sel = id; const p = desk.view.pieces.find((x) => String(x.id) === id); go('buy', p && p.need ? 0 : 1); }
-            else if (a === 'sel') { ui.sel = id; draw(false); }
+            else if (a === 'sel') { ui.sel = id; act('look', id); draw(false); }
             else if (a === 'trade') { ui.trade = id; draw(false); }
             else if (a === 'range') { ui.range[id] = Number(v); draw(false); }
             else if (a === 'unit') { ui.unit = v; draw(false); }
@@ -11188,7 +11569,9 @@
     .tarc-setmark[data-where="note"] { height: 22px; padding: 0 10px; border-radius: 11px; font-size: 12px; line-height: 20px; transform: translateY(-50%); }
     .tarc-setmark[data-state="top"] { border-color: #5aa7ff; background: #173a63; color: #fff; box-shadow: 0 0 0 1px #5aa7ff, 0 0 10px rgba(90, 167, 255, 0.5); }
     .tarc-setmark[data-state="ok"] { border-color: rgba(160, 168, 184, 0.45); background: #1c2029; color: #c3c9d4; }
-    .tarc-setmark[data-state="ahead"], .tarc-setmark[data-state="over"] { border-color: rgba(246, 183, 74, 0.6); background: #33260c; color: #ffd98a; }
+    .tarc-setmark[data-state="ahead"] { border-color: rgba(246, 183, 74, 0.6); background: #33260c; color: #ffd98a; }
+    /* More typed than you need: red (the owner, 2026-10-11: "a warning that turns red if im buying more than i need"). */
+    .tarc-setmark[data-state="over"] { border-color: rgba(255, 120, 120, 0.7); background: #3a1414; color: #ffc9c9; }
     .tarc-setmark[data-state="bad"] { border-color: rgba(255, 120, 120, 0.6); background: #3a1414; color: #ffc9c9; }
     .tarc-setmark[data-state="good"] { border-color: rgba(111, 220, 127, 0.55); background: #12301a; color: #b9f3c2; }
 
@@ -11214,9 +11597,17 @@
     }
     .tarc-buyhere[data-tarc-ring="over"] {
         box-shadow:
-            inset 0 0 0 2px #f6b74a,
-            inset 0 0 0 9999px rgba(246, 183, 74, 0.1) !important;
+            inset 0 0 0 2px #ff7878,
+            inset 0 0 0 9999px rgba(255, 120, 120, 0.12) !important;
     }
+
+    /*
+     * The listing a link of ours named (the hub's "Sold by", a stop of your run): it pulses until you press anything.
+     * An outline, so it takes no room and leaves the ring's own paint alone.
+     */
+    [data-tarc-pulse] { outline: 2px solid rgba(90, 167, 255, 0.95); outline-offset: 1px; animation: tarc-pulse 1.1s ease-in-out infinite; }
+    @keyframes tarc-pulse { 0%, 100% { outline-color: rgba(90, 167, 255, 0.95); outline-offset: 1px; } 50% { outline-color: rgba(90, 167, 255, 0.25); outline-offset: 5px; } }
+    @media (prefers-reduced-motion: reduce) { [data-tarc-pulse] { animation: none; } }
 
     /*
      * The points market (mockup Z7): a hairline in Torn's list, on the edge between two rows - where your listing
@@ -11443,6 +11834,14 @@
     .lk { color: #9cc6ff; cursor: pointer; text-decoration: none; } .lk:hover { color: #c9bfff; }
     .num { font-variant-numeric: tabular-nums; }
     .t-good { color: var(--good); } .t-bad { color: #ff8a87; }
+    /* Your stock, on its own beside the page: a row a piece, its count moving as you buy. Red = more than you need. */
+    .st-r { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1px 8px; padding: 3px 8px; border-radius: 8px; border: 1px solid transparent; }
+    .st-r .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); } .st-r.here .n { color: var(--text); font-weight: 600; }
+    .st-r .x { grid-column: 2; color: var(--muted); font-size: 11.5px; white-space: nowrap; } .st-r .bar { grid-column: 3; width: 54px; flex: none; }
+    .st-r.need .x { color: var(--need); } .st-r.ahead .x { color: var(--warn); } .st-r.ok .x { color: var(--good); }
+    .st-r.over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .st-r.over .x, .st-r.over b { color: #ff8a87; font-weight: 600; } .st-r.over .bar i { background: #ff7878; }
+    .ta-hold.st-over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .ta-hold.st-over b { color: #ff8a87; }
+    .ta.ts .ta-h { cursor: default; } .ta.ts .ta-b { gap: 3px; } .ta.ts .ta-b h4 { margin-top: 5px; }
     .pill { position: fixed; z-index: 99990; right: 12px; bottom: 56px; height: 34px; padding: 0 12px 0 6px; display: inline-flex; align-items: center; gap: 8px; border-radius: 999px;
       border: 1px solid var(--line2); background: var(--panel); color: var(--text); font: 600 12px/1 var(--sans); box-shadow: 0 8px 24px rgba(0,0,0,.5); cursor: pointer; white-space: nowrap; }
     .pill:hover { background: var(--raised); }
@@ -11513,6 +11912,46 @@
     }
 
     /**
+     * Your stock on its own, beside Torn's page while you buy (the owner, 2026-10-11: "my separate overlay with live
+     * tracking ... a warning that turns red if im buying more than i need"). Every piece of the sets you build: what
+     * you hold now - a buy seen here a moment ago counted in - against what the set needs. A piece turns red when the
+     * number in its open Buy box is more than you need.
+     * @param live { pend: { itemId: units }, typed: { itemId: units in an open Buy box here }, here: [itemId on this page] }
+     * @returns { head, html, over: [{ id, name, typed, need }] }
+     */
+    function boxStock(v, live = {}) {
+        const pend = live.pend || {};
+        const typed = live.typed || {};
+        const here = new Set((live.here || []).map(String));
+        const whole = (n) => Math.max(0, Math.floor(Number(n) || 0));
+        const over = [];
+        let togo = 0;
+        let body = '';
+        for (const s of v.sets) {
+            let full = Infinity;
+            let rows = '';
+            for (const p of s.pieces) {
+                const id = String(p.id);
+                const held = p.held + whole(pend[id]);
+                const target = Math.max(0, p.held + p.need - p.ahead);
+                const need = Math.max(0, target - held);
+                const t = whole(typed[id]);
+                const more = t > need ? t - need : 0;
+                if (more) over.push({ id, name: p.name, typed: t, need });
+                togo += need;
+                full = Math.min(full, held);
+                const cls = more ? 'over' : need > 0 ? 'need' : held > target ? 'ahead' : 'ok';
+                const say = more ? `typing ${hNum(t)} · ${hNum(more)} too many` : t ? `typing ${hNum(t)} of ${hNum(need)}` : need > 0 ? `need ${hNum(need)}` : held > target ? `${hNum(held - target)} ahead` : 'enough';
+                const w = target ? Math.min(100, Math.round((held / target) * 100)) : 100;
+                rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
+            }
+            body += bxHead(`${hEsc(s.label)} sets`, `${hNum(Number.isFinite(full) ? full : 0)} full of ${hNum(s.target)}`) + rows;
+        }
+        const warn = over.length ? `<div class="ta-hold st-over"><b>More than you need.</b> ${over.map((o) => `${hEsc(o.name)}: ${hNum(o.typed)} typed, ${o.need ? `you need ${hNum(o.need)}` : 'you need no more'}`).join(' · ')}</div>` : '';
+        return { head: over.length ? 'more than you need' : togo ? `${hNum(togo)} to go` : 'every piece is in', html: warn + body, over };
+    }
+
+    /**
      * Someone's bazaar, or the Item Market: the checklist of what to buy here, each piece with what you hold of it.
      * @param cards [{ itemId, price, qty, typed, hasBox }] the listings on the page, in page order
      * @param place 'b:' + the owner's id, or 'im'
@@ -11542,6 +11981,8 @@
         const rows = [];
         const fill = [];
         const onPage = new Set();
+        // Units already given to cards of the same piece further up the page (the Item Market has a row for every price).
+        const usedOn = new Map();
         let any = false;
         cards.forEach((c, i) => {
             const p = viewPiece(v, c.itemId);
@@ -11550,29 +11991,40 @@
             const id = String(p.id);
             const line = lineOf(id);
             // The Item Market lists one piece many times: only the listings worth taking are marked.
-            if (im && (line ? c.price > line.price : !(p.need > 0 && c.price < p.worth))) return;
+            if (im && !(c.price > 0 && c.price < p.worth && (line || p.need > 0))) return;
             const first = !onPage.has(id);
             onPage.add(id);
             const need = Math.max(0, p.need - gotOf(id));
             const taken = line ? takenOn(line) : 0;
             const left = line ? line.q - taken : need > 0 && c.price > 0 && c.price < p.worth ? need : 0;
             // Never more than the listing holds, as the page says it now.
-            const take = first ? (c.qty > 0 ? Math.min(left, c.qty) : left) : 0;
+            // On the Item Market the piece's rows share what is left, in the order the page has them. A card that does
+            // not say its stock (a category tile there) gets no number: "buy 150 here" where three exist is a guess.
+            const used = usedOn.get(id) || 0;
+            const open = Math.max(0, left - used);
+            const blind = im && !(c.qty > 0);
+            const take = first || im ? (c.qty > 0 ? Math.min(open, c.qty) : blind ? 0 : open) : 0;
+            usedOn.set(id, used + take);
             const cap = line ? take : need;
             let text;
             let state;
             let ring = '';
             if (c.typed > cap && c.typed > 0) { text = cap ? `typing ${hNum(c.typed)} · you ${line ? 'listed' : 'need'} ${hNum(cap)}` : `typing ${hNum(c.typed)} · you need no more`; state = 'over'; ring = 'over'; }
             else if (take > 0 && c.typed === take) { text = `${hNum(take)} typed · press Buy`; state = line ? 'top' : ''; ring = line ? 'top' : 'need'; }
-            else if (line && take > 0) { text = `on your list · buy ${hNum(take)}${take < left ? ' · all it has' : ''}`; state = 'top'; ring = 'top'; }
-            else if (line && taken > 0) { text = `took ${hNum(taken)} ✓`; state = 'good'; }
-            else if (take > 0) { text = `need ${hNum(need)} · worth ${hMoney(p.worth)}`; state = ''; ring = 'need'; }
-            else if (need > 0) { text = `need ${hNum(need)} · over its worth`; state = 'ok'; }
-            else if (p.ahead > 0) { text = `${hNum(p.ahead)} ahead already`; state = 'ahead'; }
-            else { text = 'enough for now'; state = 'ok'; }
+            // The owner, 2026-10-11: "it says need 150 ... but it only has a few things there. Can it just tell me how
+            // much I need from that bazaar". So the mark says what to take HERE, never the whole of what you need.
+            else if (line && take > 0) { text = `buy ${hNum(take)} here · on your list${take < open ? ' · all it has' : ''}`; state = 'top'; ring = 'top'; }
+            else if (blind && open > 0) { text = 'under its worth · open it for the stock'; state = ''; ring = 'need'; }
+            else if (line && taken > 0 && first) { text = `took ${hNum(taken)} ✓`; state = 'good'; }
+            else if (take > 0) { text = `buy ${hNum(take)} here${take < open ? ' · all it has' : ''}`; state = ''; ring = 'need'; }
+            else if (im && need > 0) { text = 'no more needed from this row'; state = 'ok'; }
+            else if (need > 0) { text = 'none here · over its worth'; state = 'ok'; }
+            else if (p.ahead > 0) { text = `none here · ${hNum(p.ahead)} ahead already`; state = 'ahead'; }
+            else { text = 'none here · enough for now'; state = 'ok'; }
             marks.push({ i, text, state, ring });
             if (take > 0) fill.push({ i, n: take });
-            if (first && (take > 0 || taken > 0)) rows.push({ p, c, i, take, line, taken, short: take < left });
+            // The Item Market: each price row you are to buy from is a row of the box, with its own number and price.
+            if (first ? take > 0 || taken > 0 : take > 0) rows.push({ p, c, i, take, line, taken: first ? taken : 0, short: take < open });
         });
         // On your list here, and not on the page as it stands: further down the bazaar (Torn draws only the listings
         // near the screen), or sold since the list was made.
@@ -13685,6 +14137,13 @@
     // the buy controls beside it in the same tile, not inside it: the quantity box and Buy come with the tile's buy
     // menu, once you open it. So what you press, and where a number is typed, is looked for in the tile.
     //
+    //
+    // SEEN on the owner's own page, 2026-10-11 (a bazaar): the tile is div.item___; closed, it holds the card
+    // (div.itemDescription___: picture, a "Buy: <name>" button, name, price, stock). OPEN, the card is NOT on the
+    // page: the tile holds only div.buyMenu___ - the name, the price, "(890 in stock)", input.buyAmountInput___ and
+    // the Buy button. So an open listing has no picture, and a scan by pictures does not find it. 1.2.0 and 1.2.1
+    // took that for "the listing is gone after your press: you bought it", and Fill all never found the box.
+    //
     // Nothing here presses or types anything: it only finds.
 
 
@@ -13727,6 +14186,35 @@
     function buyBox(tile) {
         if (!tile || !tile.querySelectorAll) return null;
         return [...tile.querySelectorAll(QTY_SELECTOR)].find(bbShown) || [...tile.querySelectorAll(TYPING_SELECTOR)].find(bbShown) || null;
+    }
+
+    /** Torn's buy form for one listing, while it is open. */
+    const MENU_SELECTOR = '[class*="buyMenu"]';
+    const bbDigits = (s) => Number(String(s == null ? '' : s).replace(/[^\d]/g, '')) || 0;
+
+    /**
+     * The buy forms open on the page: [{ el, tile, name, price, qty, input }]. The form stands where the listing's card
+     * was and says the same three things - the name, the price and how many are in stock (0 when it does not say).
+     */
+    function openBuyMenus(root) {
+        const out = [];
+        if (!root || !root.querySelectorAll) return out;
+        for (const el of root.querySelectorAll(MENU_SELECTOR)) {
+            if (el.closest('#tarc-host') || !el.getClientRects().length || out.some((m) => m.el.contains(el))) continue;
+            const text = String(el.textContent || '').replace(/\s+/g, ' ');
+            const named = el.querySelector('[class*="name"]');
+            const name = String(named ? named.textContent : text.split('$')[0]).replace(/\s+/g, ' ').trim();
+            const price = bbDigits((text.match(/\$\s?[\d,]+/) || [])[0]);
+            const qty = bbDigits((text.match(/([\d,]+)\s+in stock/i) || [])[1]);
+            if (!name || !price) continue;
+            out.push({ el, tile: el.closest(TILE_SELECTOR) || el, name, price, qty, input: buyBox(el) });
+        }
+        return out;
+    }
+
+    /** Is this tile still a listing on the page - its card, or its buy form in the card's place? */
+    function tileHolds(tile) {
+        return Boolean(tile && tile.isConnected && (bbImages(tile) > 0 || tile.querySelector(MENU_SELECTOR)));
     }
 
     /* ===== src/core/accepted.js ===== */
@@ -13802,12 +14290,18 @@
      * and it is not counted). A card whose stock the page does not say is never
      * counted. `seen` carries each card's last stock between reads.
      *
+     * Torn Archive 1.2.2 (the owner's page, 2026-10-11: buys shown that he never made): a count is never a guess.
+     * A listing that is gone counts for no more than the number that stood in its Buy box when you pressed Torn's Buy
+     * (`gone` as a Map), and a stock that fell counts only on a listing you pressed in (`pressedIn`): other buyers
+     * take from the same bazaar while you look at it.
+     *
      * @param {object} seen - key ('itemId|price') -> {qty, itemId, price, name}
      * @param {Array<{itemId, name, listingPrice, qty, qtyAssumed}>} cards - this read
-     * @param {Set<string>} [pressed] - keys of the cards you pressed a button on
+     * @param {Set<string>|Map<string, number>} [gone] - listings gone after your press: their keys, or key -> the most you can have taken
+     * @param {Set<string>|null} [pressedIn] - keys of the listings you pressed in; null = a fallen stock always counts
      * @returns {{bought: Array<{itemId, name, price, qty}>, seen: object}}
      */
-    function stockBuys(seen, cards, pressed = new Set()) {
+    function stockBuys(seen, cards, gone = new Set(), pressedIn = null) {
         const now = {};
         for (const c of cards || []) {
             if (!c || c.qtyAssumed || !(Number(c.qty) > 0) || !(Number(c.listingPrice) > 0)) continue;
@@ -13818,8 +14312,13 @@
         const bought = [];
         for (const [key, was] of Object.entries(seen || {})) {
             const is = now[key];
-            if (is && is.qty < was.qty) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty: was.qty - is.qty });
-            else if (!is && pressed.has(key)) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty: was.qty });
+            if (is && is.qty < was.qty) {
+                if (!pressedIn || pressedIn.has(key)) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty: was.qty - is.qty });
+            } else if (!is && gone.has(key)) {
+                const most = gone instanceof Map ? Math.floor(Number(gone.get(key)) || 0) : was.qty;
+                const qty = Math.min(was.qty, most);
+                if (qty > 0) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty });
+            }
         }
         return { bought, seen: now };
     }
@@ -14043,6 +14542,9 @@
     /** The most of the window's height the overlay takes, as Torn Trading's panel. */
     const TP_TALL = 0.75;
     const TP_TALL_MAX = 640;
+    /* Your stock, on its own: its width, and the least height worth showing it in. */
+    const TS_WIDTH = 300;
+    const TS_MIN_H = 160;
     /** Where you left the overlay: { side, left, top }. Folded or not: 'boxOpen' where it has something to say, 'boxOpenAny' elsewhere. */
     const TP_POS_KEY = 'boxPos';
 
@@ -14089,6 +14591,10 @@
             pend: [], took: {}, fillAll: null, fill: [], said: new Set(),
             exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null,
             marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
+            // Your stock on its own: what this tab adds to the view (buys seen, numbers typed), and its fold.
+            live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false,
+            // The listing a link of ours named: brought into view once, pulsing until you press anything.
+            arrived: '', pulseOff: '',
             open: gmGet('boxOpen', true) !== false, openAny: gmGet('boxOpenAny', false) === true, pinned: false, room: true, timer: 0,
             content: null, has: false, pos: gmGet(TP_POS_KEY, null), strips: { left: null, right: null }, mid: 0, at: null, other: '', drawn: '',
         };
@@ -14106,6 +14612,7 @@
         root.innerHTML = `<style>${BOX_CSS}</style>`
             + `<div class="ta" hidden><div class="ta-h" title="Torn Archive: drag to move"><span class="mark">${hIcon('brand')}</span><b>Torn Archive</b><span class="w"></span>`
             + `<button class="open" data-act="hub" title="Open Torn Archive in a new tab">Open</button><button data-act="fold">–</button></div><div class="ta-b"></div></div>`
+            + `<div class="ta ts" hidden><div class="ta-h" title="Your stock, as you buy"><span class="mark">${hIcon('brand')}</span><b>Your stock</b><span class="w"></span><button data-act="stock-fold">–</button></div><div class="ta-b"></div></div>`
             + `<button class="pill" hidden data-act="unfold" title="Show Torn Archive"><span class="mark">${hIcon('brand')}</span><span class="pw"></span></button>`;
         doc.body.appendChild(host);
         const box = root.querySelector('.ta');
@@ -14116,6 +14623,10 @@
         const foldBtn = root.querySelector('[data-act="fold"]');
         const pill = root.querySelector('.pill');
         const pillWords = root.querySelector('.pw');
+        const stockBox = root.querySelector('.ts');
+        const stockBody = stockBox.querySelector('.ta-b');
+        const stockWords = stockBox.querySelector('.w');
+        const stockFold = stockBox.querySelector('[data-act="stock-fold"]');
 
         // ---- where it stands ------------------------------------------------------------------------------------------
 
@@ -14213,6 +14724,37 @@
             foldBtn.title = stuck ? (st.at.by === 'over' ? 'No room to unfold here: fold the panel under it first' : st.at.by === 'under' ? 'No room to unfold here: fold the panel over it first' : 'No room to unfold here: drag it up') : (open ? 'Fold' : 'Unfold') + (other ? '' : ' (backtick key)');
         }
 
+        /**
+         * Your stock on its own, while you buy: on the side of Torn's page the box is not on, and only where that side
+         * has room - it never stands over Torn's page. With no room the box's own checklist says what you hold.
+         */
+        function showStock(out) {
+            st.stockOut = out;
+            const side = st.at && st.at.side === 'left' ? 'right' : 'left';
+            const strip = out && st.at && !box.hidden ? st.strips[side] : null;
+            const width = strip ? Math.min(TS_WIDTH, strip.width) : 0;
+            const left = strip ? (side === 'left' ? strip.to - width : strip.from) : 0;
+            let room = win.innerHeight - OV_TOP - BOX_GAP;
+            const other = strip ? tradingRect() : null;
+            if (other && other.left < left + width && other.right > left) room = other.top - OV_TOP - OV_GAP;
+            if (!strip || room < TS_MIN_H) { stockBox.hidden = true; return; }
+            stockBox.hidden = false;
+            stockBox.classList.toggle('folded', !st.stockOpen);
+            stockBox.classList.toggle('alarm', out.over.length > 0);
+            if (stockWords.textContent !== out.head) stockWords.textContent = out.head;
+            if (st.stockHtml !== out.html) {
+                st.stockHtml = out.html;
+                const top = stockBody.scrollTop;
+                stockBody.innerHTML = out.html;
+                stockBody.scrollTop = top;
+            }
+            stockFold.textContent = st.stockOpen ? '–' : '+';
+            stockBox.style.setProperty('--left', left + 'px');
+            stockBox.style.setProperty('--top', OV_TOP + 'px');
+            stockBox.style.setProperty('--width', width + 'px');
+            stockBox.style.setProperty('--max-h', room + 'px');
+        }
+
         /** Fold or unfold, remembered: apart for the pages where it has something to say and for the rest. */
         function setOpen(on) {
             if (st.has) { st.open = on; gmSet('boxOpen', on); } else { st.openAny = on; gmSet('boxOpenAny', on); }
@@ -14302,12 +14844,16 @@
          * filter or a sort takes many out at once.
          */
         function pressedGone(t, images) {
-            const keys = new Set();
+            const keys = new Map();
             const many = st.images - images > 1;
             for (const [k, p] of st.pressed) {
                 if (t - p.at > TP_PRESS_MS) { st.pressed.delete(k); continue; }
+                // Its tile is still on the page, with its card or its buy form: opened, not bought out.
+                if (tileHolds(p.tile)) continue;
+                // Only Torn's own Buy, pressed in the open form, buys: the number in its box then is the most you took.
+                if (!p.buy || !(p.typed > 0)) continue;
                 const top = p.top - (win.scrollY - p.y);
-                if (!many && top > -p.h && top < win.innerHeight) keys.add(k);
+                if (!many && top > -p.h && top < win.innerHeight) keys.set(k, p.typed);
             }
             return keys;
         }
@@ -14341,14 +14887,28 @@
             const place = kind === 'itemmarket' ? IM_PLACE : 'b:' + bazaarOwnerId(st.href);
             const whoId = kind === 'itemmarket' ? '' : bazaarOwnerId(st.href);
             const { listings } = scanDom(kind === 'itemmarket' ? PAGE_ITEM_MARKET : PAGE_BAZAAR, doc, { index: st.index });
+            // A listing whose Buy box is open: Torn puts its buy form where the card was, so the scan by pictures does
+            // not find it. It is the same listing still, at the same price, and its box is the one Fill types into.
+            const menus = openBuyMenus(doc);
+            for (const m of menus) {
+                const item = findItemByName(st.index, m.name);
+                if (!item || listings.some((c) => c.el && m.tile.contains(c.el) && String(c.itemId) === String(item.id))) continue;
+                listings.push({ el: m.el, itemId: item.id, name: item.name, listingPrice: m.price, qty: m.qty, qtyAssumed: !m.qty, menu: true });
+            }
+            if (menus.length) say('menu', 'A Buy box open on a listing', `read as the same listing: ${menus[0].name} at $${menus[0].price}, ${menus[0].qty || 'stock not said'} in stock, its number box ${menus[0].input ? 'found' : 'NOT found'}`);
             st.cards = listings;
-            st.tiles = listings.map((c) => { const tile = listingTile(c.el); return { tile, input: buyBox(tile) }; });
+            st.tiles = listings.map((c) => { const tile = c.menu ? c.el : listingTile(c.el); return { tile, input: buyBox(tile) }; });
             const t = now();
             // Another place: nothing seen at the last one is carried over, and Fill all is off.
             if (st.seenPlace !== place) { st.seen = {}; st.seenPlace = place; st.pressed.clear(); st.took = {}; st.said.clear(); st.images = 0; fillAllOff(); }
             const images = doc.querySelectorAll('img[src*="/images/items/"]').length;
             // What you took: a listing's stock that dropped while you were here, or a listing you pressed in that is gone.
-            const r = stockBuys(st.seen, listings, pressedGone(t, images));
+            const before = st.seen;
+            const goneNow = pressedGone(t, images);
+            const r = stockBuys(before, listings, goneNow, new Set(st.pressed.keys()));
+            // A listing whose tile is still there but says nothing just now (Torn's own words after a buy stand in
+            // it): its last stock is kept, so the buy shows as that stock falling when the card is back.
+            for (const [k, p] of st.pressed) if (!r.seen[k] && before[k] && tileHolds(p.tile)) r.seen[k] = before[k];
             st.seen = r.seen;
             st.images = images;
             for (const b of r.bought) {
@@ -14356,10 +14916,10 @@
                 const gone = !r.seen[key];
                 st.pressed.delete(key);
                 const id = String(b.itemId);
-                const nid = note('buy', { t, id, qty: b.qty, price: b.price, whoId });
+                const nid = note('buy', { t, id, qty: b.qty, price: b.price, whoId, im: kind === 'itemmarket' });
                 st.pend.push({ nid, id, qty: b.qty, t });
                 st.took[id] = (st.took[id] || 0) + b.qty;
-                say('', `A buy seen on the page: ${b.qty} × ${b.name || 'item ' + id} at $${b.price}`, gone ? 'the listing was gone after your press in its tile' : 'the stock on its listing fell');
+                say('', `A buy seen on the page: ${b.qty} × ${b.name || 'item ' + id} at $${b.price}`, gone ? `the listing was gone after you pressed Buy with ${goneNow.get(key)} in its box` : 'the stock on its listing fell after your press in it');
             }
             // Held by the hub's view now (it names the notes it has taken), or never taken: no longer added here.
             const taken = new Set((st.shared && st.shared.notes) || []);
@@ -14373,17 +14933,37 @@
             });
             let out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: !!st.fillAll });
             st.fill = out ? out.fill : [];
+            const typedOf = () => { const by = {}; for (const c of cards) if (c.hasBox && c.typed > 0) by[c.itemId] = (by[c.itemId] || 0) + c.typed; return by; };
+            st.live = { pend, typed: typedOf(), here: cards.map((c) => c.itemId) };
             // Fill all is on: the boxes that are open now get their numbers, and the box says so in the same look.
             if (st.fillAll && fillAllNow()) {
                 cards.forEach((c, i) => { const input = st.tiles[i].input; c.typed = input ? tpDigits(input.value) : 0; });
                 out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: true });
+                st.live.typed = typedOf();
             }
             const marks = new Map((out ? out.marks : []).map((m) => [m.i, m]));
             listings.forEach((c, i) => {
-                const m = marks.get(i);
+                // Nothing of ours on Torn's open buy form: it is where you type and press.
+                const m = c.menu ? null : marks.get(i);
                 setMark(c.el, m ? m.text : '', m ? m.state : '');
                 setRing(c.el, m ? m.ring : '');
             });
+            // Opened from a link of ours that names a listing (the hub's "Sold by", a stop of your run): that listing
+            // pulses, and the page is brought to it once when it is on the page. A press of yours ends it.
+            const named = (() => { try { const u = new URL(st.href); return { id: u.searchParams.get('ttItem') || '', price: Number(u.searchParams.get('ttPrice')) || 0 }; } catch { return { id: '', price: 0 }; } })();
+            let aim = null;
+            for (const c of listings) {
+                if (c.menu || !c.el) continue;
+                const is = !!named.id && st.pulseOff !== st.href && String(c.itemId) === named.id && (!named.price || Number(c.listingPrice) === named.price) && !aim;
+                if (is) aim = c.el;
+                if (c.el.hasAttribute('data-tarc-pulse') !== is) c.el.toggleAttribute('data-tarc-pulse', is);
+            }
+            if (aim && st.arrived !== st.href) {
+                st.arrived = st.href;
+                const r = aim.getBoundingClientRect();
+                if ((r.top < 0 || r.bottom > win.innerHeight) && aim.scrollIntoView) aim.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                say('aim', 'Opened from a link that names a listing', 'the listing is on the page: it pulses');
+            }
             if (listings.length) {
                 const first = st.tiles[0];
                 say('cards', `A ${kind === 'itemmarket' ? 'page of the Item Market' : 'bazaar'}: ${listings.length} set piece${listings.length === 1 ? '' : 's'} on the page`, 'the tile around a listing: ' + (first.tile === listings[0].el ? 'the card itself' : (first.tile.className || first.tile.tagName)) + '; the card: ' + (String(listings[0].el.className || '').replace(/\s*tarc-\S+/g, '') || listings[0].el.tagName));
@@ -14502,6 +15082,8 @@
                 st.marked = false;
             }
             fillAllOff();
+            for (const el of doc.querySelectorAll('[data-tarc-pulse]')) el.removeAttribute('data-tarc-pulse');
+            st.live = null;
             st.cards = [];
             st.tiles = [];
             st.fill = [];
@@ -14528,6 +15110,7 @@
             if (!kind || !fresh) {
                 if (kind) clear();
                 show(null);
+                showStock(null);
                 return;
             }
             const v = st.shared.v;
@@ -14544,6 +15127,7 @@
                 out = null;
             }
             show(out);
+            showStock((kind === 'bazaar' || kind === 'itemmarket') && st.live ? boxStock(v, st.live) : null);
         }
 
         function later(ms = TP_SCAN_MS) {
@@ -14587,6 +15171,7 @@
             const v = st.shared ? st.shared.v : null;
             if (act === 'fold') { if (!(isOpen() && st.at && st.at.bar)) setOpen(!isOpen()); return; }
             if (act === 'unfold') { st.pinned = true; setOpen(true); return; }
+            if (act === 'stock-fold') { st.stockOpen = !st.stockOpen; gmSet('stockOpen', st.stockOpen); showStock(st.stockOut); return; }
             if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
             if (act === 'copy') { if (gmCopy(val)) done('copy:' + val); return; }
             if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
@@ -14637,6 +15222,8 @@
             // A press anywhere in a listing's tile (its Buy box is beside the card, not in it): the listing may vanish
             // because you bought it out.
             if (st.kind === 'bazaar' || st.kind === 'itemmarket') {
+                // Any press of yours on the page: the listing a link named stops pulsing.
+                if (st.pulseOff !== st.href) { st.pulseOff = st.href; for (const el of doc.querySelectorAll('[data-tarc-pulse]')) el.removeAttribute('data-tarc-pulse'); }
                 pressIn(target);
                 for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
                 return;
@@ -14660,11 +15247,24 @@
         }
 
         /** A press of yours in a listing's tile, remembered with where the tile stood. */
-        function pressIn(target) {
+        function pressIn(target, enter = false) {
             const i = st.cards.findIndex((c, k) => (st.tiles[k] && st.tiles[k].tile && st.tiles[k].tile.contains(target)) || (c.el && c.el.contains(target)));
             if (i < 0) return false;
             const r = (st.tiles[i].tile || st.cards[i].el).getBoundingClientRect();
-            st.pressed.set(cardKey(st.cards[i]), { at: now(), y: win.scrollY, top: r.top, h: r.height });
+            const el = st.tiles[i].tile || st.cards[i].el;
+            // Torn's own Buy in the open form (or Enter in its box): the only press that buys, with the number in the box.
+            const menu = target.closest ? target.closest('[class*="buyMenu"]') : null;
+            const button = target.closest ? target.closest('button') : null;
+            const label = button ? String(button.getAttribute('aria-label') || button.textContent || '').trim() : '';
+            const box = menu ? buyBox(menu) : null;
+            const key = cardKey(st.cards[i]);
+            const had = st.pressed.get(key);
+            let buy = !!(menu && ((button && /^buy\b/i.test(label)) || (enter && box && box.contains(target))));
+            let typed = buy && box ? tpDigits(box.value) : 0;
+            // A press on Torn's Close takes the buy back; any other press in the tile (a "Yes" Torn may ask for) keeps it.
+            if (!buy && had && had.buy && !(button && /^(close|no|cancel)\b/i.test(label))) { buy = true; typed = had.typed; }
+            // The tile itself is kept: a listing is gone only when its tile is (a buy form in it is the listing, open).
+            st.pressed.set(key, { at: now(), y: win.scrollY, top: r.top, h: r.height, tile: (el.closest && el.closest('[class*="item___"]')) || el, buy, typed });
             return true;
         }
 
@@ -14672,7 +15272,7 @@
             if (!yours(event)) return;
             // Enter in a listing's box is a press there, as a click on its Buy is.
             if (event.key === 'Enter' && (st.kind === 'bazaar' || st.kind === 'itemmarket') && event.target && event.target.closest && !event.target.closest('#tarc-host')) {
-                if (pressIn(event.target)) for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
+                if (pressIn(event.target, true)) for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
                 return;
             }
             if (event.key !== 'n' && event.key !== 'N' && event.key !== '`') return;
@@ -14927,6 +15527,11 @@
             onFailed: (x) => logFailed('t', x),
             // Beside the shared server: its part of your Torn limit is left to it (core/server.js). Off, or silent: no check.
             mayCall: (t, recent) => serverMayCall(link ? link.grant() : null, recent, t),
+            // What Torn's "too many" taught, for every tab; and the careful pace while the server does not let this copy in.
+            loadCeil: () => gmGet('tornCeil', null),
+            saveCeil: (c) => gmSet('tornCeil', c),
+            turnedAway: () => !!link && link.turnedAway(),
+            carefulMost: SERVER_CAREFUL_MOST,
         };
         const torn = new TornApiClient({ getKey: () => keyOf('limited'), ...tornShared });
         const full = new LedgerClient({ getKey: () => keyOf('full'), ...tornShared });
@@ -15068,6 +15673,8 @@
             version: VERSION,
             home: SERVER_HOME,
             getId: () => (engine ? engine.state.self.id : ''),
+            random: () => Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, '0')).join(''),
+            lowered: () => torn.ceilNow(now()) !== null,
             pieces: ENGINE_ALL_PIECES,
             getUse: () => ({ used: torn.stats(now()).usedLastMinute, waiting: torn.queue.length + full.queue.length }),
             tradingOn: () => tradingRunning(gmGet(TRADING_SEEN_KEY, 0), now()),

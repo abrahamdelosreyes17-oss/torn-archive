@@ -18,7 +18,7 @@ import { LedgerClient } from './api/ledger.js';
 import { W3bClient } from './api/w3b.js';
 import { Tw3bOwnClient } from './api/tw3b-own.js';
 import { ServerLink, SERVER_CONFIG_KEY, SERVER_CALLS_KEY } from './api/server-link.js';
-import { serverMayCall, serverLines } from './core/server.js';
+import { serverMayCall, serverLines, SERVER_CAREFUL_MOST } from './core/server.js';
 import { makeEngine, ENGINE_ALL_PIECES } from './engine/engine.js';
 import { ENGINE_PARTS } from './engine/state.js';
 import { archiveSettings } from './core/settings.js';
@@ -149,6 +149,11 @@ function bootHub(tabId) {
         onFailed: (x) => logFailed('t', x),
         // Beside the shared server: its part of your Torn limit is left to it (core/server.js). Off, or silent: no check.
         mayCall: (t, recent) => serverMayCall(link ? link.grant() : null, recent, t),
+        // What Torn's "too many" taught, for every tab; and the careful pace while the server does not let this copy in.
+        loadCeil: () => gmGet('tornCeil', null),
+        saveCeil: (c) => gmSet('tornCeil', c),
+        turnedAway: () => !!link && link.turnedAway(),
+        carefulMost: SERVER_CAREFUL_MOST,
     };
     const torn = new TornApiClient({ getKey: () => keyOf('limited'), ...tornShared });
     const full = new LedgerClient({ getKey: () => keyOf('full'), ...tornShared });
@@ -290,6 +295,8 @@ function bootHub(tabId) {
         version: VERSION,
         home: SERVER_HOME,
         getId: () => (engine ? engine.state.self.id : ''),
+        random: () => Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, '0')).join(''),
+        lowered: () => torn.ceilNow(now()) !== null,
         pieces: ENGINE_ALL_PIECES,
         getUse: () => ({ used: torn.stats(now()).usedLastMinute, waiting: torn.queue.length + full.queue.length }),
         tradingOn: () => tradingRunning(gmGet(TRADING_SEEN_KEY, 0), now()),

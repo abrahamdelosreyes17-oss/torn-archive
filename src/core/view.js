@@ -5,7 +5,7 @@
 import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
 import { setsCtx } from './settings.js';
 import { safeWorth, pieceBrings, tradeMargin, placeMargin, mendRate } from './margin.js';
-import { fillPlan, stopsOf, runView, onList, listAfterRun } from './shopping.js';
+import { fillPlan, stopsOf, runView, runOrder, onList, listAfterRun } from './shopping.js';
 import { listPrice, priceLevels, usualLevel, pointsCheap } from './points.js';
 import { avgBook, heldByDay, mugCheck, profitBuckets, profitSum, runningTotal, poolSum, poolSetCost } from './books.js';
 import { lotTable, sellPlan } from './lots.js';
@@ -95,6 +95,9 @@ export function archiveView(i) {
 
     // ---- the sets and their pieces -----------------------------------------------------------------------------------
     const cartList = i.cart || [];
+    // While a run is on a line keeps the units you took on it (it says "took 5 of 5" until Next), and those units
+    // are in your stock: what is still to buy is the list less what was taken.
+    const leftList = i.run && i.run.on ? listAfterRun(cartList, i.run) : cartList;
     const sets = [];
     const pieces = [];
     const heldOf = (set) => { const m = {}; for (const p of set.pieces) m[p.id] = vwWhole(i.held(p.id)); return m; };
@@ -126,7 +129,7 @@ export function archiveView(i) {
                 under: { units: vwSum(under, (o) => vwWhole(o.qty)), places: under.length },
                 other: bid && bid.pct > 0 ? { pct: bid.pct, name: bid.name || '' } : null,
                 hist: (((i.hist && i.hist.low) || {})[p.id] || []).slice(-7).map((d) => d.low),
-                listed: onList(cartList, p.id),
+                listed: onList(leftList, p.id),
             };
         });
         // Shortest first: the piece holding the next set back leads.
@@ -156,11 +159,12 @@ export function archiveView(i) {
     const marginCtx = { mv, pointsPrice, leastPct: settings.least };
     const plan = fillPlan(pieces, offersOf);
     const planStops = stopsOf(plan, worthOf);
-    const stops = stopsOf(cartList, worthOf).map((s) => ({ ...s, margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
+    const stops = runOrder(stopsOf(cartList, worthOf), i.run).map((s) => ({ ...s, margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
     // `took` (line key -> units you took) rides along: the box on a bazaar says it per line.
     const run = { ...runView(i.run, stops), took: (i.run && i.run.took) || {} };
     const hot = hotListings(pieces, offersOf);
-    const cartCost = vwSum(stops, (s) => s.cost);
+    const leftStops = leftList === cartList ? stops : stopsOf(leftList, worthOf);
+    const cartCost = vwSum(leftStops, (s) => s.cost);
     const depthN = Math.min(...sets.map((s) => s.ladder.length), Infinity);
     const depthX = VW_DEPTH_AT.filter((k) => k <= depthN);
     const buy = {
@@ -169,7 +173,7 @@ export function archiveView(i) {
             full: fullAfter((p) => onList(plan, p.id)),
         },
         stops, run,
-        units: vwSum(stops, (s) => s.units), cost: cartCost, gain: vwSum(stops, (s) => s.gain),
+        units: vwSum(leftStops, (s) => s.units), cost: cartCost, gain: vwSum(leftStops, (s) => s.gain),
         full: fullAfter((p) => p.listed),
         left: listAfterRun(cartList, i.run),
         vault: money.onHand == null ? null : Math.max(0, cartCost - vwWhole(money.onHand)),
@@ -204,7 +208,8 @@ export function archiveView(i) {
     });
     const mineTurn = open.filter((t) => t.state === 'you');
     const trades = {
-        open, wait: mineTurn.length, waitMoney: vwSum(mineTurn, (t) => t.total),
+        // What they still wait for: money already in a trade is not asked for again.
+        open, wait: mineTurn.length, waitMoney: vwSum(mineTurn, (t) => Math.max(0, t.total - vwWhole(t.myMoney))),
         // listed: your list on TornW3B has a price for each of its pieces - a receipt is made from that list.
         finished: (i.finished || []).slice(0, 60).map((f) => ({ ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt: receipts.get(String(f.id)) || null, listed: !!(i.w3b && i.w3b.list) && (f.rows || []).length > 0 && (f.rows || []).every((r) => i.w3b.list.has(String(r.id))) })),
         receiptsError: (i.w3b && i.w3b.receiptsError) || '',
@@ -290,7 +295,7 @@ export function archiveView(i) {
     if (buy.hotUnits) todo.push({ kind: 'hot', tone: '', n: buy.hotUnits, stops: buy.hotStops, pic: hot[0].id, first: firstStops(vwHotStops(hot)), cost: vwSum(hot, (h) => h.q * h.price), full: fullAfter((p) => onList(hot, p.id)) });
     else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
     if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
-    if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice });
+    if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice, each: Math.ceil(book.cost / book.left), loss: pointsPrice > 0 && book.left * pointsPrice < book.cost });
 
     return {
         at: now,

@@ -56,6 +56,26 @@ export const TORN_PAUSE_MS = {
     [TORN_ERROR_UNAVAILABLE]: 2 * 60 * 1000,
 };
 
+/*
+ * What Torn's "too many" teaches (the owner, 2026-10-11: "cant it just be smart ... in the way it asks").
+ * Torn counts every tool a player runs against one limit, and this client sees only its own requests. So after
+ * a "too many" it holds itself to CEIL_LOWER of what it had made in that minute, never under CEIL_MIN, and takes
+ * CEIL_BACK more for each quiet stretch: half an hour at first, twice as long for each further "too many" inside
+ * a day. Having made fewer than CEIL_LEARN_FROM itself, it learns nothing: the limit was spent elsewhere, and
+ * slowing this copy would not have helped. Kept in storage, so every tab holds to the same.
+ */
+export const CEIL_LOWER = 0.7;
+export const CEIL_MIN = 20;
+export const CEIL_LEARN_FROM = 30;
+export const CEIL_BACK = 10;
+export const CEIL_BACK_EVERY_MS = 30 * 60000;
+const CEIL_FORGET_MS = 24 * 60 * 60000;
+const CEIL_SLOWEST = 4;
+/** Several refusals in one go are one "too many". */
+const CEIL_ONCE_MS = 60000;
+
+const ceilOk = (c) => !!c && typeof c === 'object' && Number.isFinite(c.most) && Number.isFinite(c.at) && Number.isInteger(c.hits) && c.hits > 0 && Number.isFinite(c.struckAt);
+
 /** A hidden tab waiting for a slot checks again this often. */
 const HIDDEN_POLL_MS = 1000;
 
@@ -152,6 +172,13 @@ export class TornApiClient {
      * @param {function} [options.savePause] - ({until, code}) => void
      * @param {function} [options.isVisible] - () => boolean; a request never
      *   leaves a hidden tab, even one that was queued while it was visible
+     * @param {function} [options.loadCeil] - () => {most, at, hits, struckAt}: the
+     *   ceiling learned from Torn's "too many", shared by every tab
+     * @param {function} [options.saveCeil] - ({most, at, hits, struckAt}) => void
+     * @param {function} [options.turnedAway] - () => boolean; the shared server
+     *   does not let this copy in (api/server-link.js): while it holds a
+     *   learned ceiling it also keeps under carefulMost
+     * @param {number} [options.carefulMost]
      * @param {function} [options.isPaused] - () => boolean; true while Torn
      *   Bids runs: nothing is sent, a queued request is not sent either, and
      *   the call rejects with a PausedError (the two scripts take turns)
@@ -173,8 +200,19 @@ export class TornApiClient {
         onFailed = null,
         isPaused = () => false,
         mayCall = null,
+        loadCeil = null,
+        saveCeil = null,
+        turnedAway = null,
+        carefulMost = 40,
     } = {}) {
         this.isPaused = isPaused;
+        this.loadCeil = loadCeil;
+        this.saveCeil = saveCeil;
+        this.turnedAway = turnedAway;
+        this.carefulMost = carefulMost;
+        /** The pace with nothing learned: a ceiling back at it is no ceiling. */
+        this.ceilTop = maxPerMinute;
+        this.ceil = null;
         /** (now, this tab's calls of the last minute) => boolean: room beside the shared server's part of your limit (core/server.js). */
         this.mayCall = mayCall;
         /** () => void, a call is being held back for it. */
@@ -214,8 +252,68 @@ export class TornApiClient {
         const window = this.recent.filter((t) => now - t < 60000);
         return {
             usedLastMinute: window.length,
-            remaining: Math.max(0, this.maxPerMinute - window.length),
+            remaining: Math.max(0, this.limitNow(now) - window.length),
+            /** Held under its pace since a "too many" (null = it is not). */
+            ceil: this.ceilNow(now),
         };
+    }
+
+    /** The learned ceiling as it was last set: this tab's or storage's, the later. */
+    ceilKept() {
+        let kept = this.ceil;
+        if (this.loadCeil) {
+            try {
+                const shared = this.loadCeil();
+                if (ceilOk(shared) && (!kept || shared.struckAt >= kept.struckAt)) kept = shared;
+            } catch {
+                // Sharing is best-effort.
+            }
+        }
+        return kept;
+    }
+
+    /** The learned ceiling now (null = none): a step up for each quiet stretch, gone once it is back at the pace. */
+    ceilNow(now = Date.now()) {
+        const kept = this.ceilKept();
+        if (!kept) return null;
+        const wait = CEIL_BACK_EVERY_MS * 2 ** Math.min(CEIL_SLOWEST, kept.hits - 1);
+        const most = kept.most + CEIL_BACK * Math.max(0, Math.floor((now - kept.at) / wait));
+        return most >= this.ceilTop ? null : most;
+    }
+
+    /** Torn said "too many": hold under what was made in the minute before. */
+    learn(now = Date.now()) {
+        const had = this.ceilKept();
+        if (had && now - had.struckAt < CEIL_ONCE_MS) return;
+        this.syncWindow(now);
+        const used = this.recent.filter((t) => now - t < 60000).length;
+        if (used < CEIL_LEARN_FROM) return;
+        this.ceil = {
+            most: Math.max(CEIL_MIN, Math.floor(CEIL_LOWER * Math.min(this.ceilNow(now) ?? Infinity, used))),
+            at: now,
+            hits: had && now - had.struckAt < CEIL_FORGET_MS ? had.hits + 1 : 1,
+            struckAt: now,
+        };
+        if (this.saveCeil) {
+            try {
+                this.saveCeil(this.ceil);
+            } catch {
+                // This tab still holds to it.
+            }
+        }
+    }
+
+    /** The most requests a minute right now: the share, what Torn's "too many" taught, and the careful pace. */
+    limitNow(now = Date.now()) {
+        const ceil = this.ceilNow(now);
+        if (ceil === null) return this.maxPerMinute;
+        let away = false;
+        try {
+            away = !!(this.turnedAway && this.turnedAway());
+        } catch {
+            // A hook that throws does not stop the reads.
+        }
+        return Math.min(this.maxPerMinute, ceil, away ? this.carefulMost : Infinity);
     }
 
     /**
@@ -241,9 +339,9 @@ export class TornApiClient {
     }
 
     /** How many of the window's slots this lane may fill. */
-    laneLimit(priority = API_PRIORITY.normal) {
+    laneLimit(priority = API_PRIORITY.normal, now = Date.now()) {
         const reserve = priority >= API_PRIORITY.high ? 0 : priority >= API_PRIORITY.normal ? NORMAL_RESERVE : LOW_RESERVE;
-        return Math.max(1, this.maxPerMinute - reserve);
+        return Math.max(1, this.limitNow(now) - reserve);
     }
 
     /**
@@ -270,7 +368,7 @@ export class TornApiClient {
                 continue;
             }
 
-            const limit = this.laneLimit(priority);
+            const limit = this.laneLimit(priority, now);
             if (this.recent.length < limit) {
                 this.recent.push(now);
                 if (this.addToWindow) {
@@ -482,6 +580,7 @@ export class TornApiClient {
         const rateLimited = code === TORN_ERROR_RATE_LIMIT || (error instanceof TornApiError && error.http === 429);
         const ms = rateLimited ? this.rateLimitBackoffMs : TORN_PAUSE_MS[code];
         if (!ms || error.paused) return 0;
+        if (rateLimited) this.learn();
         const until = Date.now() + ms;
         if (until <= this.pause.until) return until;
         this.pause = { until, code };

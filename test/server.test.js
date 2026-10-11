@@ -15,9 +15,9 @@ import {
     SERVER_APP, SERVER_SYNC_MS, SERVER_GRANT_STALE_MS, SERVER_KEEP_MS, SERVER_BOUGHT_MS, SERVER_DIR_KEEP_MS, SERVER_TURN_WAIT_MS, SERVER_PAGE,
     serverAddress, serverPassOk, serverClaim, serverVersion, serverMayCall, serverBody, serverOutgoingOk, serverKnowsApps, serverGrantIn, serverTake,
     serverPrune, serverReadKept, serverShop, serverDirIn, serverListReadAt, serverPerson, serverLines, serverMarketIn, SERVER_MARKET_FRESH_MS,
-    serverUse, SERVER_WHOLE, SERVER_BESIDE_FRESH_MS,
+    serverUse, SERVER_WHOLE, SERVER_BESIDE_FRESH_MS, serverDeviceOk, serverHint, SERVER_CAREFUL_MOST, SERVER_HINT_MS,
 } from '../src/core/server.js';
-import { ServerLink, SERVER_CONFIG_KEY, SERVER_STATE_KEY, SERVER_GRANT_KEY, SERVER_CALLS_KEY, SERVER_RETRY_MS, SERVER_ADDRESS_RETRY_MS } from '../src/api/server-link.js';
+import { ServerLink, SERVER_CONFIG_KEY, SERVER_STATE_KEY, SERVER_GRANT_KEY, SERVER_CALLS_KEY, SERVER_DEVICE_KEY, SERVER_COPIES_KEY, SERVER_RETRY_MS, SERVER_ADDRESS_RETRY_MS } from '../src/api/server-link.js';
 import { createHash } from 'node:crypto';
 import { usageAdd, usageCallsAdd } from '../src/core/usage.js';
 import { engineEmpty, engineLoad, foldServer, foldShop, foldListings, offersOf, shopNow, noteSeenBuy, engineInput, ENGINE_PIECES, SHOP_KEEP_MS } from '../src/engine/state.js';
@@ -762,4 +762,179 @@ test('against the server\'s own door: Torn Archive is let in on the PC where you
     assert.ok(st.need >= 31 + 5, 'the server leaves room for both apps: ' + st.need);
     assert.deepEqual(st.beside, ['torn-bids']);
     assert.equal(serverLines(st, r.t).level, 'ok');
+});
+
+// ---- smart asking: this copy's own word, and the careful pace ------------------------------------------------------------
+
+const DEVICE = 'ab'.repeat(24);
+
+test('this copy\'s own word goes after the id, in the shape the server\'s door takes; anything else is left off', () => {
+    assert.equal(serverClaim(2000001, DEVICE), CLAIM + 'x' + DEVICE);
+    assert.equal(serverPassOk(CLAIM + 'x' + DEVICE), true);
+    for (const bad of ['', null, undefined, 'ab'.repeat(23), 'AB'.repeat(24), 'zz'.repeat(24), 12]) {
+        assert.equal(serverDeviceOk(bad), false, String(bad));
+        assert.equal(serverClaim(2000001, bad), CLAIM);
+    }
+    assert.equal(serverClaim('', DEVICE), null);
+});
+
+test('the word is said only to a server that knows copies; made once and kept: the same after the page is opened again, and after the server is forgotten', async () => {
+    let made = 0;
+    let copies = false;
+    const ok = okAnswer();
+    const r = rig({ answer: (call, rr) => (call.url.endsWith('/state') ? { status: 200, body: { apps: true, now: rr.t, ...(copies ? { copies: true } : {}) } } : ok(call, rr)) });
+    r.link.d.home = ADDRESS;
+    r.link.d.getId = () => '2000001';
+    r.link.d.random = () => { made += 1; return made === 1 ? DEVICE : 'cd'.repeat(24); };
+    // A server as it was before: the id alone, at every look, and no word is made.
+    assert.equal(await r.tick(), true);
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.ok(r.sent.every((c) => c.headers.Authorization === 'Bearer ' + CLAIM));
+    assert.equal(made, 0);
+    // The server is updated (it starts afresh, and is asked what it is): from the next look the word goes with the id.
+    copies = true;
+    r.link.d.save(SERVER_STATE_KEY, { ...r.link.state(), helloOk: false });
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.equal(r.sent[r.sent.length - 1].headers.Authorization, 'Bearer ' + CLAIM);
+    r.sent.length = 0;
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.equal(r.sent[0].headers.Authorization, 'Bearer ' + CLAIM + 'x' + DEVICE);
+    assert.equal(JSON.parse(r.store.get(SERVER_DEVICE_KEY)), DEVICE);
+    r.link.forget();
+    r.link.deviceKept = undefined;
+    assert.equal(r.link.config().pass, CLAIM + 'x' + DEVICE);
+    assert.equal(made, 1);
+    // No word could be made: the id alone, as before.
+    const plain = rig({ answer: () => ({ status: 404, body: null }) });
+    plain.link.d.home = ADDRESS;
+    plain.link.d.getId = () => '2000001';
+    plain.link.d.random = () => 'not a word';
+    plain.link.d.save(SERVER_COPIES_KEY, true);
+    assert.equal(plain.link.config().pass, CLAIM);
+    assert.equal(plain.store.has(SERVER_DEVICE_KEY), false);
+    // The word is not in what Settings is given.
+    assert.ok(!JSON.stringify(r.link.status()).includes(DEVICE));
+});
+
+test('what a turned-away copy says: how much it uses, and nothing else', () => {
+    assert.deepEqual(serverHint({ ver: '1.2.2', used: 31.9, waiting: 4 }), { app: SERVER_APP, used: 31, waiting: 4, ver: '1.2.2' });
+    assert.deepEqual(serverHint({ ver: 'no good!', used: -3, waiting: 'x' }), { app: SERVER_APP, used: 0, waiting: 0 });
+    assert.deepEqual(serverHint(), { app: SERVER_APP, used: 0, waiting: 0 });
+});
+
+test('turned away and held by a "too many": once a minute Torn Archive says what it uses - not otherwise, and not while it asks Torn nothing', async () => {
+    const r = rig({ answer: () => ({ status: 404, body: null }), use: { used: 22, waiting: 3 }, version: '1.2.2' });
+    r.link.d.home = ADDRESS;
+    r.link.d.getId = () => '2000001';
+    r.link.d.lowered = () => r.lowered === true;
+    assert.equal(await r.tick(), true);
+    assert.equal(r.link.turnedAway(), true);
+    assert.equal(r.link.careful(), false);
+    // Nothing learned: silent until its next try.
+    await r.tick(90 * SEC);
+    assert.equal(r.sent.length, 1);
+    assert.match(serverLines(r.link.status(), r.t).now, /^Working alone\. /);
+
+    r.lowered = true;
+    assert.equal(r.link.careful(), true);
+    assert.equal(r.link.status().careful, true);
+    assert.match(serverLines(r.link.status(), r.t).now, new RegExp('^Working alone, and carefully: .* ' + SERVER_CAREFUL_MOST + ' requests a minute at most'));
+    assert.equal(await r.tick(1000), false);
+    assert.deepEqual(r.syncs().map((c) => [c.method, c.headers.Authorization, c.body]), [['POST', 'Bearer ' + CLAIM, { app: SERVER_APP, used: 22, waiting: 3, ver: '1.2.2' }]]);
+    // Once a minute.
+    await r.tick(SERVER_HINT_MS - 1000);
+    assert.equal(r.syncs().length, 1);
+    await r.tick(1000);
+    assert.equal(r.syncs().length, 2);
+    // Nothing asked of Torn: nothing said.
+    r.use = { used: 0, waiting: 0 };
+    await r.tick(SERVER_HINT_MS);
+    assert.equal(r.syncs().length, 2);
+    // Its own tries go on as before, and the state it kept says why it is alone.
+    assert.equal(r.link.status().why, 'address');
+    assert.equal(r.link.on(), false);
+
+    // Typed in an older copy and refused: that is a password problem, never this.
+    const typed = rig({ answer: () => ({ status: 404, body: null }) });
+    typed.link.saveConfig(ADDRESS, PASS);
+    typed.link.d.lowered = () => true;
+    await typed.tick();
+    assert.equal(typed.link.status().why, 'password');
+    assert.equal(typed.link.careful(), false);
+    await typed.tick(SERVER_HINT_MS);
+    assert.equal(typed.syncs().length, 0);
+});
+
+test('a careful copy that is let in after all does the whole exchange at its next look', async () => {
+    let open = false;
+    const ok = okAnswer();
+    const r = rig({ answer: (call, rr) => (open ? ok(call, rr) : { status: 404, body: null }), use: { used: 22, waiting: 0 } });
+    r.link.d.home = ADDRESS;
+    r.link.d.getId = () => '2000001';
+    r.link.d.lowered = () => true;
+    await r.tick();
+    assert.equal(r.link.status().why, 'address');
+    open = true;
+    assert.equal(await r.tick(SERVER_HINT_MS), false, 'the hint itself');
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.equal(r.link.status().why, null);
+    assert.equal(r.link.on(), true);
+    assert.equal(r.link.careful(), false);
+});
+
+test('against the server\'s own door: a copy let in at home is known by its word elsewhere; turned away, what it says it uses is taken off the server\'s part', { skip: skipWorld }, async () => {
+    const { newWorld, KEY_ABE, KEY_VINCENT, WHO } = serverWorld;
+    const word = (key) => createHash('sha256').update('torn-shared-server:1:' + key, 'utf8').digest('hex');
+    const HOME = 'aaaaaaaaaaaaaaaa';
+    const ELSEWHERE = 'bbbbbbbbbbbbbbbb';
+    const BIDS = { app: 'torn-bids', ver: '3.26.2', used: 5, sellers: [11] };
+    const world = newWorld();
+    await world.host.enter(word(KEY_VINCENT), 'POST', '/sync', BIDS, ELSEWHERE);
+    await world.run(world.t + 60000);
+    let from = ELSEWHERE;
+    const answer = async (call) => {
+        const out = await world.host.enter(call.headers.Authorization.replace('Bearer ', ''), call.method, new URL(call.url).pathname, call.body, from);
+        return out ? { status: out.status, body: out.body } : { status: 404, body: null };
+    };
+    const mk = (device) => {
+        const r = rig({ answer, want: { sellers: [501], looking: [501], worth: Object.fromEntries(PIECES.map((id) => [id, 1000])) }, use: { used: 31, waiting: 2 }, version: '1.2.2' });
+        r.t = world.t;
+        // It has been told before that this server knows copies.
+        r.link.d.save(SERVER_COPIES_KEY, true);
+        r.link.d.home = ADDRESS;
+        r.link.d.getId = () => String(WHO[KEY_ABE].id);
+        r.link.d.random = () => device;
+        return r;
+    };
+    const share = async () => (await world.admin('GET', '/admin/state')).body.keys.find((k) => k.id === WHO[KEY_ABE].id).share;
+
+    // Never seen anywhere, and Torn has said "too many": it says what it uses, and the server makes room.
+    const r = mk(DEVICE);
+    r.link.d.lowered = () => true;
+    assert.equal(await r.tick(), true);
+    assert.equal(r.link.status().why, 'address');
+    const before = await share();
+    await r.tick(SERVER_HINT_MS);
+    assert.equal(r.syncs().length, 1);
+    assert.equal(await share(), Math.min(before, 80 - (10 + 33)));
+    const knock = (await world.admin('GET', '/admin/state')).body.knocks[0];
+    assert.equal(knock.why, 'address');
+    assert.equal(knock.said, 33);
+    assert.equal(r.link.status().why, 'address', 'still told nothing');
+
+    // Their Torn Trading checks in from home; the copy asks from there: let in.
+    assert.equal((await world.host.enter(word(KEY_ABE), 'POST', '/sync', BIDS, HOME)).status, 200);
+    from = HOME;
+    r.link.wake();
+    assert.equal(await r.tick(MIN), true);
+    assert.equal(r.link.status().error, null);
+    assert.deepEqual(r.link.status().you, WHO[KEY_ABE]);
+    // The laptop moves: the same copy is still let in; another copy saying the same id is not.
+    from = ELSEWHERE;
+    assert.equal(await r.tick(SERVER_SYNC_MS), true);
+    assert.equal(r.link.status().error, null);
+    const other = mk('cd'.repeat(24));
+    other.t = r.t;
+    assert.equal(await other.tick(), true);
+    assert.equal(other.link.status().why, 'address');
 });

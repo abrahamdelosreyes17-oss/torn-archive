@@ -10,7 +10,7 @@ import {
 } from './state.js';
 import { serverShop, serverListReadAt, serverMarketIn, SERVER_QUIET_MS, SERVER_BOUGHT_MS, SERVER_SYNC_MS } from '../core/server.js';
 import { archiveView, viewPiece, setsTraded, ALL_PIECE_IDS } from '../core/view.js';
-import { fillPlan, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE } from '../core/shopping.js';
+import { fillPlan, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, runView, runOrder, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE } from '../core/shopping.js';
 import { hotSince } from '../core/verdict.js';
 import { stockAge } from '../core/stock.js';
 import { pointsLogTypes } from '../core/points.js';
@@ -62,6 +62,11 @@ const EG_RECEIPT_GAP_MS = 5 * EG_MIN;
 const EG_REFUSED_RETRY_MS = 30 * EG_MIN;
 /** Bazaars confirmed with Torn itself each round: the stops of your list and the cheapest places first. */
 const EG_SHOPS = 12;
+/** The piece open on the hub: this many rows of its "Sold by" table are confirmed with Torn, while it was looked at this lately. */
+const EG_LOOK_ROWS = 14;
+/** How often one finished trade is asked for before it is left out and said. */
+const EG_TRADE_TRIES = 3;
+const EG_LOOK_MS = 10 * EG_MIN;
 const EG_SYNC_GAP_MS = 2 * EG_MIN;
 
 const egMsg = (error) => String((error && error.message) || error || '');
@@ -97,6 +102,10 @@ export function makeEngine(env) {
     let hour = (env.load('w3bHour') || []).filter((t) => Number.isFinite(t));
     let keyState = { limited: {}, full: {}, w3b: {}, ...(env.load('keyState') || {}) };
     let cache = null;
+    /** Finished trades Torn would not hand over, and how often (readFinished). */
+    const tradeFails = {};
+    /** The piece open on the hub's "Sold by" table (shopsWanted). Not kept: the next look says it again. */
+    let looked = { id: '', at: 0 };
     let syncAt = 0;
     const flags = { w3b: false, receipt: null };
 
@@ -290,15 +299,28 @@ export function makeEngine(env) {
         let newest = from;
         let read = 0;
         let left = false;
+        // The oldest trade that could not be read: the next go starts from it again, so it is not lost.
+        let stuck = 0;
         for (const x of list) {
             if (!x || x.id == null) continue;
             const done = Number(x.completed_at ?? x.timestamp ?? x.modified_at) || 0;
             if (S.ledger.tradeIds.includes(String(x.id))) { newest = Math.max(newest, done); continue; }
+            if (tradeFails[x.id] >= EG_TRADE_TRIES) { newest = Math.max(newest, done); continue; }
             if (read >= EG_TRADES_FULL) { left = true; break; }
             read += 1;
-            foldTradeFinished(S, await fetchTrade(env.torn, x.id, use), now);
+            let full = null;
+            // One trade Torn refuses does not stop the ones after it: until 1.2.2 it did, and every later trade
+            // (its pieces, its money) stayed out of the count for as long as that one failed.
+            try { full = await fetchTrade(env.torn, x.id, use); } catch (error) {
+                tradeFails[x.id] = (tradeFails[x.id] || 0) + 1;
+                if (tradeFails[x.id] >= EG_TRADE_TRIES) env.say('note', 'A finished trade could not be read from Torn, and is left out', `trade ${x.id}: ${egMsg(error)}`);
+                else stuck = stuck ? Math.min(stuck, done || from) : done || from;
+                continue;
+            }
+            foldTradeFinished(S, full, now);
             newest = Math.max(newest, done);
         }
+        if (stuck) newest = Math.min(newest, Math.max(from, stuck - 1));
         countRun();
         S.ledger = { ...S.ledger, tradesFrom: newest, tradesAt: now, tradesBackfilled: S.ledger.tradesBackfilled || (!left && list.length < 100) };
         touch('ledger', 'trades', 'outs', 'stock', 'names');
@@ -384,6 +406,20 @@ export function makeEngine(env) {
         const add = (id) => { if (id != null && id !== '' && !ids.includes(String(id))) ids.push(String(id)); };
         const cur = v.buy.run.stops.find((s) => s.state === 'cur');
         if (cur && !cur.im) add(cur.whoId);
+        // The piece open on the hub's "Sold by" table: every bazaar the table shows is asked of Torn itself, so no
+        // row there is TornW3B's older copy for longer than one round (the owner, 2026-10-11: "i press read now as
+        // well, its still stale items, and non existent items").
+        const seen = looked.id && env.now() - looked.at < EG_LOOK_MS ? viewPiece(v, looked.id) : null;
+        const extra = seen ? seen.offers.slice(0, EG_LOOK_ROWS).filter((o) => o.src !== 'market').length : 0;
+        if (seen) for (const o of seen.offers.slice(0, EG_LOOK_ROWS)) if (o.src !== 'market') add(o.whoId);
+        if (extra) {
+            const rest = [];
+            const more = (id) => { if (id != null && id !== '' && !ids.includes(String(id)) && !rest.includes(String(id))) rest.push(String(id)); };
+            for (const s of v.buy.stops) if (!s.im) more(s.whoId);
+            for (const h of v.buy.hot) if (!h.im) more(h.whoId);
+            for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) more(o.whoId);
+            return [...ids, ...rest.slice(0, EG_SHOPS)];
+        }
         for (const s of v.buy.stops) if (!s.im) add(s.whoId);
         for (const h of v.buy.hot) if (!h.im) add(h.whoId);
         for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) add(o.whoId);
@@ -463,7 +499,7 @@ export function makeEngine(env) {
 
     /** What you bought since the run began, counted on its lines: from the pages you bought on and from Torn's log. */
     function countRun() {
-        if (!S.run.on && !S.run.done) return;
+        if (!S.run.on) return;
         const began = S.run.began || 0;
         const got = new Map();
         const add = (key, qty) => got.set(key, (got.get(key) || 0) + qty);
@@ -473,7 +509,11 @@ export function makeEngine(env) {
             else if (r.venue === 'market') add(lineKey(r.itemId, IM_PLACE), r.qty);
         }
         const seen = new Map();
-        for (const b of S.seen) if (b.t >= began && b.whoId) seen.set(lineKey(b.id, 'b:' + b.whoId), (seen.get(lineKey(b.id, 'b:' + b.whoId)) || 0) + b.qty);
+        for (const b of S.seen) {
+            // A buy seen on the Item Market's page is on its one line; a bazaar's on that bazaar's.
+            const key = b.t >= began ? (b.im ? lineKey(b.id, IM_PLACE) : b.whoId ? lineKey(b.id, 'b:' + b.whoId) : null) : null;
+            if (key) seen.set(key, (seen.get(key) || 0) + b.qty);
+        }
         let run = S.run;
         for (const l of S.cart) run = runTook(run, l.key, Math.max(got.get(l.key) || 0, seen.get(l.key) || 0));
         if (run !== S.run) { S.run = run; touch('run'); }
@@ -709,6 +749,7 @@ export function makeEngine(env) {
     function readNow() {
         for (const k of Object.keys(due)) due[k] = 0;
         for (const kind of Object.keys(per)) if (kind !== 'listings' && kind !== 'bids') for (const id of Object.keys(per[kind])) per[kind][id].due = 0;
+        if (looked.id) looked = { ...looked, at: env.now() };
         said.clear();
         off.clear();
         step();
@@ -727,7 +768,7 @@ export function makeEngine(env) {
 
     // ---- the hub's buttons ------------------------------------------------------------------------------------------------
 
-    const stops = () => { const v = view(); return stopsOf(S.cart, (id) => (viewPiece(v, id) || {}).worth || 0); };
+    const stops = () => { const v = view(); return runOrder(stopsOf(S.cart, (id) => (viewPiece(v, id) || {}).worth || 0), S.run); };
     const idle = () => { S.run = { ...RUN_IDLE }; };
 
     const actions = {
@@ -750,8 +791,13 @@ export function makeEngine(env) {
             else {
                 countRun();
                 S.run = runNext(S.run, list);
-                // Over: what you took leaves the list, what you skipped stays on it.
-                if (S.run.done) S.cart = listAfterRun(S.cart, S.run);
+                // Over: what you took leaves the list, what you skipped stays on it. The run is summed here, once:
+                // its counts are of the lines as they were, and those lines are shorter from now on.
+                if (S.run.done) {
+                    const end = runView(S.run, list);
+                    S.cart = listAfterRun(S.cart, S.run);
+                    S.run = { ...S.run, took: {}, sum: { got: end.got, units: end.units, skipped: end.skipped } };
+                }
             }
             touch('cart', 'run');
             // The stop you are sent to is confirmed with Torn at once.
@@ -760,6 +806,7 @@ export function makeEngine(env) {
             if (cur && !cur.im && per.shops[String(cur.whoId)]) per.shops[String(cur.whoId)].due = 0;
         },
         read: readNow,
+        look(itemId) { const id = String(itemId || ''); if (id === looked.id && env.now() - looked.at < EG_MIN) return; looked = { id, at: env.now() }; step(); },
         w3b(op) {
             if (flags.w3b) return;
             flags.w3b = true;

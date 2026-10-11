@@ -84,6 +84,9 @@ export function serverEmpty() {
 }
 
 /** What was stored, laid over a fresh state: a part of the wrong kind is left out. */
+/** The mark on a buy seen by a copy that reads Torn's open buy form (1.2.2 on). */
+const EN_SEEN_V = 2;
+
 export function engineLoad(stored) {
     const S = engineEmpty();
     for (const part of ENGINE_PARTS) {
@@ -92,6 +95,11 @@ export function engineLoad(stored) {
         if (Array.isArray(S[part]) ? Array.isArray(v) : typeof v === 'object') S[part] = Array.isArray(v) ? v : { ...S[part], ...v };
     }
     if (!S.thread || !S.thread.title) S.thread = null;
+    // 1.2.0 and 1.2.1 took the opening of a listing's Buy box for a buy. What those copies "saw" and was still
+    // waiting beside the count is not kept: a real buy is in Torn's log and in its inventory count.
+    S.seen = S.seen.filter((b) => b && (b.counted || b.v === EN_SEEN_V));
+    // A run that ended under 1.2.1 kept its counts beside a list already made shorter by them: it is let go.
+    if (S.run && S.run.done && !S.run.sum) S.run = { on: false, at: 0, took: {}, place: null };
     S.server = { ...S.server, shops: serverReadKept(S.server.shops) };
     return S;
 }
@@ -234,24 +242,40 @@ export function offersOf(S, id, now) {
     const o = S.offers[key] || {};
     const out = [];
     const done = new Set();
-    const add = (whoId, price, units, at) => {
+    // `at`: when the bazaar was last looked at, and `from` by whom - 'torn' (Torn itself, by you or the server) or
+    // 'w3b' (TornW3B's copy). The screen says both: a row is never shown as newer than it is.
+    const add = (whoId, price, units, at, from) => {
         let qty = units;
         // What you were seen buying there since comes off, until the next read shows the bazaar as it is.
         for (const b of S.seen) if (String(b.id) === key && String(b.whoId || '') === String(whoId) && b.t > at) qty -= enWhole(b.qty);
-        if (qty > 0) out.push({ price, qty, src: 'bazaar', who: S.names[whoId] || null, whoId });
+        if (qty > 0) out.push({ price, qty, src: 'bazaar', who: S.names[whoId] || null, whoId, at, from });
     };
     if (o.bazAt && now - o.bazAt < LISTINGS_KEEP_MS) {
         for (const r of o.baz || []) {
             done.add(String(r.whoId));
             const shop = shopNow(S, r.whoId, now);
-            if (shop && shop.at > o.bazAt) {
+            // TornW3B's row is as old as TornW3B's own last look at that bazaar, not as new as our asking for its
+            // list: Torn's own read wins whenever it is the newer of the two (until 1.2.2 a list asked for after
+            // Torn's read brought a sold-out listing back, and a buy of yours with it).
+            const rowAt = Math.min(enNum(r.at) || o.bazAt, o.bazAt);
+            if (shop && shop.at > rowAt) {
                 const it = shop.items[key];
                 // Torn says this bazaar no longer has it: sold out or taken down.
-                if (it) add(r.whoId, it.price, it.qty, shop.at);
+                if (it) add(r.whoId, it.price, it.qty, shop.at, 'torn');
             } else {
-                add(r.whoId, r.price, r.qty, o.bazAt);
+                add(r.whoId, r.price, r.qty, rowAt, 'w3b');
             }
         }
+    }
+    // Bazaars you read from Torn yourself that TornW3B's list no longer names (its row grew old, or forty cheaper
+    // ones came): they are still there, as Torn last showed them - for as long as a row of TornW3B's would count.
+    for (const whoId of Object.keys(S.shops)) {
+        if (done.has(whoId) || whoId === String(S.self.id)) continue;
+        const shop = shopNow(S, whoId, now);
+        const it = shop && now - shop.at < LISTING_FRESH_MS ? shop.items[key] : null;
+        if (!it) continue;
+        done.add(whoId);
+        add(whoId, it.price, it.qty, shop.at, 'torn');
     }
     // Bazaars TornW3B's list does not name, read from Torn by the server.
     for (const s of svIndex(S).get(key) || []) {
@@ -259,9 +283,9 @@ export function offersOf(S, id, now) {
         done.add(s.whoId);
         const shop = shopNow(S, s.whoId, now);
         const it = shop && shop.items[key];
-        if (it) add(s.whoId, it.price, it.qty, shop.at);
+        if (it) add(s.whoId, it.price, it.qty, shop.at, 'torn');
     }
-    if (o.imAt && now - o.imAt < MARKET_KEEP_MS) for (const l of o.im || []) out.push({ price: l.price, qty: l.qty, src: 'market' });
+    if (o.imAt && now - o.imAt < MARKET_KEEP_MS) for (const l of o.im || []) out.push({ price: l.price, qty: l.qty, src: 'market', at: o.imAt, from: 'torn' });
     return out;
 }
 
@@ -332,11 +356,16 @@ export function foldInventory(S, rows, now, tornAt = 0) {
  */
 export function noteSeenBuy(S, buy, now, { noLog = false } = {}) {
     if (!buy || !EN_PIECE_SET.has(String(buy.id)) || !(enWhole(buy.qty) > 0)) return false;
-    const row = { t: enNum(buy.t) || now, id: String(buy.id), qty: enWhole(buy.qty), whoId: buy.whoId ? String(buy.whoId) : '', price: enWhole(buy.price) };
+    const row = { t: enNum(buy.t) || now, id: String(buy.id), qty: enWhole(buy.qty), whoId: buy.whoId ? String(buy.whoId) : '', price: enWhole(buy.price), v: EN_SEEN_V, ...(buy.im ? { im: true } : {}) };
     if (S.seen.some((b) => b.t === row.t && b.id === row.id && b.whoId === row.whoId && b.qty === row.qty)) return false;
     if (noLog && enCounting(S)) {
         S.stock = stockApply(S.stock, eventFromSeen(row), mvOf(S)).state;
         row.counted = true;
+    } else if (!noLog) {
+        // The log was read between the buy and the page's look: its row is in the count already.
+        const claimed = new Set(S.seen.map((b) => b.logged).filter(Boolean));
+        const r = S.ledger.rows.find((x) => x.side === 'buy' && !claimed.has(x.id) && enSameBuy(row, x, EN_SAME_NOW_MS) && enWhole(x.qty) === row.qty);
+        if (r) row.logged = r.id;
     }
     S.seen = [...S.seen.filter((b) => now - b.t < 6 * EN_HOUR), row].slice(-200);
     return true;
@@ -363,6 +392,30 @@ export function noteSwap(S, press, now, { noLog = false } = {}) {
 
 /** A buy seen on a page and counted there is not counted again when the log brings the same buy later. */
 const EN_SAME_BUY_MS = 5 * EN_MIN;
+/** A buy told by the page after its log row was read: the row is its own only this close to it, with the same number. */
+const EN_SAME_NOW_MS = 2 * EN_MIN;
+const enSameBuy = (b, r, within) => b.id === String(r.itemId) && Math.abs(b.t - r.t) < within && (!b.whoId || !r.who || b.whoId === String(r.who));
+
+/**
+ * A buy seen on a page waits beside the count for its row in Torn's log. The moment that row is in, the row is the
+ * buy: what the page saw of it is no longer added on top. (Until 1.2.2 it stayed until the log had been read a
+ * minute past it - with the log asked 20 seconds after a buy and then every two minutes, the same buy stood in the
+ * count twice for two minutes: "need 141", bought, "141 ahead".) The log's number stands where the page's differs.
+ */
+function enSeenInLog(S, rows) {
+    let seen = S.seen;
+    for (const r of rows) {
+        if (!r || r.side !== 'buy') continue;
+        let k = -1;
+        seen.forEach((b, i) => {
+            if (b.counted || b.logged || !enSameBuy(b, r, EN_SAME_BUY_MS)) return;
+            const better = k < 0 || (b.qty === enWhole(r.qty)) > (seen[k].qty === enWhole(r.qty)) || ((b.qty === enWhole(r.qty)) === (seen[k].qty === enWhole(r.qty)) && Math.abs(b.t - r.t) < Math.abs(seen[k].t - r.t));
+            if (better) k = i;
+        });
+        if (k >= 0) seen = seen.map((b, i) => (i === k ? { ...b, logged: r.id } : b));
+    }
+    S.seen = seen;
+}
 function enNotCounted(S, events) {
     const used = new Set();
     return events.filter((e) => {
@@ -503,6 +556,7 @@ export function foldLog(S, logRows, ctx) {
     }
     const fresh = enAddRows(S, pieceRows);
     out.rows = fresh.length;
+    if (enCounting(S)) enSeenInLog(S, fresh);
     enAddOuts(S, outs);
     if (mugs.length) {
         const have = new Set(S.ledger.mugs.map((m) => m.id));

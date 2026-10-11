@@ -9,7 +9,15 @@
  * The server's address is built into the released copy (build.mjs), and with nothing typed Torn Archive says
  * whose copy it is instead of a password (core/server.js serverClaim): the server lets it in on the PC where
  * that person's Torn Trading runs, and turns everyone else away - they are asked again a few times a day, and
- * nothing but the Torn id was said. An address and password typed in an older copy still go first. The password
+ * nothing but the Torn id was said. Once the server has said it knows copies, a word this copy made for itself
+ * goes with the id (SERVER_DEVICE_KEY): a copy that was let in once is known by it afterwards, wherever it asks from.
+ *
+ * Turned away, and Torn has said "too many" (the client's learned ceiling): Torn Archive keeps itself to a
+ * careful pace (the client, core/server.js SERVER_CAREFUL_MOST) and says once a minute what it uses. The server
+ * answers that as it answers any stranger - not found - and, where it holds this person's key, takes that much
+ * less of it. Nothing is said while Torn Archive asks Torn nothing.
+ *
+ * An address and password typed in an older copy still go first. The password
  * is kept in Tampermonkey's storage like a key: it goes to that one address in a header, is never shown again,
  * and is in no log and no zip.
  *
@@ -19,6 +27,7 @@
 
 import {
     SERVER_SYNC_MS, SERVER_PAGE, serverAddress, serverPassOk, serverBody, serverOutgoingOk, serverKnowsApps, serverGrantIn, serverPerson, serverUse, serverClaim,
+    serverDeviceOk, serverHint, serverKnowsCopies, SERVER_HINT_MS,
 } from '../core/server.js';
 import { usageCallsOut, usageCallsSent } from '../core/usage.js';
 
@@ -27,6 +36,10 @@ export const SERVER_STATE_KEY = 'server.state';
 export const SERVER_GRANT_KEY = 'server.grant';
 /** This PC's request counts waiting to be sent (core/usage.js usageCallsAdd). */
 export const SERVER_CALLS_KEY = 'server.calls';
+/** This copy's own word (core/server.js serverClaim). Made once and kept: it is what the server knows the copy by. */
+export const SERVER_DEVICE_KEY = 'server.device';
+/** true once the server has said it knows a copy by its word: until then the id is said alone, as an older server expects. */
+export const SERVER_COPIES_KEY = 'server.copies';
 const SL_MAX_PAGES = 5;
 /** What the pieces are worth is said again when it changed, and at least this often. */
 const SL_WORTH_EVERY_MS = 10 * 60000;
@@ -58,6 +71,8 @@ export class ServerLink {
      * @param {() => void} d.forget - what was kept of the server goes (its address or password changed)
      * @param {string} [d.home] - the server's address built into this copy ('' = none: the boxes in Settings)
      * @param {() => string} [d.getId] - your Torn id, once Torn has said it
+     * @param {() => string} [d.random] - 48 hex characters nobody could guess, for this copy's own word
+     * @param {() => boolean} [d.lowered] - has Torn said "too many", so that the client holds itself under its pace
      * @param {() => void} [d.onChange]
      * @param {() => number} [d.now]
      */
@@ -78,8 +93,54 @@ export class ServerLink {
         const address = c ? serverAddress(c.address) : null;
         if (address && serverPassOk(c.pass)) return { address, pass: c.pass, own: false };
         const home = serverAddress(this.d.home);
-        const claim = home ? serverClaim(this.d.getId ? this.d.getId() : '') : null;
+        const claim = home ? serverClaim(this.d.getId ? this.d.getId() : '', this.device()) : null;
         return claim ? { address: home, pass: claim, own: true } : null;
+    }
+
+    /** This copy's own word: made the first time it is needed, then always the same. '' = none could be made, or the server has not said it knows copies. */
+    device() {
+        if (this.d.load(SERVER_COPIES_KEY) !== true) return '';
+        if (this.deviceKept === undefined) {
+            let device = this.d.load(SERVER_DEVICE_KEY);
+            if (!serverDeviceOk(device)) {
+                device = this.d.random ? this.d.random() : '';
+                if (serverDeviceOk(device)) this.d.save(SERVER_DEVICE_KEY, device);
+                else device = '';
+            }
+            this.deviceKept = device;
+        }
+        return this.deviceKept;
+    }
+
+    /** Not one of the server's PCs as far as it says: Torn Archive works alone. */
+    turnedAway() {
+        const cfg = this.config();
+        return Boolean(cfg && cfg.own && this.state().why === 'address');
+    }
+
+    /** Turned away, and Torn has said "too many": the careful pace, and the server is told what is used. */
+    careful() {
+        return this.turnedAway() && Boolean(this.d.lowered && this.d.lowered());
+    }
+
+    /** What Torn Archive uses, said to a server that does not let it in. Answered "not found" unless that changed. */
+    async hint(cfg, before, now) {
+        if (now - (before.hintAt || 0) < SERVER_HINT_MS || !this.careful()) return false;
+        const use = this.d.getUse() || {};
+        const body = serverHint({ ver: this.d.version, used: use.used, waiting: use.waiting });
+        if (!(body.used + body.waiting > 0)) return false;
+        this.busy = true;
+        this.d.save(SERVER_STATE_KEY, { ...before, hintAt: now });
+        try {
+            const response = await this.d.send(`${cfg.address}/sync`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.pass}` }, body });
+            // Let in after all: the whole exchange at the next look, not at the next try hours on.
+            if (response.status === 200) this.again = true;
+        } catch {
+            // Said again a minute on.
+        } finally {
+            this.busy = false;
+        }
+        return true;
     }
 
     /** Is this PC one of the server's - so that what it asks is counted for it? Not while the server turns it away. */
@@ -137,7 +198,10 @@ export class ServerLink {
         if (!cfg || this.busy) return false;
         const now = this.now();
         const before = this.state();
-        if (before.retryAt && now < before.retryAt && !(this.again && before.why === 'address')) return false;
+        if (before.retryAt && now < before.retryAt && !(this.again && before.why === 'address')) {
+            if (cfg.own && before.why === 'address') await this.hint(cfg, before, now);
+            return false;
+        }
         const since = now - (before.syncAt || 0);
         if (since < SERVER_SYNC_MS && !(this.soon && since >= SL_SOON_MS)) return false;
         this.busy = true;
@@ -171,7 +235,10 @@ export class ServerLink {
                 const hello = await this.d.send(`${cfg.address}/state`, { method: 'GET', headers: auth });
                 if (hello.status === 404) throw this.unknown(cfg);
                 if (!hello.ok) throw new Error(`The server answered with status ${hello.status}.`);
-                if (!serverKnowsApps(await hello.json())) throw slWhy('old', 'This server keeps one list a person: it has to be updated first.');
+                const what = await hello.json();
+                if (!serverKnowsApps(what)) throw slWhy('old', 'This server keeps one list a person: it has to be updated first.');
+                // From the next look on this copy says its own word with its id.
+                if (cfg.own && serverKnowsCopies(what) && this.d.load(SERVER_COPIES_KEY) !== true) this.d.save(SERVER_COPIES_KEY, true);
                 state.helloOk = true;
                 state.helloAt = startedAt;
             }
@@ -270,6 +337,7 @@ export class ServerLink {
             syncAt: state.syncAt || null,
             error: state.error || null,
             why: state.why || null,
+            careful: this.careful(),
             needVer: state.needVer || null,
             reading: state.reading || null,
             key: state.key || null,
