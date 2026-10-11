@@ -336,6 +336,8 @@ function bootHub(tabId) {
             try {
                 if (n.kind === 'act') { if (n.what && n.what.name === 'run') engine.act('run', ...(Array.isArray(n.what.args) ? n.what.args.slice(0, 1) : [])); moved = true; }
                 else if (n.kind === 'buy' || n.kind === 'swap' || n.kind === 'thread' || n.kind === 'trade' || n.kind === 'shop') { engine.note(n.kind, n.what); moved = moved || n.kind === 'buy' || n.kind === 'swap'; }
+                // "Read" on your stock, pressed on a Torn page: your items are asked for now, ahead of the rest.
+                else if (n.kind === 'read') { engine.act('readStock'); logLine('note', 'A Torn page', 'Read pressed on your stock', null); }
                 // What a Torn tab saw of its page, for the log: it is in the zip.
                 else if (n.kind === 'say' && n.what) logLine('note', 'A Torn page', String(n.what.what || ''), n.what.detail ? String(n.what.detail) : null);
             } catch (error) {
@@ -495,6 +497,7 @@ function bootHub(tabId) {
         cart: (id, place) => engine.act('cart', id, place),
         drop: (key) => engine.act('drop', key),
         cartAll: (id) => engine.act('cartAll', id),
+        listOnly: (id) => engine.act('listOnly', id),
         makeList: (kind) => engine.act('makeList', kind),
         // The piece open on "Sold by": its bazaars are asked of Torn itself (not connected in 1.2.2: nothing was asked).
         look: (id) => { engine.act('look', id); schedule(); },

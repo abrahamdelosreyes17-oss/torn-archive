@@ -39,6 +39,12 @@ export const BOX_CSS = `
 /* Purple only when opening the hub is the thing to do next. */
 .ta-h button.open.go { background: var(--brand); border-color: transparent; color: #fff; } .ta-h button.open.go:hover { background: #a08fff; }
 .ta-b { display: grid; gap: 8px; padding: 10px 12px 12px; overflow-y: auto; overscroll-behavior: contain; }
+/* The scrollbar: a thin line with no arrows, and only while your pointer is on the box (the owner, 2026-10-11:
+   "that scroll bar always visible is annoying"). The list still scrolls by the wheel when it is not shown. */
+.ta-b::-webkit-scrollbar { width: 6px; } .ta-b::-webkit-scrollbar-track { background: transparent; }
+.ta-b::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+.ta:hover .ta-b::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); } .ta:hover .ta-b::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.34); }
+@supports not selector(::-webkit-scrollbar) { .ta-b { scrollbar-width: thin; scrollbar-color: transparent transparent; } .ta:hover .ta-b { scrollbar-color: rgba(255,255,255,.2) transparent; } }
 .ta-b h4 { margin: 0; display: flex; align-items: baseline; gap: 8px; font: 650 13px var(--sans); white-space: nowrap; }
 .ta-b h4 span { margin-left: auto; color: var(--muted); font-weight: 400; font-size: 12px; }
 .ta-l { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; padding: 6px 8px; border-radius: 9px; background: var(--raised); border: 1px solid var(--line); }
@@ -79,7 +85,9 @@ export const BOX_CSS = `
 .st-r.need .x { color: var(--need); } .st-r.ahead .x { color: var(--warn); } .st-r.ok .x { color: var(--good); }
 .st-r.over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .st-r.over .x, .st-r.over b { color: #ff8a87; font-weight: 600; } .st-r.over .bar i { background: #ff7878; }
 .ta-hold.st-over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .ta-hold.st-over b { color: #ff8a87; }
-.ta.ts .ta-h { cursor: default; } .ta.ts .ta-b { gap: 3px; } .ta.ts .ta-b h4 { margin-top: 5px; }
+.ta.ts .ta-b { gap: 3px; } .ta.ts .ta-b h4 { margin-top: 5px; }
+/* A piece is a press: Torn Archive opens on it, where its sellers are and the list is made. */
+.st-r[data-act] { cursor: pointer; } .st-r[data-act]:hover { background: var(--raised); } .st-r.over[data-act]:hover { background: rgba(255, 90, 90, .2); }
 .pill { position: fixed; z-index: 99990; right: 12px; bottom: 56px; height: 34px; padding: 0 12px 0 6px; display: inline-flex; align-items: center; gap: 8px; border-radius: 999px;
   border: 1px solid var(--line2); background: var(--panel); color: var(--text); font: 600 12px/1 var(--sans); box-shadow: 0 8px 24px rgba(0,0,0,.5); cursor: pointer; white-space: nowrap; }
 .pill:hover { background: var(--raised); }

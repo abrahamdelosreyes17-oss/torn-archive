@@ -44,6 +44,21 @@ export function overlaySide(centre, strips, middle) {
 }
 
 /**
+ * A box you put down yourself (your stock, dragged by its bar): where you left it, kept whole inside the window.
+ * It is yours to put anywhere, also over Torn's page. Unfolded it keeps room for `least` of its body: left near
+ * the window's foot it stands that much higher.
+ * @param pos   { left, top } where you left it
+ * @param least the least height it keeps (its bar when folded)
+ * @returns { left, top, width, maxHeight }
+ */
+export function overlayFree({ pos, width, winW, winH, least = OV_BAR }) {
+    const w = Math.max(0, Math.min(width, winW - 2 * OV_GAP));
+    const left = ovClamp(Number(pos && pos.left) || 0, OV_GAP, winW - w - OV_GAP);
+    const top = ovClamp(Number(pos && pos.top) || 0, 0, winH - Math.max(OV_BAR, least) - OV_GAP);
+    return { left: Math.round(left), top: Math.round(top), width: Math.round(w), maxHeight: Math.floor(winH - top - OV_GAP) };
+}
+
+/**
  * Where the overlay stands.
  * @param pos    { side, left, top } where you left it, or null
  * @param strips overlayStrips()

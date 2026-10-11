@@ -91,6 +91,13 @@ const hub = mountHub(document, {
         input.run = { ...RUN_IDLE };
         show();
     },
+    listOnly(id) {
+        const p = viewPiece(archiveView(input), id);
+        if (!p) return;
+        input.cart = addAll([], p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+        input.run = { ...RUN_IDLE };
+        show();
+    },
     // As main.js and the engine: 'hot' = "Do now"'s list (under what you pay sellers), else the whole list.
     makeList(kind) { const v = archiveView(input); input.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => input.offers(id).filter((o) => o.ok !== false && buysFrom(input.settings)(o))); input.run = { ...RUN_IDLE }; show(); },
     look(id) { window.looked = [...(window.looked || []), String(id)]; },

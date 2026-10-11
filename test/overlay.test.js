@@ -3,7 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { overlayStrips, overlaySide, overlayPlace, OV_WIDTH, OV_MIN_WIDTH, OV_GAP, OV_EDGE, OV_BAR, OV_TOP } from '../src/core/overlay.js';
+import { overlayStrips, overlaySide, overlayPlace, overlayFree, OV_WIDTH, OV_MIN_WIDTH, OV_GAP, OV_EDGE, OV_BAR, OV_TOP } from '../src/core/overlay.js';
 
 // A 1920 window with Torn's 976 of content in the middle: 472 free on each side.
 const WIDE = { winW: 1920, left: 472, right: 1448 };
@@ -146,4 +146,21 @@ test('Torn Trading\'s panel on the other side changes nothing', () => {
     const other = { left: 1474, right: 1904, top: 344, bottom: 984, width: 430 };
     const pos = { side: 'left', left: 20, top: 500 };
     assert.deepEqual(overlayPlace({ pos, strips, winH: H, want: 300, other }), overlayPlace({ pos, strips, winH: H, want: 300 }));
+});
+
+test('a box you put down yourself: where you left it, whole inside the window, with room for its body', () => {
+    const at = overlayFree({ pos: { left: 700, top: 300 }, width: 300, winW: 1920, winH: H });
+    assert.deepEqual({ left: at.left, top: at.top, width: at.width }, { left: 700, top: 300, width: 300 }, 'anywhere, also over the page: it is yours to place');
+    assert.equal(at.maxHeight, H - 300 - OV_GAP);
+    // Left past an edge of the window: brought back whole.
+    for (const pos of [{ left: -500, top: -90 }, { left: 5000, top: 5000 }, { left: NaN, top: undefined }]) {
+        const p = overlayFree({ pos, width: 300, winW: 1920, winH: H, least: 160 });
+        assert.ok(p.left >= 0 && p.left + p.width <= 1920, 'inside, left to right');
+        assert.ok(p.top >= 0 && p.top + 160 <= H, 'and with 160 of height left under its top');
+        assert.ok(p.top + p.maxHeight <= H);
+    }
+    // Folded it is its bar: it may stand at the window's foot.
+    assert.equal(overlayFree({ pos: { left: 20, top: 5000 }, width: 300, winW: 1920, winH: H }).top, H - OV_BAR - OV_GAP);
+    // A window narrower than the box: the box is as wide as the window lets it.
+    assert.ok(overlayFree({ pos: { left: 0, top: 0 }, width: 300, winW: 240, winH: H }).width <= 240);
 });

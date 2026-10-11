@@ -37,6 +37,8 @@ export const READ_EVERY = Object.freeze({
 // every five minutes besides - two requests each time.
 const EG_INV_AFTER_MS = 5000;
 const EG_INV_AFTER_BUY_MS = 30000;
+/** "Read" on your stock asks Torn at most this often. */
+const EG_STOCK_PRESS_MS = 10000;
 /** A read that failed is tried again after this long. */
 export const RETRY_MS = EG_MIN;
 /** A piece you do not need is priced this many times less often than one you do. */
@@ -766,6 +768,24 @@ export function makeEngine(env) {
         env.changed();
     }
 
+    /** Your items can be asked for: there is a key that works, and Torn has said who you are and what its items are. */
+    const canCount = () => !env.paused() && env.hasKey('limited') && !keyState.limited.error && !!S.self.id && !!S.items.at && !!S.stock.invAt;
+    let stockAsked = 0;
+
+    /**
+     * "Read" on your stock, pressed on a Torn page: your items, and your log where a Full key reads it, ahead of
+     * anything else. The prices are left as they are. Not more often than every ten seconds, however it is pressed.
+     */
+    function readStock() {
+        const now = env.now();
+        if (now - stockAsked < EG_STOCK_PRESS_MS) return;
+        stockAsked = now;
+        due.inventory = 0;
+        if (logRead()) due.log = 0;
+        if (canCount()) run('inventory', READ_EVERY.inventory, readInventory);
+        step();
+    }
+
     /** "Read now": everything is due. */
     function readNow() {
         // Nothing looked at before this press counts until it is looked at again (a read of the last moments is
@@ -777,6 +797,9 @@ export function makeEngine(env) {
         if (looked.id) looked = { ...looked, at: env.now() };
         said.clear();
         off.clear();
+        // Your items first: asked ahead of every other read of this press (the owner, 2026-10-11: "if i also press
+        // read now, can it prioritize reading my inventory?").
+        if (canCount()) run('inventory', READ_EVERY.inventory, readInventory);
         step();
     }
 
@@ -816,6 +839,16 @@ export function makeEngine(env) {
             idle();
             touch('cart', 'run');
         },
+        // A list of one piece alone, in place of the list on hand: every listing of it that counts, cheapest first.
+        listOnly(itemId) {
+            const p = viewPiece(view(), itemId);
+            if (!p) return;
+            S.cart = addAll([], p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+            idle();
+            touch('cart', 'run');
+            due.inventory = 0;
+            if (logRead()) due.log = 0;
+        },
         // A list is made from the count as it stands, and Torn is asked for its own at once: the list follows it.
         // `kind` 'hot': only what "Do now" counted - under what you pay your sellers. Else everything under its worth.
         makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); const inPlace = buysFrom(settings()); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false && inPlace(o))); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
@@ -842,6 +875,7 @@ export function makeEngine(env) {
             if (cur && !cur.im && per.shops[String(cur.whoId)]) per.shops[String(cur.whoId)].due = 0;
         },
         read: readNow,
+        readStock,
         look(itemId) { const id = String(itemId || ''); if (id === looked.id && env.now() - looked.at < EG_MIN) return; looked = { id, at: env.now() }; step(); },
         w3b(op) {
             if (flags.w3b) return;

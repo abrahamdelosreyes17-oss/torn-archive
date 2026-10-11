@@ -3,7 +3,7 @@
 // Nothing here presses anything of Torn's: a button either types into a box of Torn's on your press (Fill),
 // copies text, or opens one page.
 
-import { hEsc, hNum, hMoney, hSigned, hPic, hPlural, hRate, hAge } from './fmt.js';
+import { hEsc, hNum, hMoney, hSigned, hPic, hPlural, hRate, hAge, hClock } from './fmt.js';
 import { marginWords } from '../core/margin.js';
 import { lotsWords } from '../core/lots.js';
 import { typedListing, listLines } from '../core/points.js';
@@ -98,12 +98,17 @@ export function boxStock(v, live = {}) {
             const cls = more ? 'over' : need > 0 ? 'need' : held > target ? 'ahead' : 'ok';
             const say = more ? `typing ${hNum(t)} · ${hNum(more)} too many` : t ? `typing ${hNum(t)} of ${hNum(need)}` : need > 0 ? `need ${hNum(need)}` : held > target ? `${hNum(held - target)} ahead` : 'enough';
             const w = target ? Math.min(100, Math.round((held / target) * 100)) : 100;
-            rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
+            rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}" data-act="plan" data-v="${hEsc(id)}" title="Open Torn Archive on ${hEsc(p.name)}: who sells it, and your shopping list">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
         }
         body += bxHead(`${hEsc(s.label)} sets`, `${hNum(Number.isFinite(full) ? full : 0)} full of ${hNum(s.target)}`) + rows;
     }
     const warn = over.length ? `<div class="ta-hold st-over"><b>More than you need.</b> ${over.map((o) => `${hEsc(o.name)}: ${hNum(o.typed)} typed, ${o.need ? `you need ${hNum(o.need)}` : 'you need no more'}`).join(' · ')}</div>` : '';
-    return { head: over.length ? 'more than you need' : togo ? `${hNum(togo)} to go` : 'every piece is in', html: warn + body, over };
+    // When Torn counted, so "Read" says what it brought: Torn counts your items once an hour, and a read in
+    // between brings that same count. What you buy in between is counted here, from the pages you buy on.
+    const age = (v.top && v.top.stock) || null;
+    const foot = age && age.tornAt ? `<div class="ta-n">Torn counted your items at ${hClock(age.tornAt)} and counts again at ${hClock(age.nextAt)}. Your buys since are counted in.</div>`
+        : age && age.readAt ? `<div class="ta-n">Your items were read at ${hClock(age.readAt)}. Torn counts them once an hour; your buys since are counted in.</div>` : '';
+    return { head: over.length ? 'more than you need' : togo ? `${hNum(togo)} to go` : 'every piece is in', html: warn + body + foot, over };
 }
 
 /**

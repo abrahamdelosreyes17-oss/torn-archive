@@ -236,6 +236,12 @@ export function mountHub(doc, actions) {
         try { win.history[step ? 'pushState' : 'replaceState']({ page: ui.page, pane: ui.pane }, '', '#' + ui.page); } catch { /* a page that cannot keep its address still works */ }
     }
 
+    /** What the address says: '#buy' a page, '#buy/186' the Buy page on one piece. */
+    function hashPage() {
+        const [page, id] = (win.location.hash || '#dashboard').slice(1).split('/');
+        return { page, id: /^\d+$/.test(id || '') ? id : '' };
+    }
+
     function go(page, pane = 0) {
         const was = ui.page;
         ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
@@ -247,7 +253,7 @@ export function mountHub(doc, actions) {
     // Back and Forward: the browser says which step it is on, and that page is shown. Nothing is added to the steps here.
     win.addEventListener('popstate', (e) => {
         const at = e.state || {};
-        const page = at.page || (win.location.hash || '#dashboard').slice(1);
+        const page = at.page || hashPage().page;
         ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
         ui.pane = Math.max(0, Number(at.pane) || 0);
         draw(true);
@@ -276,6 +282,8 @@ export function mountHub(doc, actions) {
         else if (a === 'from') { const from = { ...desk.view.settings.from }; from[v] = !from[v]; if (!from.bazaar && !from.market) from[v === 'bazaar' ? 'market' : 'bazaar'] = true; act('set', { from }); }
         else if (a === 'cart') act('cart', id, v);
         else if (a === 'cart-all') act('cartAll', id);
+        // A list of this piece alone, and the list is shown: as "Make the list", for one piece.
+        else if (a === 'list-only') { act('listOnly', id); go('buy', 2); }
         else if (a === 'drop') act('drop', v);
         else if (a === 'make-list') { act('makeList', v || ''); go('buy', 2); }
         else if (a === 'clear-list') act('clearList');
@@ -354,12 +362,21 @@ export function mountHub(doc, actions) {
     let rz = 0;
     if (win.ResizeObserver) new win.ResizeObserver(() => { win.clearTimeout(rz); rz = win.setTimeout(() => { if (desk) { drawCharts(false); const cur = $('.nav-b.on'); if (cur) $('#ind').style.transform = `translateY(${cur.offsetTop}px)`; fitTop(); } }, 150); }).observe(view);
 
-    ui.page = (win.location.hash || '#dashboard').slice(1);
+    // Opened from a piece of "Your stock" on a Torn page (#buy/<item id>): the Buy page, on that piece.
+    const from = hashPage();
+    ui.page = from.page;
     if (!HUB_PAGES.some((p) => p.key === ui.page)) ui.page = 'dashboard';
+    if (ui.page === 'buy' && from.id) { ui.sel = from.id; ui.arrive = true; }
 
     return {
         /** @param d { view, keys, usage, turns, busy, notice, version, elsewhere } */
-        show(d) { const first = !desk; desk = d; draw(first); },
+        show(d) {
+            const first = !desk;
+            desk = d;
+            // The piece the address named: its table is the one it is in, as a press on a piece chooses it.
+            if (ui.arrive && d.view && d.view.pieces) { ui.arrive = false; const p = d.view.pieces.find((x) => String(x.id) === String(ui.sel)); if (p) ui.pane = p.need ? 0 : 1; else ui.sel = null; }
+            draw(first);
+        },
         toast,
         go,
     };

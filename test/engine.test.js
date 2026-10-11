@@ -906,8 +906,47 @@ test('"Buy from": a list without the Item Market, a place switched off leaves th
     r.engine.act('cartAll', p.id);
     assert.deepEqual(r.engine.state.cart, []);
 
+    // A list of that piece alone: it takes the place of whatever the list held, and holds what one press would add.
+    r.engine.act('makeList');
+    assert.ok(r.engine.state.cart.some((l) => String(l.id) !== String(p.id)), 'the list on hand holds other pieces');
+    r.engine.act('listOnly', p.id);
+    const alone = r.engine.state.cart;
+    assert.ok(alone.length > 0 && alone.every((l) => String(l.id) === String(p.id) && !l.im && l.price < p.worth), 'only that piece, only where you buy, only under its worth');
+    assert.equal(alone.reduce((s, l) => s + l.q, 0), p.more);
+    r.engine.act('clearList');
+
     // Back on: the Item Market counts again.
     r.set({ from: { bazaar: true, market: true } });
     r.engine.act('makeList');
     assert.ok(r.engine.state.cart.some((l) => l.im));
+});
+
+test('your items first: "Read now" asks for them ahead of every other read, and "Read" on your stock asks for them alone', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    await r.wait(2 * MIN);
+    const torn = (since) => r.fake.calls.filter((c) => c.host === 'api.torn.com' && c.t >= since);
+    const inv = (c) => c.path === '/v2/user/inventory';
+
+    // Read now: the first thing asked of Torn after the press is your inventory.
+    let press = Date.now();
+    r.engine.act('read');
+    await r.go(MIN);
+    const all = torn(press);
+    assert.ok(all.length > 2, 'the press read many things');
+    assert.ok(inv(all[0]), 'the inventory is the first of them, not ' + all[0].path);
+
+    // Read on your stock (a Torn page): the inventory at once, though it was read a minute ago, and no price for it.
+    await r.wait(MIN);
+    press = Date.now();
+    assert.equal(r.engine.act('readStock'), true, 'the engine knows the press');
+    await r.wait(3000);
+    const first = torn(press);
+    assert.ok(first.length > 0 && inv(first[0]), 'the inventory is asked for at the press');
+    const n = torn(press).filter(inv).length;
+    // Pressed again and again: Torn is not asked each time.
+    r.engine.act('readStock');
+    r.engine.act('readStock');
+    await r.wait(2000);
+    assert.equal(torn(press).filter(inv).length, n, 'three presses in five seconds are one read');
 });

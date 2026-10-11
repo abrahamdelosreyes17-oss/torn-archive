@@ -244,7 +244,11 @@ function pgWhere(v, p, lines) {
         + (p.offers.some((o) => o.price < p.pay) ? ' Violet: cheaper than you pay sellers.' : '');
     // One press for the whole piece: everything counted above, cheapest first. With all of it on, the press takes it off.
     const all = p.more ? `<button class="btn sm go" data-act="cart-all" data-id="${p.id}" title="Every listing of it under its worth, cheapest first">Add all ${hNum(p.more)}</button>` : p.listed ? `<button class="btn sm" data-act="cart-all" data-id="${p.id}" title="Take ${hEsc(p.name)} off the list">Take all ${hNum(p.listed)} off</button>` : '';
-    return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
+    // A list of this piece alone (the owner, 2026-10-11: "where is the button that says make list here? so its only
+    // kitten plushies for example?"): what "Add all" would put on an empty list, in place of the list on hand.
+    const only = Math.min(p.need, u);
+    const make = only > 0 ? `<button class="btn sm go" data-act="list-only" data-id="${p.id}" title="${hNum(only)} of them, cheapest first, and nothing else: it takes the place of the list you have">Make the list: only ${hEsc(p.name)}</button>` : '';
+    return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${make}${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
     <div class="wl-s">Worth <b>${hMoney(p.worth)}</b> to you · you pay sellers <b>${hMoney(p.pay)}</b></div>
     ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span class="n">Checked</span><span class="wl-a">${all}</span></div>${rows}` : pgNone('Nobody lists it now.')}
     <div class="wl-s foot">${foot}</div></div>`;

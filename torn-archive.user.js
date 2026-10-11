@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.2.4
+// @version      1.2.5
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.2.4';
+    const TARC_BUILD_VERSION = '1.2.5';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -8259,6 +8259,8 @@
     // every five minutes besides - two requests each time.
     const EG_INV_AFTER_MS = 5000;
     const EG_INV_AFTER_BUY_MS = 30000;
+    /** "Read" on your stock asks Torn at most this often. */
+    const EG_STOCK_PRESS_MS = 10000;
     /** A read that failed is tried again after this long. */
     const RETRY_MS = EG_MIN;
     /** A piece you do not need is priced this many times less often than one you do. */
@@ -8988,6 +8990,24 @@
             env.changed();
         }
 
+        /** Your items can be asked for: there is a key that works, and Torn has said who you are and what its items are. */
+        const canCount = () => !env.paused() && env.hasKey('limited') && !keyState.limited.error && !!S.self.id && !!S.items.at && !!S.stock.invAt;
+        let stockAsked = 0;
+
+        /**
+         * "Read" on your stock, pressed on a Torn page: your items, and your log where a Full key reads it, ahead of
+         * anything else. The prices are left as they are. Not more often than every ten seconds, however it is pressed.
+         */
+        function readStock() {
+            const now = env.now();
+            if (now - stockAsked < EG_STOCK_PRESS_MS) return;
+            stockAsked = now;
+            due.inventory = 0;
+            if (logRead()) due.log = 0;
+            if (canCount()) run('inventory', READ_EVERY.inventory, readInventory);
+            step();
+        }
+
         /** "Read now": everything is due. */
         function readNow() {
             // Nothing looked at before this press counts until it is looked at again (a read of the last moments is
@@ -8999,6 +9019,9 @@
             if (looked.id) looked = { ...looked, at: env.now() };
             said.clear();
             off.clear();
+            // Your items first: asked ahead of every other read of this press (the owner, 2026-10-11: "if i also press
+            // read now, can it prioritize reading my inventory?").
+            if (canCount()) run('inventory', READ_EVERY.inventory, readInventory);
             step();
         }
 
@@ -9038,6 +9061,16 @@
                 idle();
                 touch('cart', 'run');
             },
+            // A list of one piece alone, in place of the list on hand: every listing of it that counts, cheapest first.
+            listOnly(itemId) {
+                const p = viewPiece(view(), itemId);
+                if (!p) return;
+                S.cart = addAll([], p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+                idle();
+                touch('cart', 'run');
+                due.inventory = 0;
+                if (logRead()) due.log = 0;
+            },
             // A list is made from the count as it stands, and Torn is asked for its own at once: the list follows it.
             // `kind` 'hot': only what "Do now" counted - under what you pay your sellers. Else everything under its worth.
             makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); const inPlace = buysFrom(settings()); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false && inPlace(o))); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
@@ -9064,6 +9097,7 @@
                 if (cur && !cur.im && per.shops[String(cur.whoId)]) per.shops[String(cur.whoId)].due = 0;
             },
             read: readNow,
+            readStock,
             look(itemId) { const id = String(itemId || ''); if (id === looked.id && env.now() - looked.at < EG_MIN) return; looked = { id, at: env.now() }; step(); },
             w3b(op) {
                 if (flags.w3b) return;
@@ -10727,7 +10761,11 @@
             + (p.offers.some((o) => o.price < p.pay) ? ' Violet: cheaper than you pay sellers.' : '');
         // One press for the whole piece: everything counted above, cheapest first. With all of it on, the press takes it off.
         const all = p.more ? `<button class="btn sm go" data-act="cart-all" data-id="${p.id}" title="Every listing of it under its worth, cheapest first">Add all ${hNum(p.more)}</button>` : p.listed ? `<button class="btn sm" data-act="cart-all" data-id="${p.id}" title="Take ${hEsc(p.name)} off the list">Take all ${hNum(p.listed)} off</button>` : '';
-        return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
+        // A list of this piece alone (the owner, 2026-10-11: "where is the button that says make list here? so its only
+        // kitten plushies for example?"): what "Add all" would put on an empty list, in place of the list on hand.
+        const only = Math.min(p.need, u);
+        const make = only > 0 ? `<button class="btn sm go" data-act="list-only" data-id="${p.id}" title="${hNum(only)} of them, cheapest first, and nothing else: it takes the place of the list you have">Make the list: only ${hEsc(p.name)}</button>` : '';
+        return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${make}${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
         <div class="wl-s">Worth <b>${hMoney(p.worth)}</b> to you · you pay sellers <b>${hMoney(p.pay)}</b></div>
         ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span class="n">Checked</span><span class="wl-a">${all}</span></div>${rows}` : pgNone('Nobody lists it now.')}
         <div class="wl-s foot">${foot}</div></div>`;
@@ -11491,6 +11529,12 @@
             try { win.history[step ? 'pushState' : 'replaceState']({ page: ui.page, pane: ui.pane }, '', '#' + ui.page); } catch { /* a page that cannot keep its address still works */ }
         }
 
+        /** What the address says: '#buy' a page, '#buy/186' the Buy page on one piece. */
+        function hashPage() {
+            const [page, id] = (win.location.hash || '#dashboard').slice(1).split('/');
+            return { page, id: /^\d+$/.test(id || '') ? id : '' };
+        }
+
         function go(page, pane = 0) {
             const was = ui.page;
             ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
@@ -11502,7 +11546,7 @@
         // Back and Forward: the browser says which step it is on, and that page is shown. Nothing is added to the steps here.
         win.addEventListener('popstate', (e) => {
             const at = e.state || {};
-            const page = at.page || (win.location.hash || '#dashboard').slice(1);
+            const page = at.page || hashPage().page;
             ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
             ui.pane = Math.max(0, Number(at.pane) || 0);
             draw(true);
@@ -11531,6 +11575,8 @@
             else if (a === 'from') { const from = { ...desk.view.settings.from }; from[v] = !from[v]; if (!from.bazaar && !from.market) from[v === 'bazaar' ? 'market' : 'bazaar'] = true; act('set', { from }); }
             else if (a === 'cart') act('cart', id, v);
             else if (a === 'cart-all') act('cartAll', id);
+            // A list of this piece alone, and the list is shown: as "Make the list", for one piece.
+            else if (a === 'list-only') { act('listOnly', id); go('buy', 2); }
             else if (a === 'drop') act('drop', v);
             else if (a === 'make-list') { act('makeList', v || ''); go('buy', 2); }
             else if (a === 'clear-list') act('clearList');
@@ -11609,12 +11655,21 @@
         let rz = 0;
         if (win.ResizeObserver) new win.ResizeObserver(() => { win.clearTimeout(rz); rz = win.setTimeout(() => { if (desk) { drawCharts(false); const cur = $('.nav-b.on'); if (cur) $('#ind').style.transform = `translateY(${cur.offsetTop}px)`; fitTop(); } }, 150); }).observe(view);
 
-        ui.page = (win.location.hash || '#dashboard').slice(1);
+        // Opened from a piece of "Your stock" on a Torn page (#buy/<item id>): the Buy page, on that piece.
+        const from = hashPage();
+        ui.page = from.page;
         if (!HUB_PAGES.some((p) => p.key === ui.page)) ui.page = 'dashboard';
+        if (ui.page === 'buy' && from.id) { ui.sel = from.id; ui.arrive = true; }
 
         return {
             /** @param d { view, keys, usage, turns, busy, notice, version, elsewhere } */
-            show(d) { const first = !desk; desk = d; draw(first); },
+            show(d) {
+                const first = !desk;
+                desk = d;
+                // The piece the address named: its table is the one it is in, as a press on a piece chooses it.
+                if (ui.arrive && d.view && d.view.pieces) { ui.arrive = false; const p = d.view.pieces.find((x) => String(x.id) === String(ui.sel)); if (p) ui.pane = p.need ? 0 : 1; else ui.sel = null; }
+                draw(first);
+            },
             toast,
             go,
         };
@@ -12174,6 +12229,12 @@
     /* Purple only when opening the hub is the thing to do next. */
     .ta-h button.open.go { background: var(--brand); border-color: transparent; color: #fff; } .ta-h button.open.go:hover { background: #a08fff; }
     .ta-b { display: grid; gap: 8px; padding: 10px 12px 12px; overflow-y: auto; overscroll-behavior: contain; }
+    /* The scrollbar: a thin line with no arrows, and only while your pointer is on the box (the owner, 2026-10-11:
+       "that scroll bar always visible is annoying"). The list still scrolls by the wheel when it is not shown. */
+    .ta-b::-webkit-scrollbar { width: 6px; } .ta-b::-webkit-scrollbar-track { background: transparent; }
+    .ta-b::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+    .ta:hover .ta-b::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); } .ta:hover .ta-b::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.34); }
+    @supports not selector(::-webkit-scrollbar) { .ta-b { scrollbar-width: thin; scrollbar-color: transparent transparent; } .ta:hover .ta-b { scrollbar-color: rgba(255,255,255,.2) transparent; } }
     .ta-b h4 { margin: 0; display: flex; align-items: baseline; gap: 8px; font: 650 13px var(--sans); white-space: nowrap; }
     .ta-b h4 span { margin-left: auto; color: var(--muted); font-weight: 400; font-size: 12px; }
     .ta-l { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; padding: 6px 8px; border-radius: 9px; background: var(--raised); border: 1px solid var(--line); }
@@ -12214,7 +12275,9 @@
     .st-r.need .x { color: var(--need); } .st-r.ahead .x { color: var(--warn); } .st-r.ok .x { color: var(--good); }
     .st-r.over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .st-r.over .x, .st-r.over b { color: #ff8a87; font-weight: 600; } .st-r.over .bar i { background: #ff7878; }
     .ta-hold.st-over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .ta-hold.st-over b { color: #ff8a87; }
-    .ta.ts .ta-h { cursor: default; } .ta.ts .ta-b { gap: 3px; } .ta.ts .ta-b h4 { margin-top: 5px; }
+    .ta.ts .ta-b { gap: 3px; } .ta.ts .ta-b h4 { margin-top: 5px; }
+    /* A piece is a press: Torn Archive opens on it, where its sellers are and the list is made. */
+    .st-r[data-act] { cursor: pointer; } .st-r[data-act]:hover { background: var(--raised); } .st-r.over[data-act]:hover { background: rgba(255, 90, 90, .2); }
     .pill { position: fixed; z-index: 99990; right: 12px; bottom: 56px; height: 34px; padding: 0 12px 0 6px; display: inline-flex; align-items: center; gap: 8px; border-radius: 999px;
       border: 1px solid var(--line2); background: var(--panel); color: var(--text); font: 600 12px/1 var(--sans); box-shadow: 0 8px 24px rgba(0,0,0,.5); cursor: pointer; white-space: nowrap; }
     .pill:hover { background: var(--raised); }
@@ -12327,12 +12390,17 @@
                 const cls = more ? 'over' : need > 0 ? 'need' : held > target ? 'ahead' : 'ok';
                 const say = more ? `typing ${hNum(t)} · ${hNum(more)} too many` : t ? `typing ${hNum(t)} of ${hNum(need)}` : need > 0 ? `need ${hNum(need)}` : held > target ? `${hNum(held - target)} ahead` : 'enough';
                 const w = target ? Math.min(100, Math.round((held / target) * 100)) : 100;
-                rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
+                rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}" data-act="plan" data-v="${hEsc(id)}" title="Open Torn Archive on ${hEsc(p.name)}: who sells it, and your shopping list">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
             }
             body += bxHead(`${hEsc(s.label)} sets`, `${hNum(Number.isFinite(full) ? full : 0)} full of ${hNum(s.target)}`) + rows;
         }
         const warn = over.length ? `<div class="ta-hold st-over"><b>More than you need.</b> ${over.map((o) => `${hEsc(o.name)}: ${hNum(o.typed)} typed, ${o.need ? `you need ${hNum(o.need)}` : 'you need no more'}`).join(' · ')}</div>` : '';
-        return { head: over.length ? 'more than you need' : togo ? `${hNum(togo)} to go` : 'every piece is in', html: warn + body, over };
+        // When Torn counted, so "Read" says what it brought: Torn counts your items once an hour, and a read in
+        // between brings that same count. What you buy in between is counted here, from the pages you buy on.
+        const age = (v.top && v.top.stock) || null;
+        const foot = age && age.tornAt ? `<div class="ta-n">Torn counted your items at ${hClock(age.tornAt)} and counts again at ${hClock(age.nextAt)}. Your buys since are counted in.</div>`
+            : age && age.readAt ? `<div class="ta-n">Your items were read at ${hClock(age.readAt)}. Torn counts them once an hour; your buys since are counted in.</div>` : '';
+        return { head: over.length ? 'more than you need' : togo ? `${hNum(togo)} to go` : 'every piece is in', html: warn + body + foot, over };
     }
 
     /**
@@ -12732,6 +12800,21 @@
         const want = centre < middle ? 'left' : 'right';
         if (strips[want]) return want;
         return strips.right ? 'right' : strips.left ? 'left' : null;
+    }
+
+    /**
+     * A box you put down yourself (your stock, dragged by its bar): where you left it, kept whole inside the window.
+     * It is yours to put anywhere, also over Torn's page. Unfolded it keeps room for `least` of its body: left near
+     * the window's foot it stands that much higher.
+     * @param pos   { left, top } where you left it
+     * @param least the least height it keeps (its bar when folded)
+     * @returns { left, top, width, maxHeight }
+     */
+    function overlayFree({ pos, width, winW, winH, least = OV_BAR }) {
+        const w = Math.max(0, Math.min(width, winW - 2 * OV_GAP));
+        const left = ovClamp(Number(pos && pos.left) || 0, OV_GAP, winW - w - OV_GAP);
+        const top = ovClamp(Number(pos && pos.top) || 0, 0, winH - Math.max(OV_BAR, least) - OV_GAP);
+        return { left: Math.round(left), top: Math.round(top), width: Math.round(w), maxHeight: Math.floor(winH - top - OV_GAP) };
     }
 
     /**
@@ -14983,6 +15066,8 @@
     const NOTES_KEEP_MS = 10 * 60 * 1000;
     /** A view older than this says so instead of showing its numbers. */
     const VIEW_OLD_MS = 15 * 60 * 1000;
+    /** The hub shares its view at least once a minute: with none for this long, its tab is closed or asleep. */
+    const VIEW_QUIET_MS = 3 * 60 * 1000;
     /**
      * A press in a listing's tile counts for a listing that then vanishes, for this long (as Torn Trading's
      * STOCK_PRESS_MS: typing a number, Buy, then Torn's own "are you sure" take longer than a few seconds).
@@ -15032,6 +15117,8 @@
     const TS_MIN_H = 160;
     /** Where you left the overlay: { side, left, top }. Folded or not: 'boxOpen' where it has something to say, 'boxOpenAny' elsewhere. */
     const TP_POS_KEY = 'boxPos';
+    /** Where you left your stock: { left, top }. None until you drag it: then it stands beside Torn's page by itself. */
+    const TS_POS_KEY = 'stockPos';
 
     const tpDigits = (v) => Number(String(v == null ? '' : v).replace(/[^\d]/g, '')) || 0;
 
@@ -15079,7 +15166,7 @@
             // Torn's elements holding a note of ours beside a control: the ones of the last look, and of this one.
             notes: new Set(), notesNow: new Set(),
             // Your stock on its own: what this tab adds to the view (buys seen, numbers typed), and its fold.
-            live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false,
+            live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false, stockPos: gmGet(TS_POS_KEY, null),
             // The listing a link of ours named: brought into view once, pulsing until you press anything.
             arrived: '', pulseOff: '',
             open: gmGet('boxOpen', true) !== false, openAny: gmGet('boxOpenAny', false) === true, pinned: false, room: true, timer: 0,
@@ -15099,7 +15186,7 @@
         root.innerHTML = `<style>${BOX_CSS}</style>`
             + `<div class="ta" hidden><div class="ta-h" title="Torn Archive: drag to move"><span class="mark">${hIcon('brand')}</span><b>Torn Archive</b><span class="w"></span>`
             + `<button class="open" data-act="hub" title="Open Torn Archive in a new tab">Open</button><button data-act="fold">–</button></div><div class="ta-b"></div></div>`
-            + `<div class="ta ts" hidden><div class="ta-h" title="Your stock, as you buy"><span class="mark">${hIcon('brand')}</span><b>Your stock</b><span class="w"></span><button data-act="stock-fold">–</button></div><div class="ta-b"></div></div>`
+            + `<div class="ta ts" hidden><div class="ta-h" title="Your stock, as you buy: drag to move"><span class="mark">${hIcon('brand')}</span><b>Your stock</b><span class="w"></span><button class="open" data-act="stock-read" title="Ask Torn for your items now, ahead of everything else">Read</button><button data-act="stock-fold">–</button></div><div class="ta-b"></div></div>`
             + `<button class="pill" hidden data-act="unfold" title="Show Torn Archive"><span class="mark">${hIcon('brand')}</span><span class="pw"></span></button>`;
         doc.body.appendChild(host);
         const box = root.querySelector('.ta');
@@ -15111,9 +15198,11 @@
         const pill = root.querySelector('.pill');
         const pillWords = root.querySelector('.pw');
         const stockBox = root.querySelector('.ts');
+        const stockHead = stockBox.querySelector('.ta-h');
         const stockBody = stockBox.querySelector('.ta-b');
         const stockWords = stockBox.querySelector('.w');
         const stockFold = stockBox.querySelector('[data-act="stock-fold"]');
+        const stockRead = stockBox.querySelector('[data-act="stock-read"]');
 
         // ---- where it stands ------------------------------------------------------------------------------------------
 
@@ -15213,19 +15302,23 @@
         }
 
         /**
-         * Your stock on its own, while you buy: on the side of Torn's page the box is not on, and only where that side
-         * has room - it never stands over Torn's page. With no room the box's own checklist says what you hold.
+         * Your stock on its own, while you buy. Until you move it: on the side of Torn's page the box is not on, and
+         * only where that side has room - by itself it never stands over Torn's page; with no room the box's own
+         * checklist says what you hold. Dragged by its bar it stands where you left it, anywhere in the window (the
+         * owner, 2026-10-11: "can i make my stocklist moveable? its stuck").
          */
         function showStock(out) {
             st.stockOut = out;
+            const pos = st.stockPos && Number.isFinite(st.stockPos.left) && Number.isFinite(st.stockPos.top) ? st.stockPos : null;
+            const free = out && pos ? overlayFree({ pos, width: TS_WIDTH, winW: win.innerWidth, winH: win.innerHeight, least: st.stockOpen ? TS_MIN_H : OV_BAR }) : null;
             const side = st.at && st.at.side === 'left' ? 'right' : 'left';
-            const strip = out && st.at && !box.hidden ? st.strips[side] : null;
-            const width = strip ? Math.min(TS_WIDTH, strip.width) : 0;
-            const left = strip ? (side === 'left' ? strip.to - width : strip.from) : 0;
-            let room = win.innerHeight - OV_TOP - BOX_GAP;
+            const strip = !free && out && st.at && !box.hidden ? st.strips[side] : null;
+            const width = free ? free.width : strip ? Math.min(TS_WIDTH, strip.width) : 0;
+            const left = free ? free.left : strip ? (side === 'left' ? strip.to - width : strip.from) : 0;
+            let room = free ? free.maxHeight : win.innerHeight - OV_TOP - BOX_GAP;
             const other = strip ? tradingRect() : null;
             if (other && other.left < left + width && other.right > left) room = other.top - OV_TOP - OV_GAP;
-            if (!strip || room < TS_MIN_H) { stockBox.hidden = true; return; }
+            if (!free && (!strip || room < TS_MIN_H)) { stockBox.hidden = true; return; }
             stockBox.hidden = false;
             stockBox.classList.toggle('folded', !st.stockOpen);
             stockBox.classList.toggle('alarm', out.over.length > 0);
@@ -15238,7 +15331,7 @@
             }
             stockFold.textContent = st.stockOpen ? '–' : '+';
             stockBox.style.setProperty('--left', left + 'px');
-            stockBox.style.setProperty('--top', OV_TOP + 'px');
+            stockBox.style.setProperty('--top', (free ? free.top : OV_TOP) + 'px');
             stockBox.style.setProperty('--width', width + 'px');
             stockBox.style.setProperty('--max-h', room + 'px');
         }
@@ -15292,6 +15385,48 @@
             head.addEventListener('pointercancel', end);
         }
         enableDrag();
+
+        /** Your stock, dragged by its bar: anywhere in the window, and it stays there. A press that does not move unfolds it. */
+        function enableStockDrag() {
+            let start = null;
+            stockHead.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0) return;
+                if (event.target.closest && event.target.closest('button, a, input')) return;
+                const r = stockBox.getBoundingClientRect();
+                start = { x: event.clientX, y: event.clientY, left: r.left, top: r.top, moved: false };
+                try { if (stockHead.setPointerCapture) stockHead.setPointerCapture(event.pointerId); } catch { /* a pointer the browser does not track: the drag still follows its moves */ }
+            });
+            stockHead.addEventListener('pointermove', (event) => {
+                if (!start) return;
+                const dx = event.clientX - start.x;
+                const dy = event.clientY - start.y;
+                if (!start.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+                start.moved = true;
+                stockBox.classList.add('drag');
+                st.stockPos = { left: Math.round(start.left + dx), top: Math.round(start.top + dy) };
+                showStock(st.stockOut);
+            });
+            const end = (event) => {
+                if (!start) return;
+                const { moved } = start;
+                start = null;
+                stockBox.classList.remove('drag');
+                if (stockHead.hasPointerCapture && stockHead.hasPointerCapture(event.pointerId)) stockHead.releasePointerCapture(event.pointerId);
+                if (moved && st.stockPos) {
+                    // Kept as it stands now, inside the window.
+                    const r = stockBox.getBoundingClientRect();
+                    st.stockPos = { left: Math.round(r.left), top: Math.round(r.top) };
+                    gmSet(TS_POS_KEY, st.stockPos);
+                } else if (!moved && !st.stockOpen) {
+                    st.stockOpen = true;
+                    gmSet('stockOpen', true);
+                }
+                showStock(st.stockOut);
+            };
+            stockHead.addEventListener('pointerup', end);
+            stockHead.addEventListener('pointercancel', end);
+        }
+        enableStockDrag();
 
         // ---- the shared view -----------------------------------------------------------------------------------------
 
@@ -15700,7 +15835,19 @@
             if (act === 'fold') { if (!(isOpen() && st.at && st.at.bar)) setOpen(!isOpen()); return; }
             if (act === 'unfold') { st.pinned = true; setOpen(true); return; }
             if (act === 'stock-fold') { st.stockOpen = !st.stockOpen; gmSet('stockOpen', st.stockOpen); showStock(st.stockOut); return; }
+            if (act === 'stock-read') {
+                // A Torn tab asks Torn nothing itself: the Archive's own tab does, your items first. With that tab
+                // closed or gone quiet nothing would answer, so it is opened: it reads your items as it starts.
+                const quiet = !st.shared || now() - st.shared.at > VIEW_QUIET_MS;
+                if (quiet) gmOpenTab(ARCHIVE_PAGE_URL);
+                else note('read', { what: 'stock' });
+                stockRead.textContent = quiet ? 'Opened' : 'Asked ✓';
+                win.setTimeout(() => { stockRead.textContent = 'Read'; }, TP_DONE_MS);
+                return;
+            }
             if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
+            // A piece of your stock: Torn Archive opens on its Buy page, on that piece (ui/hub.js reads the address).
+            if (act === 'plan') { gmOpenTab(ARCHIVE_PAGE_URL + (tpDigits(val) ? '#buy/' + tpDigits(val) : '#buy')); return; }
             if (act === 'copy') { if (gmCopy(val)) done('copy:' + val); return; }
             if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
             if (!v) return;
@@ -16245,6 +16392,8 @@
                 try {
                     if (n.kind === 'act') { if (n.what && n.what.name === 'run') engine.act('run', ...(Array.isArray(n.what.args) ? n.what.args.slice(0, 1) : [])); moved = true; }
                     else if (n.kind === 'buy' || n.kind === 'swap' || n.kind === 'thread' || n.kind === 'trade' || n.kind === 'shop') { engine.note(n.kind, n.what); moved = moved || n.kind === 'buy' || n.kind === 'swap'; }
+                    // "Read" on your stock, pressed on a Torn page: your items are asked for now, ahead of the rest.
+                    else if (n.kind === 'read') { engine.act('readStock'); logLine('note', 'A Torn page', 'Read pressed on your stock', null); }
                     // What a Torn tab saw of its page, for the log: it is in the zip.
                     else if (n.kind === 'say' && n.what) logLine('note', 'A Torn page', String(n.what.what || ''), n.what.detail ? String(n.what.detail) : null);
                 } catch (error) {
@@ -16404,6 +16553,7 @@
             cart: (id, place) => engine.act('cart', id, place),
             drop: (key) => engine.act('drop', key),
             cartAll: (id) => engine.act('cartAll', id),
+            listOnly: (id) => engine.act('listOnly', id),
             makeList: (kind) => engine.act('makeList', kind),
             // The piece open on "Sold by": its bazaars are asked of Torn itself (not connected in 1.2.2: nothing was asked).
             look: (id) => { engine.act('look', id); schedule(); },

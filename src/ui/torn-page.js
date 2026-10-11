@@ -25,7 +25,7 @@ import { MARKS_CSS } from './marks-css.js';
 import { BOX_CSS, BOX_MARKS_CSS, BOX_GAP } from './box-css.js';
 import { hIcon, hMoney, hNum } from './fmt.js';
 import { boxClosed, boxAny, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum, boxLate } from './box-pages.js';
-import { overlayStrips, overlaySide, overlayPlace, OV_WIDTH, OV_BAR, OV_GAP, OV_TOP } from '../core/overlay.js';
+import { overlayStrips, overlaySide, overlayPlace, overlayFree, OV_WIDTH, OV_BAR, OV_GAP, OV_TOP } from '../core/overlay.js';
 import { scanDom } from '../sources/dom/scan.js';
 import { setMark, setRule, markBeside, clearSetMarks, museumExchanges, pieceTiles, pointsListing, pointsRows, tradeTheirRows, forumThread, boxTwins } from '../sources/dom/sets-pages.js';
 import { writeInputs } from '../sources/dom/fill.js';
@@ -45,6 +45,8 @@ export const SHARED_NOTES_KEY = 'notes';
 export const NOTES_KEEP_MS = 10 * 60 * 1000;
 /** A view older than this says so instead of showing its numbers. */
 export const VIEW_OLD_MS = 15 * 60 * 1000;
+/** The hub shares its view at least once a minute: with none for this long, its tab is closed or asleep. */
+export const VIEW_QUIET_MS = 3 * 60 * 1000;
 /**
  * A press in a listing's tile counts for a listing that then vanishes, for this long (as Torn Trading's
  * STOCK_PRESS_MS: typing a number, Buy, then Torn's own "are you sure" take longer than a few seconds).
@@ -94,6 +96,8 @@ const TS_WIDTH = 300;
 const TS_MIN_H = 160;
 /** Where you left the overlay: { side, left, top }. Folded or not: 'boxOpen' where it has something to say, 'boxOpenAny' elsewhere. */
 const TP_POS_KEY = 'boxPos';
+/** Where you left your stock: { left, top }. None until you drag it: then it stands beside Torn's page by itself. */
+const TS_POS_KEY = 'stockPos';
 
 const tpDigits = (v) => Number(String(v == null ? '' : v).replace(/[^\d]/g, '')) || 0;
 
@@ -141,7 +145,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         // Torn's elements holding a note of ours beside a control: the ones of the last look, and of this one.
         notes: new Set(), notesNow: new Set(),
         // Your stock on its own: what this tab adds to the view (buys seen, numbers typed), and its fold.
-        live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false,
+        live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false, stockPos: gmGet(TS_POS_KEY, null),
         // The listing a link of ours named: brought into view once, pulsing until you press anything.
         arrived: '', pulseOff: '',
         open: gmGet('boxOpen', true) !== false, openAny: gmGet('boxOpenAny', false) === true, pinned: false, room: true, timer: 0,
@@ -161,7 +165,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     root.innerHTML = `<style>${BOX_CSS}</style>`
         + `<div class="ta" hidden><div class="ta-h" title="Torn Archive: drag to move"><span class="mark">${hIcon('brand')}</span><b>Torn Archive</b><span class="w"></span>`
         + `<button class="open" data-act="hub" title="Open Torn Archive in a new tab">Open</button><button data-act="fold">–</button></div><div class="ta-b"></div></div>`
-        + `<div class="ta ts" hidden><div class="ta-h" title="Your stock, as you buy"><span class="mark">${hIcon('brand')}</span><b>Your stock</b><span class="w"></span><button data-act="stock-fold">–</button></div><div class="ta-b"></div></div>`
+        + `<div class="ta ts" hidden><div class="ta-h" title="Your stock, as you buy: drag to move"><span class="mark">${hIcon('brand')}</span><b>Your stock</b><span class="w"></span><button class="open" data-act="stock-read" title="Ask Torn for your items now, ahead of everything else">Read</button><button data-act="stock-fold">–</button></div><div class="ta-b"></div></div>`
         + `<button class="pill" hidden data-act="unfold" title="Show Torn Archive"><span class="mark">${hIcon('brand')}</span><span class="pw"></span></button>`;
     doc.body.appendChild(host);
     const box = root.querySelector('.ta');
@@ -173,9 +177,11 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     const pill = root.querySelector('.pill');
     const pillWords = root.querySelector('.pw');
     const stockBox = root.querySelector('.ts');
+    const stockHead = stockBox.querySelector('.ta-h');
     const stockBody = stockBox.querySelector('.ta-b');
     const stockWords = stockBox.querySelector('.w');
     const stockFold = stockBox.querySelector('[data-act="stock-fold"]');
+    const stockRead = stockBox.querySelector('[data-act="stock-read"]');
 
     // ---- where it stands ------------------------------------------------------------------------------------------
 
@@ -275,19 +281,23 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     }
 
     /**
-     * Your stock on its own, while you buy: on the side of Torn's page the box is not on, and only where that side
-     * has room - it never stands over Torn's page. With no room the box's own checklist says what you hold.
+     * Your stock on its own, while you buy. Until you move it: on the side of Torn's page the box is not on, and
+     * only where that side has room - by itself it never stands over Torn's page; with no room the box's own
+     * checklist says what you hold. Dragged by its bar it stands where you left it, anywhere in the window (the
+     * owner, 2026-10-11: "can i make my stocklist moveable? its stuck").
      */
     function showStock(out) {
         st.stockOut = out;
+        const pos = st.stockPos && Number.isFinite(st.stockPos.left) && Number.isFinite(st.stockPos.top) ? st.stockPos : null;
+        const free = out && pos ? overlayFree({ pos, width: TS_WIDTH, winW: win.innerWidth, winH: win.innerHeight, least: st.stockOpen ? TS_MIN_H : OV_BAR }) : null;
         const side = st.at && st.at.side === 'left' ? 'right' : 'left';
-        const strip = out && st.at && !box.hidden ? st.strips[side] : null;
-        const width = strip ? Math.min(TS_WIDTH, strip.width) : 0;
-        const left = strip ? (side === 'left' ? strip.to - width : strip.from) : 0;
-        let room = win.innerHeight - OV_TOP - BOX_GAP;
+        const strip = !free && out && st.at && !box.hidden ? st.strips[side] : null;
+        const width = free ? free.width : strip ? Math.min(TS_WIDTH, strip.width) : 0;
+        const left = free ? free.left : strip ? (side === 'left' ? strip.to - width : strip.from) : 0;
+        let room = free ? free.maxHeight : win.innerHeight - OV_TOP - BOX_GAP;
         const other = strip ? tradingRect() : null;
         if (other && other.left < left + width && other.right > left) room = other.top - OV_TOP - OV_GAP;
-        if (!strip || room < TS_MIN_H) { stockBox.hidden = true; return; }
+        if (!free && (!strip || room < TS_MIN_H)) { stockBox.hidden = true; return; }
         stockBox.hidden = false;
         stockBox.classList.toggle('folded', !st.stockOpen);
         stockBox.classList.toggle('alarm', out.over.length > 0);
@@ -300,7 +310,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         }
         stockFold.textContent = st.stockOpen ? '–' : '+';
         stockBox.style.setProperty('--left', left + 'px');
-        stockBox.style.setProperty('--top', OV_TOP + 'px');
+        stockBox.style.setProperty('--top', (free ? free.top : OV_TOP) + 'px');
         stockBox.style.setProperty('--width', width + 'px');
         stockBox.style.setProperty('--max-h', room + 'px');
     }
@@ -354,6 +364,48 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         head.addEventListener('pointercancel', end);
     }
     enableDrag();
+
+    /** Your stock, dragged by its bar: anywhere in the window, and it stays there. A press that does not move unfolds it. */
+    function enableStockDrag() {
+        let start = null;
+        stockHead.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0) return;
+            if (event.target.closest && event.target.closest('button, a, input')) return;
+            const r = stockBox.getBoundingClientRect();
+            start = { x: event.clientX, y: event.clientY, left: r.left, top: r.top, moved: false };
+            try { if (stockHead.setPointerCapture) stockHead.setPointerCapture(event.pointerId); } catch { /* a pointer the browser does not track: the drag still follows its moves */ }
+        });
+        stockHead.addEventListener('pointermove', (event) => {
+            if (!start) return;
+            const dx = event.clientX - start.x;
+            const dy = event.clientY - start.y;
+            if (!start.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+            start.moved = true;
+            stockBox.classList.add('drag');
+            st.stockPos = { left: Math.round(start.left + dx), top: Math.round(start.top + dy) };
+            showStock(st.stockOut);
+        });
+        const end = (event) => {
+            if (!start) return;
+            const { moved } = start;
+            start = null;
+            stockBox.classList.remove('drag');
+            if (stockHead.hasPointerCapture && stockHead.hasPointerCapture(event.pointerId)) stockHead.releasePointerCapture(event.pointerId);
+            if (moved && st.stockPos) {
+                // Kept as it stands now, inside the window.
+                const r = stockBox.getBoundingClientRect();
+                st.stockPos = { left: Math.round(r.left), top: Math.round(r.top) };
+                gmSet(TS_POS_KEY, st.stockPos);
+            } else if (!moved && !st.stockOpen) {
+                st.stockOpen = true;
+                gmSet('stockOpen', true);
+            }
+            showStock(st.stockOut);
+        };
+        stockHead.addEventListener('pointerup', end);
+        stockHead.addEventListener('pointercancel', end);
+    }
+    enableStockDrag();
 
     // ---- the shared view -----------------------------------------------------------------------------------------
 
@@ -762,7 +814,19 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (act === 'fold') { if (!(isOpen() && st.at && st.at.bar)) setOpen(!isOpen()); return; }
         if (act === 'unfold') { st.pinned = true; setOpen(true); return; }
         if (act === 'stock-fold') { st.stockOpen = !st.stockOpen; gmSet('stockOpen', st.stockOpen); showStock(st.stockOut); return; }
+        if (act === 'stock-read') {
+            // A Torn tab asks Torn nothing itself: the Archive's own tab does, your items first. With that tab
+            // closed or gone quiet nothing would answer, so it is opened: it reads your items as it starts.
+            const quiet = !st.shared || now() - st.shared.at > VIEW_QUIET_MS;
+            if (quiet) gmOpenTab(ARCHIVE_PAGE_URL);
+            else note('read', { what: 'stock' });
+            stockRead.textContent = quiet ? 'Opened' : 'Asked ✓';
+            win.setTimeout(() => { stockRead.textContent = 'Read'; }, TP_DONE_MS);
+            return;
+        }
         if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
+        // A piece of your stock: Torn Archive opens on its Buy page, on that piece (ui/hub.js reads the address).
+        if (act === 'plan') { gmOpenTab(ARCHIVE_PAGE_URL + (tpDigits(val) ? '#buy/' + tpDigits(val) : '#buy')); return; }
         if (act === 'copy') { if (gmCopy(val)) done('copy:' + val); return; }
         if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
         if (!v) return;

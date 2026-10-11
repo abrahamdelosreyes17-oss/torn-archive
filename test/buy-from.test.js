@@ -237,3 +237,26 @@ test('the hub\'s run bar on the Item Market stop: Next is a link to the next pie
     const end = hubPage({ view: v }, { ...ui, imKey: three[2].id + '|' + IM_PLACE });
     assert.ok(!end.includes('data-act="im-walk"') && end.includes('Done: back to the list'));
 });
+
+// 1.2.5 (the owner, 2026-10-11): "where is the button that says make list here? so its only kitten plushies for
+// example?" and, of his stock on a Torn page, "when i click it can it open torn archive so i can plan shopping cart".
+
+import { boxStock } from '../src/ui/box-pages.js';
+import { viewForTabs } from '../src/core/view.js';
+
+test('"Sold by" has a button that makes a list of that piece alone; a piece you have enough of has none', () => {
+    const v = archiveView(fixtureInput(NOW));
+    const ui = { page: 'buy', pane: 1, sel: null, trade: null, range: { pts: 40, pts2: 40 }, unit: 'day', imKey: '' };
+    const p = v.pieces.find((x) => x.need > 0 && x.under.units > 0);
+    assert.ok(p, 'a piece wanted, with listings under its worth');
+    const html = hubPage({ view: v }, { ...ui, sel: String(p.id) });
+    assert.ok(html.includes(`data-act="list-only" data-id="${p.id}"`) && html.includes(`Make the list: only ${p.name}`));
+    const full = v.pieces.find((x) => !x.need);
+    if (full) assert.ok(!hubPage({ view: v }, { ...ui, sel: String(full.id) }).includes('data-act="list-only"'));
+});
+
+test('your stock on a Torn page: each piece is a press that names the piece', () => {
+    const v = viewForTabs(archiveView(fixtureInput(NOW)));
+    const out = boxStock(v, {});
+    for (const s of v.sets) for (const p of s.pieces) assert.ok(out.html.includes(`data-act="plan" data-v="${p.id}"`), p.name);
+});
