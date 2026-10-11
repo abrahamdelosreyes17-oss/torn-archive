@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https://torn-bids-shared.pumping-iron-worker.workers.dev; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Lend a Public key</title>
+<link rel="icon" href="data:,">
+<!--
+  The sign-up page of Torn Shared Server: a player pastes a Public Only key here themselves.
+  The key goes to one place, the server named in SERVER below, over https, and nowhere else. This site
+  (GitHub Pages) receives nothing: the page is a plain file and holds no data.
+  The numbers on the page ("up to 30 a minute") come from the server, which holds itself to them.
+-->
+<style>
+:root {
+  --bg: #090b10; --panel: #10131a; --raised: #171b24; --hover: #1c212c; --input: #0a0c11;
+  --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.13);
+  --text: #f3f5f9; --text2: #c9cfda; --muted: #8e96a6; --faint: #626a7a;
+  --brand: #8f7bff; --brand-line: rgba(143,123,255,.45);
+  --good: #3fcf6b; --bad: #f0605d; --bad-bg: rgba(240,96,93,.12); --warn: #f5a524;
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  --disp: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  --ease: cubic-bezier(.2,.8,.2,1);
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body { margin: 0; min-height: 100vh; color: var(--text2); font: 400 15px/1.6 var(--sans); -webkit-font-smoothing: antialiased;
+  background: radial-gradient(900px 420px at 50% -120px, rgba(143,123,255,.09), transparent 65%), var(--bg); }
+b, strong { font-weight: 600; color: var(--text); }
+main { max-width: 680px; margin: 0 auto; padding: 56px 20px 72px; }
+
+.brand { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; }
+.mark { width: 32px; height: 32px; flex: none; border-radius: 10px; display: grid; place-items: center; color: #fff; background: linear-gradient(145deg, #a694ff, #6a55e8); box-shadow: 0 0 0 1px rgba(255,255,255,.12) inset, 0 6px 18px rgba(143,123,255,.35); }
+.mark svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.brand b { display: block; font: 650 15px/1.2 var(--disp); }
+h1 { margin: 34px 0 10px; color: var(--text); font: 650 30px/1.15 var(--disp); letter-spacing: -.01em; }
+.lead { margin: 0; font-size: 16px; color: var(--text2); max-width: 56ch; }
+
+/* What it does: four plain lines, a rule between them, no boxes. */
+.facts { margin: 30px 0 0; padding: 0; }
+.facts div { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 4px 20px; padding: 14px 0; border-top: 1px solid var(--line); }
+.facts div:last-child { border-bottom: 1px solid var(--line); }
+.facts dt { color: var(--text); font-weight: 600; }
+.facts dd { margin: 0; }
+
+h2 { margin: 40px 0 6px; color: var(--text); font: 650 17px/1.3 var(--disp); }
+.step { display: flex; gap: 14px; margin-top: 18px; }
+.step-n { width: 26px; height: 26px; flex: none; border-radius: 50%; display: grid; place-items: center; margin-top: 1px; color: var(--text); font: 650 13px/1 var(--sans); background: var(--raised); border: 1px solid var(--line2); }
+.step-b { flex: 1; min-width: 0; }
+.step-b p { margin: 0 0 10px; }
+.hint { color: var(--muted); font-size: 13px; }
+
+.btn { height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line2); background: var(--raised); color: var(--text); font: 550 14px/1 var(--sans); display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; cursor: pointer; text-decoration: none; transition: background .16s, border-color .16s, transform .16s var(--ease), opacity .16s; }
+.btn:hover { background: var(--hover); border-color: rgba(255,255,255,.22); }
+.btn:active { transform: scale(.98); }
+.btn.go { background: var(--brand); border-color: transparent; color: #fff; }
+.btn.go:hover { background: #a08fff; }
+.btn.out::after { content: "\2197"; opacity: .75; }
+.btn:disabled { opacity: .45; cursor: default; transform: none; }
+.btn:focus-visible, .inp:focus-visible, .tick input:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.inp { flex: 1 1 240px; min-width: 0; height: 40px; padding: 0 13px; border-radius: 10px; border: 1px solid var(--line2); background: var(--input); color: var(--text); font: 500 15px/1 ui-monospace, Consolas, monospace; letter-spacing: .06em; outline: none; transition: border-color .16s; }
+.inp::placeholder { color: var(--faint); font-family: var(--sans); letter-spacing: 0; }
+.inp:focus { border-color: var(--brand-line); }
+.tick { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0 0; cursor: pointer; }
+.tick input { width: 17px; height: 17px; flex: none; margin: 3px 0 0; accent-color: var(--brand); }
+
+/* What the server answered: one line under the box it belongs to. */
+.said { min-height: 24px; margin: 10px 0 0; }
+.said.ok { color: var(--text); } .said.ok::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 9px; background: var(--good); }
+.said.bad { color: #ff8a87; }
+.shut { margin-top: 18px; padding: 13px 15px; border-radius: 10px; border: 1px solid var(--line2); background: var(--panel); color: var(--text); }
+.hide { display: none !important; }
+
+table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 0; border-top: 1px solid var(--line); }
+tr:last-child th, tr:last-child td { border-bottom: 1px solid var(--line); }
+th { width: 190px; padding-right: 20px; color: var(--text); font-weight: 600; }
+
+footer { margin-top: 44px; color: var(--muted); font-size: 13px; }
+
+@media (max-width: 560px) {
+  main { padding: 32px 16px 56px; }
+  h1 { font-size: 25px; }
+  .facts div { grid-template-columns: minmax(0, 1fr); }
+  th, td { display: block; width: auto; } th { padding-bottom: 0; } td { border-top: 0; padding-top: 2px; }
+  tr:last-child th { border-bottom: 0; }
+  .btn { flex: 1 1 auto; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <div class="mark"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="3.2"/><path d="M10.2 10H17M14.5 10v2.6M16.9 10v1.8"/></svg></div>
+    <div><b>Torn Shared Server</b><span id="by">A player-run tool for Torn. Not part of Torn.</span></div>
+  </div>
+
+  <h1>Lend a Public key</h1>
+  <p class="lead">A Public Only key helps our server keep up with public Torn data. It is the weakest key Torn makes: it reads only what any player can already see, and it can change nothing.</p>
+
+  <dl class="facts">
+    <div><dt>What your key does</dt><dd>Our server uses it to read public Torn data, the kind any player can look up, to keep our own tools up to date.</dd></div>
+    <div><dt>What it can see of you</dt><dd>Your Torn name and ID, so we know whose key it is. Nothing else: a Public Only key cannot read your items, money, log or messages, and we refuse any stronger key.</dd></div>
+    <div><dt>What it costs you</dt><dd>Up to <b class="share">30</b> of your 100 requests a minute, day and night. If Torn ever answers "too many requests" on your key, we slow down.</dd></div>
+    <div><dt>How to leave</dt><dd>Paste the key under "Remove my key" below: it is taken out at once, with everything held for it. Or delete the key in Torn: the server takes it out the next time it would have used it.</dd></div>
+  </dl>
+
+  <div class="shut hide" id="shut" role="status" aria-live="polite"></div>
+
+  <section id="give">
+    <h2>Hand in a key</h2>
+    <div class="step">
+      <span class="step-n">1</span>
+      <div class="step-b">
+        <p>Make a new key in Torn, as <b>Public Only</b>.</p>
+        <a class="btn out" id="make" target="_blank" rel="noopener noreferrer" href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&amp;title=Shared%20Server&amp;type=1">Make the key in Torn</a>
+        <p class="hint" style="margin:10px 0 0">Check that Public Only is chosen before you press Create.</p>
+      </div>
+    </div>
+    <div class="step">
+      <span class="step-n">2</span>
+      <div class="step-b">
+        <p>Paste it here.</p>
+        <form id="give-f" autocomplete="off">
+          <div class="row">
+            <input class="inp" id="give-k" type="password" maxlength="16" placeholder="your Public Only key" autocomplete="off" spellcheck="false" aria-label="Your Public Only key">
+            <button class="btn go" id="give-b" type="submit">Hand in the key</button>
+          </div>
+          <label class="tick"><input type="checkbox" id="give-t"><span>This is my own key, and I have read what it is used for.</span></label>
+        </form>
+        <p class="said" id="give-s" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+  </section>
+
+  <h2>Torn's table for tools that take a key</h2>
+  <table>
+    <tbody>
+      <tr><th>Data storage</th><td>Persistent, until you remove the key: the key, your Torn name and ID, and a count of the requests made with it. After that, one line in the owner's log says you joined and left.</td></tr>
+      <tr><th>Data sharing</th><td>Service owners.</td></tr>
+      <tr><th>Purpose of use</th><td>Competitive advantage: public game data for our own tools.</td></tr>
+      <tr><th>Key storage and sharing</th><td>Stored, used only for automation. Never shown again, not even part of it.</td></tr>
+      <tr><th>Key access level</th><td>Public Only.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Remove my key</h2>
+  <p style="margin:0 0 12px">Paste the key you handed in. It is deleted at once, with everything held for it.</p>
+  <form id="out-f" autocomplete="off">
+    <div class="row">
+      <input class="inp" id="out-k" type="password" maxlength="16" placeholder="the key to remove" autocomplete="off" spellcheck="false" aria-label="The key to remove">
+      <button class="btn" id="out-b" type="submit">Remove</button>
+    </div>
+  </form>
+  <p class="said" id="out-s" role="status" aria-live="polite"></p>
+
+  <footer>Your key is sent to our server only, over https. This page keeps nothing in your browser.</footer>
+</main>
+
+<script>
+'use strict';
+// The one place a key is sent to.
+const SERVER = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
+const KEY = /^[A-Za-z0-9]{16}$/;
+const $ = (id) => document.getElementById(id);
+
+async function ask(method, path, body) {
+  try {
+    const res = await fetch(SERVER + path, {
+      method, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer',
+      // Plain text on purpose: the browser then sends it in one request, with no question first.
+      headers: body ? { 'content-type': 'text/plain' } : {}, body: body ? JSON.stringify(body) : undefined,
+    });
+    let json = null;
+    try { json = await res.json(); } catch (e) {}
+    return { status: res.status, body: json };
+  } catch (e) { return { status: 0, body: null }; }
+}
+function say(id, text, tone) { const el = $(id); el.textContent = text; el.className = 'said' + (tone ? ' ' + tone : ''); }
+const named = (b) => (b && b.name ? b.name + ' [' + b.id + ']' : '');
+const DOWN = 'The server did not answer. Try again in a few minutes.';
+
+// Is the link taking keys, and how much does a key give: asked once, when the page opens.
+let taking = false;
+function shut(text) { $('shut').textContent = text; $('shut').classList.remove('hide'); $('give').classList.add('hide'); }
+async function open() {
+  const out = await ask('GET', '/join');
+  const said = out.status === 200 && out.body && out.body.ok ? out.body : null;
+  if (!said) { shut('The server is not answering right now, so no key can be handed in. Try again later. Removing a key needs the server too.'); return; }
+  if (Number.isInteger(said.share)) for (const el of document.querySelectorAll('.share')) el.textContent = said.share;
+  if (said.by && said.by.name) $('by').textContent = 'Run by ' + named(said.by) + ', a player. Not part of Torn.';
+  taking = said.open === true;
+  if (!taking) shut(said.full ? 'Every place is taken for now. Thank you all the same. A key already handed in can still be removed below.' : 'Sign-up is closed for now. A key already handed in can still be removed below.');
+}
+
+$('give-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const key = $('give-k').value.trim();
+  if (!KEY.test(key)) { say('give-s', 'A Torn key is 16 letters and digits. That was ' + key.length + '.', 'bad'); return; }
+  if (!$('give-t').checked) { say('give-s', 'Tick the box first: it is your own key, and you have read what it is used for.', 'bad'); return; }
+  const b = $('give-b');
+  b.disabled = true; b.textContent = 'Asking Torn…'; say('give-s', '');
+  const out = await ask('POST', '/join', { key });
+  b.disabled = false; b.textContent = 'Hand in the key';
+  const got = out.body;
+  if (out.status === 200 && got && got.ok) {
+    $('give-k').value = ''; $('give-t').checked = false;
+    say('give-s', got.already ? 'This key is already here' + (named(got) ? ', for ' + named(got) : '') + '. Nothing changed.'
+      : 'Thank you, ' + named(got) + '. Your key is in. We use up to ' + got.share + ' of your 100 requests a minute.', 'ok');
+    return;
+  }
+  say('give-s', got && got.why ? got.why : DOWN, 'bad');
+});
+
+$('out-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const key = $('out-k').value.trim();
+  if (!KEY.test(key)) { say('out-s', 'A Torn key is 16 letters and digits. That was ' + key.length + '.', 'bad'); return; }
+  const b = $('out-b');
+  b.disabled = true; b.textContent = 'Removing…'; say('out-s', '');
+  const out = await ask('POST', '/leave', { key });
+  b.disabled = false; b.textContent = 'Remove';
+  if (out.status === 200 && out.body && out.body.ok) { $('out-k').value = ''; say('out-s', 'Your key is out. Everything held for it is deleted. You can delete the key in Torn too.', 'ok'); return; }
+  say('out-s', out.body && out.body.why ? out.body.why : DOWN, 'bad');
+});
+
+open();
+</script>
+</body>
+</html>
