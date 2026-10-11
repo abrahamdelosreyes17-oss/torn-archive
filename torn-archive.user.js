@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.0.0
+// @version      1.1.0
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -51,7 +51,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.0.0';
+    const TARC_BUILD_VERSION = '1.1.0';
 
     /* ===== src/platform/gm.js ===== */
     /*
@@ -2210,6 +2210,7 @@
             addListing = null,
             loadListingDay = null,
             saveListingDay = null,
+            loadListingOther = null,
         } = {}) {
             this.perMinute = perMinute;
             /**
@@ -2231,6 +2232,8 @@
             this.addListing = addListing;
             this.loadListingDay = loadListingDay;
             this.saveListingDay = saveListingDay;
+            /** () => {m: number[], d: {[hour]: count}} | null: the item-listing requests another app on this PC made (Torn Bids), counted with ours. */
+            this.loadListingOther = loadListingOther;
             /** This tab's own item-listing requests: the last minute's times, and a count for each hour. */
             this.listingRecent = [];
             this.listingDay = {};
@@ -2327,6 +2330,22 @@
                 try {
                     const stored = this.listingDayCounts(this.loadListingDay(), t);
                     if (w3bSum(stored) > w3bSum(day)) day = stored;
+                } catch {
+                    // As above.
+                }
+            }
+
+            // TornW3B counts by address: what another app on this PC asked is in the same minute and day.
+            if (this.loadListingOther) {
+                try {
+                    const other = this.loadListingOther();
+                    const theirs = other && Array.isArray(other.m) ? other.m.filter((x) => Number.isFinite(x) && t - x < 60000 && x <= t) : [];
+                    if (theirs.length) recent = [...recent, ...theirs].sort((a, b) => a - b);
+                    const theirDay = this.listingDayCounts(other ? other.d : null, t);
+                    if (w3bSum(theirDay)) {
+                        day = { ...day };
+                        for (const [h, n] of Object.entries(theirDay)) day[h] = (day[h] || 0) + n;
+                    }
                 } catch {
                     // As above.
                 }
@@ -6272,6 +6291,8 @@
     }
 
     const VW_DEPTH_AT = [1, 10, 50, 100, 250, 500];
+    /** The stops of the list the dashboard names under "Do now": as many as its card ever has room for. */
+    const VW_FIRST_STOPS = 12;
 
     /**
      * @param i {
@@ -6505,9 +6526,12 @@
 
         // ---- the dashboard -----------------------------------------------------------------------------------------------
         const todo = [];
+        // The stops a thing to do names, the one that saves most first: `gain` is against what the line above them says
+        // (what you pay your sellers for the cheap listings, the pieces' worth for the rest).
+        const firstStops = (stops) => stops.slice(0, VW_FIRST_STOPS).map((s) => ({ im: s.im, who: s.who, whoId: s.whoId, units: s.units, cost: s.cost, gain: s.gain }));
         if (open.length) todo.push({ kind: 'trades', tone: 'warn', n: open.length, wait: trades.wait, money: trades.waitMoney });
-        if (buy.hotUnits) todo.push({ kind: 'hot', tone: '', n: buy.hotUnits, stops: buy.hotStops, pic: hot[0].id });
-        else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id });
+        if (buy.hotUnits) todo.push({ kind: 'hot', tone: '', n: buy.hotUnits, stops: buy.hotStops, pic: hot[0].id, first: firstStops(vwHotStops(hot)), cost: vwSum(hot, (h) => h.q * h.price), full: fullAfter((p) => onList(hot, p.id)) });
+        else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
         if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
         if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice });
 
@@ -6528,6 +6552,20 @@
             share: { ...share, max: settings.shareMax, days: ((i.hist && i.hist.share) || []).slice(-14) },
             tape: pieces.filter((p) => p.low).map((p) => ({ id: p.id, name: p.name, set: p.set, price: p.low.price })),
         };
+    }
+
+    /** The cheap listings (hotListings) by seller: how many pieces, what they cost, how far under what you pay sellers. */
+    function vwHotStops(hot) {
+        const by = new Map();
+        for (const h of hot || []) {
+            const place = h.im ? 'im' : 'b:' + (h.whoId ?? h.who ?? '');
+            if (!by.has(place)) by.set(place, { im: !!h.im, who: h.who, whoId: h.whoId, units: 0, cost: 0, gain: 0 });
+            const s = by.get(place);
+            s.units += h.q;
+            s.cost += h.q * h.price;
+            s.gain += h.q * (h.pay - h.price);
+        }
+        return [...by.values()].sort((a, b) => (a.im - b.im) || b.gain - a.gain);
     }
 
     /** The points price by day: the first wall and the lowest listing, the usual range, your least price. */
@@ -7848,6 +7886,12 @@
      *                     in view or not, so Torn Bids knows the app it makes
      *                     room for is still there. Left to run out when the
      *                     page is closed: Torn Bids believes it for 150 s.
+     *   tornapps.w3b.archive / tornapps.w3b.trading   { at, m, d }
+     *                     each app's own requests for an item's full listing on
+     *                     TornW3B: `m` the times (ms) of the last minute's, `d`
+     *                     a count for each hour (hour = floor(ms / 3,600,000),
+     *                     the last 25). TornW3B counts those per address, so
+     *                     each app adds the other's to its own before it asks.
      *
      * Going down is done at once; going up waits a minute, so what the other
      * asked in the minute before has left Torn's count. A Torn Bids that does not
@@ -7951,6 +7995,37 @@
     function shouldMarkAlive(lastAt, now) {
         const t = Number(lastAt) || 0;
         return !(t > 0) || now - t >= ALIVE_EVERY_MS || t > now;
+    }
+
+    const W3B_MARK = 'tornapps.w3b.archive';
+    const W3B_OTHER_MARK = 'tornapps.w3b.trading';
+    const W3B_MARK_HOURS = 24;
+    const W3B_MARK_MOST = 200;
+
+    /** Our own item-listing requests on TornW3B as a mark: the last minute's times, and a count for each hour. */
+    function w3bMarkText(times, day, now) {
+        const got = readW3bMark(JSON.stringify({ at: now, m: times, d: day }), now);
+        return JSON.stringify({ at: now, m: got ? got.m : [], d: got ? got.d : {} });
+    }
+
+    /**
+     * The other app's item-listing requests, read back from the page storage: only what still counts at `now`.
+     * @returns {{m: number[], d: Object<string, number>}|null} null when it is missing or not such a mark
+     */
+    function readW3bMark(text, now) {
+        if (typeof text !== 'string' || !text) return null;
+        let mark = null;
+        try { mark = JSON.parse(text); } catch { return null; }
+        if (!mark || typeof mark !== 'object' || Array.isArray(mark)) return null;
+        const m = (Array.isArray(mark.m) ? mark.m : []).filter((x) => typeof x === 'number' && Number.isFinite(x) && x <= now && now - x < 60000).sort((a, b) => a - b).slice(-W3B_MARK_MOST);
+        const hour = Math.floor(now / 3600000);
+        const d = {};
+        for (const [h, n] of Object.entries(mark.d && typeof mark.d === 'object' && !Array.isArray(mark.d) ? mark.d : {})) {
+            const at = Number(h);
+            const count = Math.floor(Number(n));
+            if (Number.isInteger(at) && at <= hour && at >= hour - W3B_MARK_HOURS && count > 0) d[at] = Math.min(count, 100000);
+        }
+        return { m, d };
     }
 
     /** One of the marks as text, for the site's page storage. */
@@ -8731,6 +8806,19 @@
     .next { display: grid; grid-auto-rows: minmax(0, 1fr); height: 100%; }
     .nx { display: flex; align-items: center; gap: 11px; padding: 6px 0; border-top: 1px solid var(--line); min-height: 0; }
     .nx:first-child { border-top: 0; }
+    .next.few { display: flex; flex-direction: column; gap: 10px; }
+    .nx-g { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; } .nx-g.bare { flex: none; } .nx-g + .nx-g { border-top: 1px solid var(--line); padding-top: 6px; }
+    .nx-g > .nx { flex: none; padding: 4px 0 10px; border-top: 0; }
+    /* The lines that fit are shown whole; one that would be cut goes to a column out of sight. */
+    .nx-m { flex: 1; min-height: 0; display: flex; flex-flow: column wrap; overflow: hidden; align-content: flex-start; }
+    .nm { flex: 1 0 28px; max-height: 38px; width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 64px 124px; align-items: center; gap: 10px; padding: 0 2px; border-top: 1px solid var(--line); white-space: nowrap; color: var(--text2); }
+    .nm b { color: var(--text); font-weight: 600; } .nm-a { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; } .nm-b, .nm-c { text-align: right; }
+    .nm.h { flex: 0 0 24px; border-top: 0; color: var(--muted); font-size: 11px; align-items: end; padding-bottom: 5px; }
+    .nx-f { flex: none; display: flex; justify-content: space-between; gap: 6px 16px; flex-wrap: wrap; padding-top: 9px; border-top: 1px solid var(--line); color: var(--text2); white-space: nowrap; } .nx-f b { color: var(--text); font-weight: 600; }
+    /* A short card with two things to do has no room for their lines: one line each, as with many. */
+    .pb.todo { container: todo / size; }
+    @container todo (max-height: 250px) { .next.n2 .nx-m, .next.n2 .nx-f { display: none; } .next.n2 .nx-g { justify-content: center; } .next.n2 .nx-g > .nx { padding: 0; } }
+    @container todo (max-height: 110px) { .next.n1 .nx-m, .next.n1 .nx-f { display: none; } .next.n1 .nx-g { flex: 1 1 0; justify-content: center; } }
     .nx-i { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: var(--c-bg); color: var(--c); }
     .nx-i svg { width: 17px; height: 17px; }
     .nx-t { flex: 1; min-width: 0; color: var(--text2); line-height: 1.35; } .nx-t b { color: var(--text); }
@@ -9298,6 +9386,32 @@
         return row(tone.good, ic('points'), `<b>Sell ${hNum(t.n)} points.</b> At ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
     }
 
+    /** Up to this many things to do get their own lines under them; more than that and each is one line. */
+    const PG_TODO_ROOMY = 2;
+    const PG_TODO_LINES = 12;
+
+    /** The lines under a thing to do, drawn when the card has room for them: where it starts, or what it comes to. */
+    function pgTodoMore(v, t) {
+        const line = (a, b, c) => `<div class="nm"><span class="nm-a">${a}</span><span class="nm-b num">${b}</span><span class="nm-c num">${c}</span></div>`;
+        const head = (a, b, c) => `<div class="nm h"><span class="nm-a">${a}</span><span class="nm-b">${b}</span><span class="nm-c">${c}</span></div>`;
+        if (t.kind === 'trades') return head('Open with you', 'Pieces', 'You pay') + v.trades.open.slice(0, PG_TODO_LINES).map((o) => line(`<b>${hEsc(o.who)}</b> · ${TURN_WORDS[o.state]}`, hNum(o.units), o.total ? hMoney(o.total) : '')).join('');
+        if (t.kind === 'hot' || t.kind === 'buy') return head(t.kind === 'hot' ? 'Where' : 'The first stops', 'Pieces', t.kind === 'hot' ? 'Under your sellers' : 'Under their worth') + (t.first || []).map((s) => line(`<b>${s.im ? 'Item Market' : hEsc(s.who || 'Bazaar ' + (s.whoId ?? ''))}</b>`, hNum(s.units), `<span class="t-good">${hSigned(s.gain)}</span>`)).join('');
+        if (t.kind === 'swap') return head('Full sets', 'Sets', 'Points') + v.sets.filter((s) => s.full).map((s) => line(`<b>${hEsc(s.label)} Set</b>`, hNum(s.full), hNum(s.full * s.points))).join('');
+        if (t.kind === 'hold') return '';
+        const sell = v.points.sell;
+        return head('At this price', '', '') + line('You get', '', hMoney(sell.lands)) + line('Over what they cost you', '', `<span class="${sell.profit >= 0 ? 't-good' : 't-warn'}">${hSigned(sell.profit)}</span>`);
+    }
+
+    function pgTodoList(v) {
+        const todo = v.dash.todo;
+        // Under the lines of a buy: what it costs and what it makes of your sets.
+        const foot = (t) => (t.full ? `<div class="nx-f"><span>Costs <b class="num">${hMoney(t.cost)}</b></span><span>Full sets after: ${pgFullWords(v, t.full)}</span></div>` : '');
+        if (!todo.length) return `<div class="next"><div class="nx"><span class="nx-t">${v.ready ? 'Nothing to do now.' : 'Waiting for the first read.'}</span></div></div>`;
+        // Many things to do: one line each, spread over the card. A few: each from the top, with its own lines under it.
+        if (todo.length > PG_TODO_ROOMY) return `<div class="next">${todo.map((t) => pgTodo(v, t)).join('')}</div>`;
+        return `<div class="next few n${todo.length}">${todo.map((t) => { const more = pgTodoMore(v, t); return `<div class="nx-g${more ? '' : ' bare'}">${pgTodo(v, t)}${more ? `<div class="nx-m">${more}</div>${foot(t)}` : ''}</div>`; }).join('')}</div>`;
+    }
+
     function pgSky(v) {
         return v.sets.map((s) => {
             const max = Math.max(...s.pieces.map((p) => p.held), s.target, 1) * 1.08;
@@ -9334,7 +9448,7 @@
         </div>
         <div class="panel s4 tint" data-k="todo">
           <div class="ph"><h2>Do now</h2></div>
-          <div class="pb"><div class="next">${v.dash.todo.length ? v.dash.todo.map((t) => pgTodo(v, t)).join('') : `<div class="nx"><span class="nx-t">${v.ready ? 'Nothing to do now.' : 'Waiting for the first read.'}</span></div>`}</div></div>
+          <div class="pb todo">${pgTodoList(v)}</div>
         </div>
         <div class="panel s4" data-k="margin">
           <div class="ph"><h2>What a set pays</h2><div class="legend">${pgSetKeys(v)}</div><span class="sp"></span><span class="sub">${PG_FEE}</span></div>
@@ -10132,12 +10246,27 @@
             drawCharts(whole);
         }
 
+        /** The address keeps the page. A new page is a new step for the browser's Back; a tab only updates the step it is on. */
+        function remember(step) {
+            try { win.history[step ? 'pushState' : 'replaceState']({ page: ui.page, pane: ui.pane }, '', '#' + ui.page); } catch { /* a page that cannot keep its address still works */ }
+        }
+
         function go(page, pane = 0) {
+            const was = ui.page;
             ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
             ui.pane = Math.max(0, Number(pane) || 0);
-            try { win.history.replaceState(null, '', '#' + ui.page); } catch { /* a page that cannot keep its address still works */ }
+            remember(ui.page !== was);
             draw(true);
         }
+
+        // Back and Forward: the browser says which step it is on, and that page is shown. Nothing is added to the steps here.
+        win.addEventListener('popstate', (e) => {
+            const at = e.state || {};
+            const page = at.page || (win.location.hash || '#dashboard').slice(1);
+            ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
+            ui.pane = Math.max(0, Number(at.pane) || 0);
+            draw(true);
+        });
 
         // ---- presses ---------------------------------------------------------------------------------------------------
 
@@ -10183,7 +10312,7 @@
         doc.addEventListener('click', (e) => {
             const t = e.target;
             const tab = t.closest('[data-tab]');
-            if (tab) { ui.pane = Number(tab.dataset.tab); draw(true); return; }
+            if (tab) { ui.pane = Number(tab.dataset.tab); remember(false); draw(true); return; }
             const a = t.closest('[data-act]');
             if (a) { press(a, e); return; }
             const g = t.closest('[data-go]');
@@ -10691,10 +10820,10 @@
     `;
 
     /* ===== src/ui/box-css.js ===== */
-    // The small box on Torn's pages, in the hub's look. It lives in a shadow root of its own host (#tarc-host), so
+    // The overlay on Torn's pages, in the hub's look. It lives in a shadow root of its own host (#tarc-host), so
     // none of this reaches Torn's page and none of Torn's styles reach it.
 
-    const BOX_WIDTH = 320;
+    /** With no room beside Torn's content it is a pill; opened from there it stands this far from the window's edge. */
     const BOX_GAP = 12;
 
     const BOX_CSS = `
@@ -10709,18 +10838,28 @@
       all: initial;
     }
     * { box-sizing: border-box; }
-    .ta { position: fixed; z-index: 99990; top: var(--top, 84px); left: var(--left, auto); right: var(--right, 12px); width: ${BOX_WIDTH}px;
-      max-height: calc(100vh - var(--top, 84px) - 16px); display: flex; flex-direction: column; border-radius: 12px; background: var(--panel);
+    .ta { position: fixed; z-index: 99990; top: var(--top, 84px); left: var(--left, 12px); width: var(--width, 430px);
+      max-height: var(--max-h, 640px); display: flex; flex-direction: column; border-radius: 12px; background: var(--panel);
       border: 1px solid var(--line2); box-shadow: 0 16px 40px rgba(0,0,0,.5); color: var(--text); font: 400 13px/1.45 var(--sans);
-      -webkit-font-smoothing: antialiased; overflow: hidden; text-align: left; }
+      -webkit-font-smoothing: antialiased; overflow: hidden; text-align: left; container: ta / inline-size; }
     .ta[hidden], .pill[hidden] { display: none; }
-    .ta-h { display: flex; align-items: center; gap: 8px; height: 40px; flex: none; padding: 0 6px 0 10px; border-bottom: 1px solid var(--line); background: var(--rail-bg); white-space: nowrap; }
+    .ta-h { display: flex; align-items: center; gap: 8px; min-height: 38px; flex: none; padding: 4px 6px 4px 8px; border-bottom: 1px solid var(--line); background: var(--rail-bg); white-space: nowrap; cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; }
+    /* A narrow strip (the free window beside Torn's content on a smaller screen): the mark alone names it, so the words
+       have the room; what does not fit on one line takes two, never cut. */
+    @container ta (max-width: 300px) { .ta-h { gap: 6px; } .ta-h > b { display: none; } .ta-h button.open { padding: 0 8px; } }
+    .ta.drag .ta-h { cursor: grabbing; } .ta.drag { transition: none; }
+    /* Folded, or with room for the bar only: the bar. */
+    .ta.folded .ta-b, .ta.bar .ta-b { display: none; } .ta.folded .ta-h, .ta.bar .ta-h { border-bottom: 0; }
     .mark { width: 24px; height: 24px; flex: none; border-radius: 7px; display: grid; place-items: center; color: #fff; background: linear-gradient(145deg, #a694ff, #6a55e8); box-shadow: 0 0 0 1px rgba(255,255,255,.12) inset; }
     .mark svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     .ta-h b { font: 650 13px var(--disp); }
-    .ta-h .w { margin-right: auto; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+    .ta-h .w { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; }
     .ta-h button { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; font: 600 14px/1 var(--sans); }
     .ta-h button:hover { background: var(--raised); color: var(--text); }
+    .ta-h button.open { width: auto; height: 26px; padding: 0 11px; border: 1px solid var(--line2); background: var(--raised); color: var(--text); font: 550 12px/1 var(--sans); }
+    .ta-h button.open:hover { background: #1c212c; }
+    /* Purple only when opening the hub is the thing to do next. */
+    .ta-h button.open.go { background: var(--brand); border-color: transparent; color: #fff; } .ta-h button.open.go:hover { background: #a08fff; }
     .ta-b { display: grid; gap: 8px; padding: 10px 12px 12px; overflow-y: auto; overscroll-behavior: contain; }
     .ta-b h4 { margin: 0; display: flex; align-items: baseline; gap: 8px; font: 650 13px var(--sans); white-space: nowrap; }
     .ta-b h4 span { margin-left: auto; color: var(--muted); font-weight: 400; font-size: 12px; }
@@ -10777,6 +10916,31 @@
     /** While the hub has not shared anything yet, or what it shared is old. */
     function boxWaiting(old) {
         return { where: '', html: bxNote(old ? 'Torn Archive is not open: these numbers would be old. <b>Open the hub</b> and they come back.' : 'Open the hub once: your sets are worked out there, and shown here.'), marks: [] };
+    }
+
+    /**
+     * The hub is not open, or was never set up: no number is shown, it would be old. `go`: Open is the thing to do.
+     * @param setUp a key has been pasted
+     * @param old   the hub shared something once
+     */
+    function boxClosed(setUp, old) {
+        if (!setUp) return { head: 'not set up yet', go: true, where: '', html: bxNote('Torn Archive has no key yet. <b>Open</b> it and paste one in Settings: nothing is read before that.'), marks: [] };
+        return { ...boxWaiting(old), head: 'hub is closed', go: true };
+    }
+
+    /** A page of Torn's that is none of ours, while the hub is open: your sets, and what waits for you. */
+    function boxAny(v) {
+        const full = v.sets.reduce((n, s) => n + s.full, 0);
+        let html = bxHead('Your sets', hPlural(full, 'full set'));
+        for (const s of v.sets) {
+            const short = s.pieces[0];
+            const need = s.pieces.reduce((n, p) => n + p.need, 0);
+            html += `<div class="ta-l"><b>${hEsc(s.label)} Set</b><span></span><b class="num">${hNum(s.full)} full</b>`
+                + `<span class="s">${short ? `Shortest: ${hEsc(short.short)} ${hNum(short.held)} · ` : ''}${need ? hPlural(need, 'piece') + ' short' : 'nothing short'}</span></div>`;
+        }
+        if (v.buy.units) html += bxKv('Your shopping list', `${hPlural(v.buy.units, 'piece')} · ${hPlural(v.buy.run.stops.length, 'stop')}`);
+        if (v.trades.open.length) html += bxKv('Trades open with you', hNum(v.trades.open.length));
+        return { head: full ? `${hPlural(full, 'set')} ready` : 'no full set yet', where: '', html, marks: [] };
     }
 
     /**
@@ -10845,7 +11009,9 @@
             ? bxBtn('run-next', (after ? (after.im ? 'Next: the Item Market' : 'Next bazaar: ' + hEsc(after.who || '')) : 'Done: back to the list') + '<span class="kbd">N</span>', 'go', '', after ? ` title="${hEsc(after.lines.map((l) => l.name + ' ×' + l.q).join(', '))}"` : '') + bxBtn('run-stop', 'Stop the run', 'link')
             : stops.length && !on ? bxBtn('run-start', 'Start the run', 'go') : '') + '</div>';
         html += bxNote(`Fill types the number into Torn's box. <b>You press Buy.</b> What you took is counted from the listing's stock on the page and from Torn's log.`);
-        return { where: im ? 'the Item Market' : 'a bazaar', html, marks };
+        // Folded, the bar says what is here, so you know to unfold it.
+        const head = here ? `${hNum(here.lines.length)} on your list here` : rows.length ? `${hNum(rows.length)} under ${rows.length === 1 ? 'its' : 'their'} worth here` : '';
+        return { where: im ? 'the Item Market' : 'a bazaar', head, html, marks };
     }
 
     /**
@@ -10957,6 +11123,105 @@
         html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post)}</div>`
             + bxNote('<b>Nothing is posted or edited for you.</b>');
         return { where: 'your thread', html, marks: [], titleMark: { text: ok ? `matches your shop: ${shop}` : 'does not match your shop', state: ok ? 'good' : 'over' }, title };
+    }
+
+    /* ===== src/core/overlay.js ===== */
+    // Where Torn Archive's overlay may stand on one of Torn's pages: only in the empty window beside Torn's content,
+    // on its right or on its left, never over it. Numbers in, numbers out: ui/torn-page.js measures and applies them.
+    //
+    // The width, the least width and the gap are Torn Trading's own (its panel), so the two are one column when they
+    // meet. Torn Trading keeps its place then: the Archive goes over it or under it, never beside it, never on top.
+
+    const OV_WIDTH = 430;
+    /** With less free window than this on a side, the overlay does not stand there. */
+    const OV_MIN_WIDTH = 200;
+    /** Kept clear of Torn's content, and of Torn Trading's panel. */
+    const OV_GAP = 8;
+    /** Kept clear of the window's edge. */
+    const OV_EDGE = 16;
+    /** The bar: the overlay folded. */
+    const OV_BAR = 40;
+    /** Where it stands until you move it: on the right, under Torn's own header. */
+    const OV_TOP = 84;
+    /** With less height than this it is its bar only: a body that short says nothing. */
+    const OV_BODY_MIN = 110;
+
+    const ovClamp = (n, lo, hi) => Math.min(Math.max(n, lo), Math.max(lo, hi));
+
+    /**
+     * The two strips of empty window beside Torn's content.
+     * @param winW  the window's width
+     * @param left  where Torn's content begins, null when the page has none we know
+     * @param right where it ends
+     * @returns { left, right } each { from, to, width } or null when the overlay does not fit there
+     */
+    function overlayStrips({ winW, left = null, right = null }) {
+        const strip = (from, to) => {
+            const free = Math.floor(to - from);
+            return free >= OV_MIN_WIDTH ? { from: Math.ceil(from), to: Math.floor(to), width: Math.min(OV_WIDTH, free) } : null;
+        };
+        if (left == null || right == null) return { left: null, right: strip(OV_EDGE, winW - OV_EDGE) };
+        return { left: strip(OV_EDGE, left - OV_GAP), right: strip(right + OV_GAP, winW - OV_EDGE) };
+    }
+
+    /** The side a spot belongs to while you drag: the half of the window it is in, when the overlay fits there. */
+    function overlaySide(centre, strips, middle) {
+        const want = centre < middle ? 'left' : 'right';
+        if (strips[want]) return want;
+        return strips.right ? 'right' : strips.left ? 'left' : null;
+    }
+
+    /**
+     * Where the overlay stands.
+     * @param pos    { side, left, top } where you left it, or null
+     * @param strips overlayStrips()
+     * @param winH   the window's height
+     * @param want   the height it would take with nothing in its way (its bar when folded)
+     * @param cap    the most height it ever takes
+     * @param other  Torn Trading's panel on this page { left, top, right, bottom, width }, or null
+     * @returns null when no side has the room, else { side, left, top, width, maxHeight, bar, by }
+     *          bar: there is room for the bar only. by: 'over' | 'under' Torn Trading's panel, '' when alone.
+     */
+    function overlayPlace({ pos = null, strips, winH, want = OV_BAR, cap = Infinity, other = null }) {
+        const side = pos && strips[pos.side] ? pos.side : strips.right ? 'right' : strips.left ? 'left' : null;
+        if (!side) return null;
+        const strip = strips[side];
+        const tall = ovClamp(want, OV_BAR, cap);
+        let width = strip.width;
+        // Until you move it, it rests against the window's edge.
+        const rest = side === 'right' ? strip.to - width : strip.from;
+        let left = ovClamp(pos && pos.side === side && Number.isFinite(pos.left) ? pos.left : rest, strip.from, strip.to - width);
+        let top = ovClamp(pos && Number.isFinite(pos.top) ? pos.top : OV_TOP, 0, winH - OV_BAR - OV_GAP);
+        let by = '';
+        let room;
+        if (other && other.right > strip.from && other.left < strip.to) {
+            // The same side as Torn Trading's panel: its column, its width, and only the height it leaves.
+            left = other.left;
+            width = other.width;
+            const over = other.top - OV_GAP;
+            const under = winH - other.bottom - 2 * OV_GAP;
+            if (top >= other.bottom + OV_GAP && under >= OV_BAR) {
+                by = 'under';
+                room = winH - top - OV_GAP;
+            } else if (over >= OV_BAR || under < OV_BAR) {
+                by = 'over';
+                // It keeps under Torn's header while that leaves room for a body (the body scrolls); only when the
+                // panel leaves less than that does it go up to the window's top.
+                const floor = Math.min(top, OV_TOP);
+                top = over - floor >= OV_BODY_MIN ? Math.max(floor, Math.min(top, over - tall)) : Math.max(0, Math.min(top, over - Math.min(tall, over)));
+                room = Math.max(OV_BAR, over - top);
+            } else {
+                by = 'under';
+                top = other.bottom + OV_GAP;
+                room = winH - top - OV_GAP;
+            }
+        } else {
+            // Unfolded near the window's foot it grows upward: the bar goes back to its place when folded.
+            top = Math.max(0, Math.min(top, winH - OV_GAP - tall));
+            room = winH - top - OV_GAP;
+        }
+        const maxHeight = Math.floor(Math.min(room, cap));
+        return { side, left: Math.round(left), top: Math.round(top), width: Math.round(width), maxHeight, bar: maxHeight < OV_BODY_MIN, by };
     }
 
     /* ===== src/core/parse.js ===== */
@@ -12884,7 +13149,13 @@
     }
 
     /* ===== src/ui/torn-page.js ===== */
-    // Torn Archive on Torn's own pages: a small box beside the page, and marks on the things it is about.
+    // Torn Archive on Torn's own pages: an overlay beside the page, and marks on the things it is about.
+    //
+    // The overlay is on every page of Torn's: folded it is one bar (what there is to know, Open, + / –), and it
+    // unfolds by itself where it has something to say. It stands only in the empty window beside Torn's content, on
+    // the right or on the left: you drag it by its bar, and it stays where you left it. The backtick key folds and
+    // unfolds it. Torn Trading's panel on the same page comes first: it keeps its place and that key, and the Archive
+    // goes over it or under it in its column, never beside it and never on top of it.
     //
     // A Torn tab never asks Torn's API or TornW3B anything. It shows what the Archive's own tab worked out (shared
     // through storage), reads the page in front of you, and tells the Archive's tab what it saw: a buy on a bazaar,
@@ -12893,6 +13164,7 @@
     // It never presses anything of Torn's. A Fill button of the box types a number into Torn's own box, only on
     // your press and only on the page you are looking at; you press Buy, EXCHANGE, ADD LISTING, Change and Accept.
     // The marks take no room and catch no click. Beside Torn Trading's own panel it is shown all the same.
+
 
 
 
@@ -12921,6 +13193,13 @@
     const TP_PRESS_MS = 20 * 1000;
     const TP_SCAN_MS = 250;
     const TP_DONE_MS = 4000;
+    /** Torn Trading's panel is looked at this often while it is on the page: it can be moved, folded, or come later. */
+    const TP_OTHER_MS = 1000;
+    /** The most of the window's height the overlay takes, as Torn Trading's panel. */
+    const TP_TALL = 0.75;
+    const TP_TALL_MAX = 640;
+    /** Where you left the overlay: { side, left, top }. Folded or not: 'boxOpen' where it has something to say, 'boxOpenAny' elsewhere. */
+    const TP_POS_KEY = 'boxPos';
 
     const tpDigits = (v) => Number(String(v == null ? '' : v).replace(/[^\d]/g, '')) || 0;
 
@@ -12961,7 +13240,8 @@
             cards: [], seen: {}, seenPlace: '', pressed: new Map(),
             exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null,
             marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
-            open: gmGet('boxOpen', true) !== false, pinned: false, room: true, timer: 0,
+            open: gmGet('boxOpen', true) !== false, openAny: gmGet('boxOpenAny', false) === true, pinned: false, room: true, timer: 0,
+            content: null, has: false, pos: gmGet(TP_POS_KEY, null), strips: { left: null, right: null }, mid: 0, at: null, other: '', drawn: '',
         };
 
         // ---- our own elements ----------------------------------------------------------------------------------------
@@ -12975,45 +13255,90 @@
         host.id = 'tarc-host';
         const root = host.attachShadow({ mode: 'open' });
         root.innerHTML = `<style>${BOX_CSS}</style>`
-            + `<div class="ta" hidden><div class="ta-h"><span class="mark">${hIcon('brand')}</span><b>Torn Archive</b><span class="w"></span>`
-            + `<button data-act="hub" title="Open Torn Archive">↗</button><button data-act="fold" title="Put the box away">–</button></div><div class="ta-b"></div></div>`
-            + `<button class="pill" hidden data-act="unfold" title="Show Torn Archive's box"><span class="mark">${hIcon('brand')}</span><span class="pw"></span></button>`;
+            + `<div class="ta" hidden><div class="ta-h" title="Torn Archive: drag to move"><span class="mark">${hIcon('brand')}</span><b>Torn Archive</b><span class="w"></span>`
+            + `<button class="open" data-act="hub" title="Open Torn Archive in a new tab">Open</button><button data-act="fold">–</button></div><div class="ta-b"></div></div>`
+            + `<button class="pill" hidden data-act="unfold" title="Show Torn Archive"><span class="mark">${hIcon('brand')}</span><span class="pw"></span></button>`;
         doc.body.appendChild(host);
         const box = root.querySelector('.ta');
         const body = root.querySelector('.ta-b');
+        const head = root.querySelector('.ta-h');
         const whereEl = root.querySelector('.w');
+        const openBtn = root.querySelector('.open');
+        const foldBtn = root.querySelector('[data-act="fold"]');
         const pill = root.querySelector('.pill');
         const pillWords = root.querySelector('.pw');
 
-        /** Where the box goes: beside Torn's content when the window has the room, else it is a pill you open yourself. */
-        function place() {
-            const main = doc.querySelector('#mainContainer') || doc.querySelector('.content-wrapper') || doc.querySelector('[role="main"]');
-            const right = main ? main.getBoundingClientRect().right : 0;
-            const free = win.innerWidth - right;
-            st.room = !main || free >= BOX_WIDTH + 2 * BOX_GAP;
-            if (main && st.room) {
-                box.style.setProperty('--left', Math.round(right + BOX_GAP) + 'px');
-                box.style.setProperty('--right', 'auto');
-            } else {
-                box.style.setProperty('--left', 'auto');
-                box.style.setProperty('--right', BOX_GAP + 'px');
-            }
+        // ---- where it stands ------------------------------------------------------------------------------------------
+
+        /** Torn's content on this page, left edge to right edge: the selectors Torn Trading's panel fits itself by. */
+        function tornSides() {
+            let parts = [doc.querySelector('.content-wrapper'), doc.getElementById('sidebarroot'), doc.getElementById('sidebar')].filter(Boolean);
+            if (!parts.length) parts = [doc.querySelector('#mainContainer') || doc.querySelector('[role="main"]')].filter(Boolean);
+            const rects = parts.map((el) => el.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
+            return rects.length ? { left: Math.min(...rects.map((r) => r.left)), right: Math.max(...rects.map((r) => r.right)) } : { left: null, right: null };
         }
 
+        /** Torn Trading's panel on this page, where it shows one. Looked at, never touched: it keeps its place. */
+        function tradingRect() {
+            const other = doc.getElementById(TRADING_HOST_IDS[0]);
+            const panel = other && other.shadowRoot ? other.shadowRoot.querySelector('.ttv2-panel') : null;
+            const r = panel ? panel.getBoundingClientRect() : null;
+            return r && r.width > 0 && r.height > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width } : null;
+        }
+
+        const isOpen = () => (st.has ? st.open : st.openAny);
+
+        /** Beside Torn's content, on the side you left it; with no room on either side it is a pill you open yourself. */
+        function place() {
+            const sides = tornSides();
+            const other = tradingRect();
+            st.strips = overlayStrips({ winW: win.innerWidth, left: sides.left, right: sides.right });
+            st.mid = sides.left == null ? win.innerWidth / 2 : (sides.left + sides.right) / 2;
+            st.other = other ? [other.left, other.top, other.right, other.bottom].map(Math.round).join() : '';
+            const cap = Math.max(OV_BAR, Math.min(win.innerHeight * TP_TALL, TP_TALL_MAX));
+            // Measured whole: a `bar` left from the last place hides the body and would measure it as nothing, and
+            // the bar itself can be two lines on a narrow strip.
+            const open = isOpen() && !box.hidden;
+            box.classList.remove('bar', 'folded');
+            const barH = Math.max(OV_BAR, head.offsetHeight + 2);
+            const want = open ? head.offsetHeight + body.scrollHeight + 2 : barH;
+            box.classList.toggle('folded', !isOpen());
+            st.at = overlayPlace({ pos: st.pos, strips: st.strips, winH: win.innerHeight, want, cap, other });
+            st.room = !!st.at;
+            // No room: opened from its pill it stands at the window's edge, over Torn's page, until you fold it.
+            const width = Math.min(OV_WIDTH, win.innerWidth - 2 * BOX_GAP);
+            const at = st.at || { left: win.innerWidth - width - BOX_GAP, top: OV_TOP, width, maxHeight: Math.max(OV_BAR, win.innerHeight - OV_TOP - BOX_GAP), bar: false };
+            box.style.setProperty('--left', at.left + 'px');
+            box.style.setProperty('--top', at.top + 'px');
+            box.style.setProperty('--width', at.width + 'px');
+            box.style.setProperty('--max-h', Math.max(at.maxHeight, barH) + 'px');
+            box.classList.toggle('bar', !!at.bar);
+        }
+
+        /**
+         * Draw the overlay. What this page has to say (a bazaar, a trade, the museum...) is its content; null on a page
+         * that is none of ours: there it is the bar, with your sets under it when you unfold it.
+         */
         function show(content) {
-            const html = content ? content.html : '';
-            if (!html) {
-                box.hidden = true;
-                pill.hidden = true;
-                st.html = '';
-                return;
-            }
-            // With no room beside Torn's page the box stays away until you press its pill: it would cover the page.
-            const open = st.open && (st.room || st.pinned);
-            box.hidden = !open;
-            pill.hidden = open;
-            if (whereEl.textContent !== content.where) whereEl.textContent = content.where;
-            if (pillWords.textContent !== content.where) pillWords.textContent = content.where || 'Torn Archive';
+            st.content = content && content.html ? content : null;
+            st.has = !!st.content;
+            const fresh = st.shared && now() - st.shared.at < VIEW_OLD_MS;
+            const said = st.content || (fresh ? boxAny(st.shared.v) : boxClosed(String(gmGet('key.limited', '') || '').trim() !== '', !!st.shared));
+            const open = isOpen();
+            const other = tradingOnPage(doc);
+            // With no room beside Torn's page it stays a pill until you press it: it would cover the page.
+            const away = !st.room && !st.pinned;
+            // Unfolded, the bar names the place only: the count is in the body under it, and is not said twice.
+            const words = (open ? said.where : said.head || said.where) || '';
+            box.hidden = away;
+            pill.hidden = !away;
+            box.classList.toggle('folded', !open);
+            openBtn.classList.toggle('go', !!said.go);
+            if (whereEl.textContent !== words) whereEl.textContent = words;
+            // The pill is the overlay at its smallest: it says what the folded bar would.
+            const small = said.head || said.where || 'Torn Archive';
+            if (pillWords.textContent !== small) pillWords.textContent = small;
+            const html = said.html;
             if (st.html !== html) {
                 st.html = html;
                 const top = body.scrollTop;
@@ -13025,7 +13350,69 @@
                 const key = b.dataset.act + ':' + (b.dataset.v || '');
                 if (key === done) b.dataset.done = '1'; else delete b.dataset.done;
             }
+            // Measured again only when what is drawn changed: its place depends on its height.
+            const drawn = [away, open, st.has, words].join('|') + html;
+            if (st.drawn !== drawn) {
+                st.drawn = drawn;
+                const was = st.room;
+                place();
+                if (was !== st.room) { st.drawn = ''; show(content); return; }
+            }
+            // The + / – after the place is known: unfolded with room for the bar only, it says why.
+            const stuck = open && !!st.at && st.at.bar;
+            foldBtn.textContent = open && !stuck ? '–' : '+';
+            foldBtn.title = stuck ? (st.at.by === 'over' ? 'No room to unfold here: fold the panel under it first' : st.at.by === 'under' ? 'No room to unfold here: fold the panel over it first' : 'No room to unfold here: drag it up') : (open ? 'Fold' : 'Unfold') + (other ? '' : ' (backtick key)');
         }
+
+        /** Fold or unfold, remembered: apart for the pages where it has something to say and for the rest. */
+        function setOpen(on) {
+            if (st.has) { st.open = on; gmSet('boxOpen', on); } else { st.openAny = on; gmSet('boxOpenAny', on); }
+            if (!on) st.pinned = false;
+            show(st.content);
+        }
+
+        /** Drag by the bar, to the right or to the left of Torn's content. A press that does not move unfolds a folded bar. */
+        function enableDrag() {
+            let start = null;
+            head.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0 || !st.at) return;
+                if (event.target.closest && event.target.closest('button, a, input')) return;
+                const r = box.getBoundingClientRect();
+                start = { x: event.clientX, y: event.clientY, left: r.left, top: r.top, moved: false };
+                try { if (head.setPointerCapture) head.setPointerCapture(event.pointerId); } catch { /* a pointer the browser does not track: the drag still follows its moves */ }
+            });
+            head.addEventListener('pointermove', (event) => {
+                if (!start) return;
+                const dx = event.clientX - start.x;
+                const dy = event.clientY - start.y;
+                if (!start.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+                start.moved = true;
+                box.classList.add('drag');
+                const left = start.left + dx;
+                const side = overlaySide(left + box.offsetWidth / 2, st.strips, st.mid);
+                if (!side) return;
+                st.pos = { side, left: Math.round(left), top: Math.round(start.top + dy) };
+                place();
+            });
+            const end = (event) => {
+                if (!start) return;
+                const { moved } = start;
+                start = null;
+                box.classList.remove('drag');
+                if (head.hasPointerCapture && head.hasPointerCapture(event.pointerId)) head.releasePointerCapture(event.pointerId);
+                if (moved && st.at && st.pos) {
+                    // Where you let go, kept inside the window: the bar's own place, also when it stands unfolded upward.
+                    st.pos = { side: st.at.side, left: st.at.left, top: Math.min(Math.max(0, st.pos.top), Math.max(0, win.innerHeight - OV_BAR - OV_GAP)) };
+                    gmSet(TP_POS_KEY, st.pos);
+                    place();
+                } else if (!moved && !isOpen()) {
+                    setOpen(true);
+                }
+            };
+            head.addEventListener('pointerup', end);
+            head.addEventListener('pointercancel', end);
+        }
+        enableDrag();
 
         // ---- the shared view -----------------------------------------------------------------------------------------
 
@@ -13168,15 +13555,12 @@
                 st.seen = {};
                 st.seenPlace = '';
             }
-            if (!kind) {
-                show(null);
-                return;
-            }
             if (!st.shared) loadShared();
             const fresh = st.shared && t - st.shared.at < VIEW_OLD_MS;
-            if (!fresh) {
-                clear();
-                show(kind === 'museum' || kind === 'points' || (kind === 'trade' && /ID=\d+/i.test(st.href)) ? { ...boxWaiting(!!st.shared), where: '' } : null);
+            // A page that is none of ours, or numbers that would be old: the bar alone says which.
+            if (!kind || !fresh) {
+                if (kind) clear();
+                show(null);
                 return;
             }
             const v = st.shared.v;
@@ -13205,8 +13589,8 @@
         function done(key) {
             st.done = key;
             st.doneAt = now();
-            show({ html: st.html, where: whereEl.textContent });
-            win.setTimeout(() => show(st.html ? { html: st.html, where: whereEl.textContent } : null), TP_DONE_MS + 50);
+            show(st.content);
+            win.setTimeout(() => show(st.content), TP_DONE_MS + 50);
         }
 
         function goNext(v) {
@@ -13225,8 +13609,8 @@
             const val = btn.dataset.v || '';
             const n = tpDigits(btn.dataset.n);
             const v = st.shared ? st.shared.v : null;
-            if (act === 'fold') { st.open = false; st.pinned = false; gmSet('boxOpen', false); later(0); return; }
-            if (act === 'unfold') { st.open = true; st.pinned = true; gmSet('boxOpen', true); later(0); return; }
+            if (act === 'fold') { if (!(isOpen() && st.at && st.at.bar)) setOpen(!isOpen()); return; }
+            if (act === 'unfold') { st.pinned = true; setOpen(true); return; }
             if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
             if (act === 'copy') { if (gmCopy(val)) done('copy:' + val); return; }
             if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
@@ -13291,10 +13675,15 @@
         }
 
         function onKey(event) {
-            if (!yours(event) || (event.key !== 'n' && event.key !== 'N')) return;
+            if (!yours(event) || (event.key !== 'n' && event.key !== 'N' && event.key !== '`')) return;
             if (event.ctrlKey || event.metaKey || event.altKey) return;
             const el = event.target;
             if (el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName || ''))) return;
+            if (event.key === '`') {
+                // Torn Trading's panel on this page keeps the key: ours is folded with its own + and –.
+                if (!tradingOnPage(doc) && (st.room || st.pinned)) setOpen(!isOpen());
+                return;
+            }
             if (!st.shared || (st.kind !== 'bazaar' && st.kind !== 'itemmarket')) return;
             const v = st.shared.v;
             const place = st.kind === 'itemmarket' ? IM_PLACE : 'b:' + bazaarOwnerId(st.href);
@@ -13323,7 +13712,7 @@
         });
         mo.observe(doc.body, { childList: true, characterData: true, subtree: true });
         const onHash = () => later(0);
-        const onResize = () => { place(); later(0); };
+        const onResize = () => { st.drawn = ''; later(0); };
         win.addEventListener('hashchange', onHash);
         win.addEventListener('popstate', onHash);
         win.addEventListener('resize', onResize);
@@ -13337,10 +13726,19 @@
             if (tradingOnPage(doc) && shouldMarkSeen(gmGet(TRADING_SEEN_KEY, 0), t)) gmSet(TRADING_SEEN_KEY, t);
             // The view is re-read here too where the host cannot tell us it changed.
             loadShared();
+            // Torn's own page may have moved under us (its sidebar, a page of another width).
+            if (!box.hidden) place();
             // Looked at again only when something of ours changed: the page's own changes are seen as they happen.
             if (had !== (st.shared ? st.shared.at : 0) || win.location.href !== st.href) later(0);
         }
         const lookTimer = win.setInterval(look, TRADING_LOOK_EVERY_MS);
+        // Torn Trading's panel moved, folded, came or went: the Archive makes room at once.
+        const otherTimer = win.setInterval(() => {
+            if (doc.hidden || (!doc.getElementById(TRADING_HOST_IDS[0]) && !st.other)) return;
+            const r = tradingRect();
+            const sig = r ? [r.left, r.top, r.right, r.bottom].map(Math.round).join() : '';
+            if (sig !== st.other) { st.drawn = ''; show(st.content); }
+        }, TP_OTHER_MS);
 
         place();
         loadShared();
@@ -13351,6 +13749,7 @@
             scan,
             stop() {
                 win.clearInterval(lookTimer);
+                win.clearInterval(otherTimer);
                 if (st.timer) win.clearTimeout(st.timer);
                 mo.disconnect();
                 doc.removeEventListener('click', onClick, true);
@@ -13528,7 +13927,14 @@
             loadListing: () => listWin.load(),
             addListing: (at) => listWin.add(at),
             loadListingDay: () => gmGet('w3bListDay', {}),
-            saveListingDay: (counts) => gmSet('w3bListDay', counts),
+            saveListingDay: (counts) => {
+                gmSet('w3bListDay', counts);
+                // Told to Torn Bids through the page's storage: TornW3B counts the two apps as one address.
+                try { window.localStorage.setItem(W3B_MARK, w3bMarkText(listWin.load(), counts, now())); } catch { /* no page storage: Torn Bids counts only its own */ }
+            },
+            loadListingOther: () => {
+                try { return readW3bMark(window.localStorage.getItem(W3B_OTHER_MARK), now()); } catch { return null; }
+            },
         });
         const own = new Tw3bOwnClient({
             getKey: () => keyOf('w3b'),

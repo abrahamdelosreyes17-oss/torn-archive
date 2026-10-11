@@ -25,6 +25,12 @@
  *                     in view or not, so Torn Bids knows the app it makes
  *                     room for is still there. Left to run out when the
  *                     page is closed: Torn Bids believes it for 150 s.
+ *   tornapps.w3b.archive / tornapps.w3b.trading   { at, m, d }
+ *                     each app's own requests for an item's full listing on
+ *                     TornW3B: `m` the times (ms) of the last minute's, `d`
+ *                     a count for each hour (hour = floor(ms / 3,600,000),
+ *                     the last 25). TornW3B counts those per address, so
+ *                     each app adds the other's to its own before it asks.
  *
  * Going down is done at once; going up waits a minute, so what the other
  * asked in the minute before has left Torn's count. A Torn Bids that does not
@@ -128,6 +134,37 @@ export function shouldMarkView(viewAt, now) {
 export function shouldMarkAlive(lastAt, now) {
     const t = Number(lastAt) || 0;
     return !(t > 0) || now - t >= ALIVE_EVERY_MS || t > now;
+}
+
+export const W3B_MARK = 'tornapps.w3b.archive';
+export const W3B_OTHER_MARK = 'tornapps.w3b.trading';
+const W3B_MARK_HOURS = 24;
+const W3B_MARK_MOST = 200;
+
+/** Our own item-listing requests on TornW3B as a mark: the last minute's times, and a count for each hour. */
+export function w3bMarkText(times, day, now) {
+    const got = readW3bMark(JSON.stringify({ at: now, m: times, d: day }), now);
+    return JSON.stringify({ at: now, m: got ? got.m : [], d: got ? got.d : {} });
+}
+
+/**
+ * The other app's item-listing requests, read back from the page storage: only what still counts at `now`.
+ * @returns {{m: number[], d: Object<string, number>}|null} null when it is missing or not such a mark
+ */
+export function readW3bMark(text, now) {
+    if (typeof text !== 'string' || !text) return null;
+    let mark = null;
+    try { mark = JSON.parse(text); } catch { return null; }
+    if (!mark || typeof mark !== 'object' || Array.isArray(mark)) return null;
+    const m = (Array.isArray(mark.m) ? mark.m : []).filter((x) => typeof x === 'number' && Number.isFinite(x) && x <= now && now - x < 60000).sort((a, b) => a - b).slice(-W3B_MARK_MOST);
+    const hour = Math.floor(now / 3600000);
+    const d = {};
+    for (const [h, n] of Object.entries(mark.d && typeof mark.d === 'object' && !Array.isArray(mark.d) ? mark.d : {})) {
+        const at = Number(h);
+        const count = Math.floor(Number(n));
+        if (Number.isInteger(at) && at <= hour && at >= hour - W3B_MARK_HOURS && count > 0) d[at] = Math.min(count, 100000);
+    }
+    return { m, d };
 }
 
 /** One of the marks as text, for the site's page storage. */

@@ -20,6 +20,31 @@ export function boxWaiting(old) {
 }
 
 /**
+ * The hub is not open, or was never set up: no number is shown, it would be old. `go`: Open is the thing to do.
+ * @param setUp a key has been pasted
+ * @param old   the hub shared something once
+ */
+export function boxClosed(setUp, old) {
+    if (!setUp) return { head: 'not set up yet', go: true, where: '', html: bxNote('Torn Archive has no key yet. <b>Open</b> it and paste one in Settings: nothing is read before that.'), marks: [] };
+    return { ...boxWaiting(old), head: 'hub is closed', go: true };
+}
+
+/** A page of Torn's that is none of ours, while the hub is open: your sets, and what waits for you. */
+export function boxAny(v) {
+    const full = v.sets.reduce((n, s) => n + s.full, 0);
+    let html = bxHead('Your sets', hPlural(full, 'full set'));
+    for (const s of v.sets) {
+        const short = s.pieces[0];
+        const need = s.pieces.reduce((n, p) => n + p.need, 0);
+        html += `<div class="ta-l"><b>${hEsc(s.label)} Set</b><span></span><b class="num">${hNum(s.full)} full</b>`
+            + `<span class="s">${short ? `Shortest: ${hEsc(short.short)} ${hNum(short.held)} · ` : ''}${need ? hPlural(need, 'piece') + ' short' : 'nothing short'}</span></div>`;
+    }
+    if (v.buy.units) html += bxKv('Your shopping list', `${hPlural(v.buy.units, 'piece')} · ${hPlural(v.buy.run.stops.length, 'stop')}`);
+    if (v.trades.open.length) html += bxKv('Trades open with you', hNum(v.trades.open.length));
+    return { head: full ? `${hPlural(full, 'set')} ready` : 'no full set yet', where: '', html, marks: [] };
+}
+
+/**
  * Someone's bazaar, or the Item Market.
  * @param cards [{ itemId, price, qty, typed, hasBox }] the listings on the page, in page order
  * @param place 'b:' + the owner's id, or 'im'
@@ -85,7 +110,9 @@ export function boxBazaar(v, cards, place) {
         ? bxBtn('run-next', (after ? (after.im ? 'Next: the Item Market' : 'Next bazaar: ' + hEsc(after.who || '')) : 'Done: back to the list') + '<span class="kbd">N</span>', 'go', '', after ? ` title="${hEsc(after.lines.map((l) => l.name + ' ×' + l.q).join(', '))}"` : '') + bxBtn('run-stop', 'Stop the run', 'link')
         : stops.length && !on ? bxBtn('run-start', 'Start the run', 'go') : '') + '</div>';
     html += bxNote(`Fill types the number into Torn's box. <b>You press Buy.</b> What you took is counted from the listing's stock on the page and from Torn's log.`);
-    return { where: im ? 'the Item Market' : 'a bazaar', html, marks };
+    // Folded, the bar says what is here, so you know to unfold it.
+    const head = here ? `${hNum(here.lines.length)} on your list here` : rows.length ? `${hNum(rows.length)} under ${rows.length === 1 ? 'its' : 'their'} worth here` : '';
+    return { where: im ? 'the Item Market' : 'a bazaar', head, html, marks };
 }
 
 /**

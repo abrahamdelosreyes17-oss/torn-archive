@@ -31,6 +31,9 @@
     ?page=trade#step=view&ID=N   a trade (&money=1: the add-money step)
     ?page=museum   ?page=pmarket   ?page=forum#/p=threads&t=N
     &old=1  the shared view is 20 minutes old      &none=1  nothing shared yet     &trading=1  Torn Trading on this page
+    &trading=1&panel=1  with its panel, where Torn Trading stands it (430 wide or the free strip, min(75vh, 640px) tall,
+                        16px from the window's foot)       &panel=fold  that panel folded to its bar
+    ?page=other   a page of Torn's that is none of ours          &key=1  a key was pasted in Settings once
 -->
 <div id="mainContainer"></div>
 <script type="module">
@@ -98,9 +101,25 @@ if (page === 'bazaar') {
     const title = q.has('exact') ? view.prices.forum.title : (th && th.title) || view.prices.forum.title;
     if (!/t=\d+/.test(location.hash)) location.hash = '/p=threads&f=10&t=' + ((th && th.id) || 16000001);
     main.innerHTML = `<h1>Forums</h1><div class="thread"><h4>${esc(title)}</h4><p style="padding:10px;background:#2a2a2a">The first post.</p></div>`;
+} else {
+    main.innerHTML = '<h1>Gym</h1><div class="set"><p>A page of Torn\'s that Torn Archive has nothing to say on.</p></div>';
 }
-if (q.has('trading')) { const h = document.createElement('div'); h.id = 'ttv2-host'; document.body.appendChild(h); }
+if (q.has('trading')) {
+    const h = document.createElement('div');
+    h.id = 'ttv2-host';
+    document.body.appendChild(h);
+    // A stand-in for Torn Trading's panel: its place and size only (its own numbers), nothing of what it shows.
+    if (q.has('panel')) {
+        const root = h.attachShadow({ mode: 'open' });
+        root.innerHTML = `<style>.ttv2-panel { position: fixed; right: 16px; bottom: 16px; height: ${q.get('panel') === 'fold' ? '40px' : 'min(75vh, 640px)'}; box-sizing: border-box; display: grid; place-items: center; background: #1c1f26; border: 1px solid #3a3f4b; border-radius: 4px; color: #8b93a3; font: 13px Arial, sans-serif; }</style><div class="ttv2-panel">Torn Trading's panel (stand-in)</div>`;
+        const fit = () => { root.querySelector('.ttv2-panel').style.width = Math.max(0, Math.min(430, innerWidth - main.getBoundingClientRect().right - 8 - 16)) + 'px'; };
+        fit();
+        addEventListener('resize', fit);
+    }
+}
 
+// &key=1: a key was pasted once (a made-up word: nothing is asked of Torn here).
+if (q.has('key')) gmSet('key.limited', 'harness');
 if (!q.has('none')) gmSet(SHARED_VIEW_KEY, { at: q.has('old') ? now - 20 * 60000 : now, v: JSON.parse(JSON.stringify(viewForTabs(view))) });
 const log = document.createElement('div');
 log.className = 'log';

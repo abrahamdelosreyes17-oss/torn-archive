@@ -1,4 +1,10 @@
-// Torn Archive on Torn's own pages: a small box beside the page, and marks on the things it is about.
+// Torn Archive on Torn's own pages: an overlay beside the page, and marks on the things it is about.
+//
+// The overlay is on every page of Torn's: folded it is one bar (what there is to know, Open, + / –), and it
+// unfolds by itself where it has something to say. It stands only in the empty window beside Torn's content, on
+// the right or on the left: you drag it by its bar, and it stays where you left it. The backtick key folds and
+// unfolds it. Torn Trading's panel on the same page comes first: it keeps its place and that key, and the Archive
+// goes over it or under it in its column, never beside it and never on top of it.
 //
 // A Torn tab never asks Torn's API or TornW3B anything. It shows what the Archive's own tab worked out (shared
 // through storage), reads the page in front of you, and tells the Archive's tab what it saw: a buy on a bazaar,
@@ -10,9 +16,10 @@
 
 import { gmGet, gmSet, gmOnChange, gmCopy, gmOpenTab } from '../platform/gm.js';
 import { MARKS_CSS } from './marks-css.js';
-import { BOX_CSS, BOX_MARKS_CSS, BOX_WIDTH, BOX_GAP } from './box-css.js';
+import { BOX_CSS, BOX_MARKS_CSS, BOX_GAP } from './box-css.js';
 import { hIcon } from './fmt.js';
-import { boxWaiting, boxBazaar, boxTrade, boxMuseum, boxPoints, boxForum } from './box-pages.js';
+import { boxClosed, boxAny, boxBazaar, boxTrade, boxMuseum, boxPoints, boxForum } from './box-pages.js';
+import { overlayStrips, overlaySide, overlayPlace, OV_WIDTH, OV_BAR, OV_GAP, OV_TOP } from '../core/overlay.js';
 import { scanDom } from '../sources/dom/scan.js';
 import { setMark, clearSetMarks, museumExchanges, pieceTiles, pointsListing, tradeTheirRows, forumThread, boxTwins } from '../sources/dom/sets-pages.js';
 import { writeInputs } from '../sources/dom/fill.js';
@@ -22,7 +29,7 @@ import { buildItemIndex } from '../core/items.js';
 import { stockBuys } from '../core/accepted.js';
 import { SETS, threadCheck, isBuyingTitle } from '../core/sets.js';
 import { IM_PLACE } from '../core/shopping.js';
-import { tradingOnPage, shouldMarkSeen, TRADING_SEEN_KEY, TRADING_LOOK_EVERY_MS } from '../core/turns.js';
+import { tradingOnPage, shouldMarkSeen, TRADING_SEEN_KEY, TRADING_LOOK_EVERY_MS, TRADING_HOST_IDS } from '../core/turns.js';
 
 /** What the Archive's own tab shares with Torn's tabs: { at, v } (core/view.js viewForTabs). */
 export const SHARED_VIEW_KEY = 'view';
@@ -35,6 +42,13 @@ export const VIEW_OLD_MS = 15 * 60 * 1000;
 const TP_PRESS_MS = 20 * 1000;
 const TP_SCAN_MS = 250;
 const TP_DONE_MS = 4000;
+/** Torn Trading's panel is looked at this often while it is on the page: it can be moved, folded, or come later. */
+const TP_OTHER_MS = 1000;
+/** The most of the window's height the overlay takes, as Torn Trading's panel. */
+const TP_TALL = 0.75;
+const TP_TALL_MAX = 640;
+/** Where you left the overlay: { side, left, top }. Folded or not: 'boxOpen' where it has something to say, 'boxOpenAny' elsewhere. */
+const TP_POS_KEY = 'boxPos';
 
 const tpDigits = (v) => Number(String(v == null ? '' : v).replace(/[^\d]/g, '')) || 0;
 
@@ -75,7 +89,8 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         cards: [], seen: {}, seenPlace: '', pressed: new Map(),
         exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null,
         marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
-        open: gmGet('boxOpen', true) !== false, pinned: false, room: true, timer: 0,
+        open: gmGet('boxOpen', true) !== false, openAny: gmGet('boxOpenAny', false) === true, pinned: false, room: true, timer: 0,
+        content: null, has: false, pos: gmGet(TP_POS_KEY, null), strips: { left: null, right: null }, mid: 0, at: null, other: '', drawn: '',
     };
 
     // ---- our own elements ----------------------------------------------------------------------------------------
@@ -89,45 +104,90 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     host.id = 'tarc-host';
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = `<style>${BOX_CSS}</style>`
-        + `<div class="ta" hidden><div class="ta-h"><span class="mark">${hIcon('brand')}</span><b>Torn Archive</b><span class="w"></span>`
-        + `<button data-act="hub" title="Open Torn Archive">↗</button><button data-act="fold" title="Put the box away">–</button></div><div class="ta-b"></div></div>`
-        + `<button class="pill" hidden data-act="unfold" title="Show Torn Archive's box"><span class="mark">${hIcon('brand')}</span><span class="pw"></span></button>`;
+        + `<div class="ta" hidden><div class="ta-h" title="Torn Archive: drag to move"><span class="mark">${hIcon('brand')}</span><b>Torn Archive</b><span class="w"></span>`
+        + `<button class="open" data-act="hub" title="Open Torn Archive in a new tab">Open</button><button data-act="fold">–</button></div><div class="ta-b"></div></div>`
+        + `<button class="pill" hidden data-act="unfold" title="Show Torn Archive"><span class="mark">${hIcon('brand')}</span><span class="pw"></span></button>`;
     doc.body.appendChild(host);
     const box = root.querySelector('.ta');
     const body = root.querySelector('.ta-b');
+    const head = root.querySelector('.ta-h');
     const whereEl = root.querySelector('.w');
+    const openBtn = root.querySelector('.open');
+    const foldBtn = root.querySelector('[data-act="fold"]');
     const pill = root.querySelector('.pill');
     const pillWords = root.querySelector('.pw');
 
-    /** Where the box goes: beside Torn's content when the window has the room, else it is a pill you open yourself. */
-    function place() {
-        const main = doc.querySelector('#mainContainer') || doc.querySelector('.content-wrapper') || doc.querySelector('[role="main"]');
-        const right = main ? main.getBoundingClientRect().right : 0;
-        const free = win.innerWidth - right;
-        st.room = !main || free >= BOX_WIDTH + 2 * BOX_GAP;
-        if (main && st.room) {
-            box.style.setProperty('--left', Math.round(right + BOX_GAP) + 'px');
-            box.style.setProperty('--right', 'auto');
-        } else {
-            box.style.setProperty('--left', 'auto');
-            box.style.setProperty('--right', BOX_GAP + 'px');
-        }
+    // ---- where it stands ------------------------------------------------------------------------------------------
+
+    /** Torn's content on this page, left edge to right edge: the selectors Torn Trading's panel fits itself by. */
+    function tornSides() {
+        let parts = [doc.querySelector('.content-wrapper'), doc.getElementById('sidebarroot'), doc.getElementById('sidebar')].filter(Boolean);
+        if (!parts.length) parts = [doc.querySelector('#mainContainer') || doc.querySelector('[role="main"]')].filter(Boolean);
+        const rects = parts.map((el) => el.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
+        return rects.length ? { left: Math.min(...rects.map((r) => r.left)), right: Math.max(...rects.map((r) => r.right)) } : { left: null, right: null };
     }
 
+    /** Torn Trading's panel on this page, where it shows one. Looked at, never touched: it keeps its place. */
+    function tradingRect() {
+        const other = doc.getElementById(TRADING_HOST_IDS[0]);
+        const panel = other && other.shadowRoot ? other.shadowRoot.querySelector('.ttv2-panel') : null;
+        const r = panel ? panel.getBoundingClientRect() : null;
+        return r && r.width > 0 && r.height > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width } : null;
+    }
+
+    const isOpen = () => (st.has ? st.open : st.openAny);
+
+    /** Beside Torn's content, on the side you left it; with no room on either side it is a pill you open yourself. */
+    function place() {
+        const sides = tornSides();
+        const other = tradingRect();
+        st.strips = overlayStrips({ winW: win.innerWidth, left: sides.left, right: sides.right });
+        st.mid = sides.left == null ? win.innerWidth / 2 : (sides.left + sides.right) / 2;
+        st.other = other ? [other.left, other.top, other.right, other.bottom].map(Math.round).join() : '';
+        const cap = Math.max(OV_BAR, Math.min(win.innerHeight * TP_TALL, TP_TALL_MAX));
+        // Measured whole: a `bar` left from the last place hides the body and would measure it as nothing, and
+        // the bar itself can be two lines on a narrow strip.
+        const open = isOpen() && !box.hidden;
+        box.classList.remove('bar', 'folded');
+        const barH = Math.max(OV_BAR, head.offsetHeight + 2);
+        const want = open ? head.offsetHeight + body.scrollHeight + 2 : barH;
+        box.classList.toggle('folded', !isOpen());
+        st.at = overlayPlace({ pos: st.pos, strips: st.strips, winH: win.innerHeight, want, cap, other });
+        st.room = !!st.at;
+        // No room: opened from its pill it stands at the window's edge, over Torn's page, until you fold it.
+        const width = Math.min(OV_WIDTH, win.innerWidth - 2 * BOX_GAP);
+        const at = st.at || { left: win.innerWidth - width - BOX_GAP, top: OV_TOP, width, maxHeight: Math.max(OV_BAR, win.innerHeight - OV_TOP - BOX_GAP), bar: false };
+        box.style.setProperty('--left', at.left + 'px');
+        box.style.setProperty('--top', at.top + 'px');
+        box.style.setProperty('--width', at.width + 'px');
+        box.style.setProperty('--max-h', Math.max(at.maxHeight, barH) + 'px');
+        box.classList.toggle('bar', !!at.bar);
+    }
+
+    /**
+     * Draw the overlay. What this page has to say (a bazaar, a trade, the museum...) is its content; null on a page
+     * that is none of ours: there it is the bar, with your sets under it when you unfold it.
+     */
     function show(content) {
-        const html = content ? content.html : '';
-        if (!html) {
-            box.hidden = true;
-            pill.hidden = true;
-            st.html = '';
-            return;
-        }
-        // With no room beside Torn's page the box stays away until you press its pill: it would cover the page.
-        const open = st.open && (st.room || st.pinned);
-        box.hidden = !open;
-        pill.hidden = open;
-        if (whereEl.textContent !== content.where) whereEl.textContent = content.where;
-        if (pillWords.textContent !== content.where) pillWords.textContent = content.where || 'Torn Archive';
+        st.content = content && content.html ? content : null;
+        st.has = !!st.content;
+        const fresh = st.shared && now() - st.shared.at < VIEW_OLD_MS;
+        const said = st.content || (fresh ? boxAny(st.shared.v) : boxClosed(String(gmGet('key.limited', '') || '').trim() !== '', !!st.shared));
+        const open = isOpen();
+        const other = tradingOnPage(doc);
+        // With no room beside Torn's page it stays a pill until you press it: it would cover the page.
+        const away = !st.room && !st.pinned;
+        // Unfolded, the bar names the place only: the count is in the body under it, and is not said twice.
+        const words = (open ? said.where : said.head || said.where) || '';
+        box.hidden = away;
+        pill.hidden = !away;
+        box.classList.toggle('folded', !open);
+        openBtn.classList.toggle('go', !!said.go);
+        if (whereEl.textContent !== words) whereEl.textContent = words;
+        // The pill is the overlay at its smallest: it says what the folded bar would.
+        const small = said.head || said.where || 'Torn Archive';
+        if (pillWords.textContent !== small) pillWords.textContent = small;
+        const html = said.html;
         if (st.html !== html) {
             st.html = html;
             const top = body.scrollTop;
@@ -139,7 +199,69 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             const key = b.dataset.act + ':' + (b.dataset.v || '');
             if (key === done) b.dataset.done = '1'; else delete b.dataset.done;
         }
+        // Measured again only when what is drawn changed: its place depends on its height.
+        const drawn = [away, open, st.has, words].join('|') + html;
+        if (st.drawn !== drawn) {
+            st.drawn = drawn;
+            const was = st.room;
+            place();
+            if (was !== st.room) { st.drawn = ''; show(content); return; }
+        }
+        // The + / – after the place is known: unfolded with room for the bar only, it says why.
+        const stuck = open && !!st.at && st.at.bar;
+        foldBtn.textContent = open && !stuck ? '–' : '+';
+        foldBtn.title = stuck ? (st.at.by === 'over' ? 'No room to unfold here: fold the panel under it first' : st.at.by === 'under' ? 'No room to unfold here: fold the panel over it first' : 'No room to unfold here: drag it up') : (open ? 'Fold' : 'Unfold') + (other ? '' : ' (backtick key)');
     }
+
+    /** Fold or unfold, remembered: apart for the pages where it has something to say and for the rest. */
+    function setOpen(on) {
+        if (st.has) { st.open = on; gmSet('boxOpen', on); } else { st.openAny = on; gmSet('boxOpenAny', on); }
+        if (!on) st.pinned = false;
+        show(st.content);
+    }
+
+    /** Drag by the bar, to the right or to the left of Torn's content. A press that does not move unfolds a folded bar. */
+    function enableDrag() {
+        let start = null;
+        head.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0 || !st.at) return;
+            if (event.target.closest && event.target.closest('button, a, input')) return;
+            const r = box.getBoundingClientRect();
+            start = { x: event.clientX, y: event.clientY, left: r.left, top: r.top, moved: false };
+            try { if (head.setPointerCapture) head.setPointerCapture(event.pointerId); } catch { /* a pointer the browser does not track: the drag still follows its moves */ }
+        });
+        head.addEventListener('pointermove', (event) => {
+            if (!start) return;
+            const dx = event.clientX - start.x;
+            const dy = event.clientY - start.y;
+            if (!start.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+            start.moved = true;
+            box.classList.add('drag');
+            const left = start.left + dx;
+            const side = overlaySide(left + box.offsetWidth / 2, st.strips, st.mid);
+            if (!side) return;
+            st.pos = { side, left: Math.round(left), top: Math.round(start.top + dy) };
+            place();
+        });
+        const end = (event) => {
+            if (!start) return;
+            const { moved } = start;
+            start = null;
+            box.classList.remove('drag');
+            if (head.hasPointerCapture && head.hasPointerCapture(event.pointerId)) head.releasePointerCapture(event.pointerId);
+            if (moved && st.at && st.pos) {
+                // Where you let go, kept inside the window: the bar's own place, also when it stands unfolded upward.
+                st.pos = { side: st.at.side, left: st.at.left, top: Math.min(Math.max(0, st.pos.top), Math.max(0, win.innerHeight - OV_BAR - OV_GAP)) };
+                gmSet(TP_POS_KEY, st.pos);
+                place();
+            } else if (!moved && !isOpen()) {
+                setOpen(true);
+            }
+        };
+        head.addEventListener('pointerup', end);
+        head.addEventListener('pointercancel', end);
+    }
+    enableDrag();
 
     // ---- the shared view -----------------------------------------------------------------------------------------
 
@@ -282,15 +404,12 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             st.seen = {};
             st.seenPlace = '';
         }
-        if (!kind) {
-            show(null);
-            return;
-        }
         if (!st.shared) loadShared();
         const fresh = st.shared && t - st.shared.at < VIEW_OLD_MS;
-        if (!fresh) {
-            clear();
-            show(kind === 'museum' || kind === 'points' || (kind === 'trade' && /ID=\d+/i.test(st.href)) ? { ...boxWaiting(!!st.shared), where: '' } : null);
+        // A page that is none of ours, or numbers that would be old: the bar alone says which.
+        if (!kind || !fresh) {
+            if (kind) clear();
+            show(null);
             return;
         }
         const v = st.shared.v;
@@ -319,8 +438,8 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     function done(key) {
         st.done = key;
         st.doneAt = now();
-        show({ html: st.html, where: whereEl.textContent });
-        win.setTimeout(() => show(st.html ? { html: st.html, where: whereEl.textContent } : null), TP_DONE_MS + 50);
+        show(st.content);
+        win.setTimeout(() => show(st.content), TP_DONE_MS + 50);
     }
 
     function goNext(v) {
@@ -339,8 +458,8 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         const val = btn.dataset.v || '';
         const n = tpDigits(btn.dataset.n);
         const v = st.shared ? st.shared.v : null;
-        if (act === 'fold') { st.open = false; st.pinned = false; gmSet('boxOpen', false); later(0); return; }
-        if (act === 'unfold') { st.open = true; st.pinned = true; gmSet('boxOpen', true); later(0); return; }
+        if (act === 'fold') { if (!(isOpen() && st.at && st.at.bar)) setOpen(!isOpen()); return; }
+        if (act === 'unfold') { st.pinned = true; setOpen(true); return; }
         if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
         if (act === 'copy') { if (gmCopy(val)) done('copy:' + val); return; }
         if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
@@ -405,10 +524,15 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     }
 
     function onKey(event) {
-        if (!yours(event) || (event.key !== 'n' && event.key !== 'N')) return;
+        if (!yours(event) || (event.key !== 'n' && event.key !== 'N' && event.key !== '`')) return;
         if (event.ctrlKey || event.metaKey || event.altKey) return;
         const el = event.target;
         if (el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName || ''))) return;
+        if (event.key === '`') {
+            // Torn Trading's panel on this page keeps the key: ours is folded with its own + and –.
+            if (!tradingOnPage(doc) && (st.room || st.pinned)) setOpen(!isOpen());
+            return;
+        }
         if (!st.shared || (st.kind !== 'bazaar' && st.kind !== 'itemmarket')) return;
         const v = st.shared.v;
         const place = st.kind === 'itemmarket' ? IM_PLACE : 'b:' + bazaarOwnerId(st.href);
@@ -437,7 +561,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     });
     mo.observe(doc.body, { childList: true, characterData: true, subtree: true });
     const onHash = () => later(0);
-    const onResize = () => { place(); later(0); };
+    const onResize = () => { st.drawn = ''; later(0); };
     win.addEventListener('hashchange', onHash);
     win.addEventListener('popstate', onHash);
     win.addEventListener('resize', onResize);
@@ -451,10 +575,19 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (tradingOnPage(doc) && shouldMarkSeen(gmGet(TRADING_SEEN_KEY, 0), t)) gmSet(TRADING_SEEN_KEY, t);
         // The view is re-read here too where the host cannot tell us it changed.
         loadShared();
+        // Torn's own page may have moved under us (its sidebar, a page of another width).
+        if (!box.hidden) place();
         // Looked at again only when something of ours changed: the page's own changes are seen as they happen.
         if (had !== (st.shared ? st.shared.at : 0) || win.location.href !== st.href) later(0);
     }
     const lookTimer = win.setInterval(look, TRADING_LOOK_EVERY_MS);
+    // Torn Trading's panel moved, folded, came or went: the Archive makes room at once.
+    const otherTimer = win.setInterval(() => {
+        if (doc.hidden || (!doc.getElementById(TRADING_HOST_IDS[0]) && !st.other)) return;
+        const r = tradingRect();
+        const sig = r ? [r.left, r.top, r.right, r.bottom].map(Math.round).join() : '';
+        if (sig !== st.other) { st.drawn = ''; show(st.content); }
+    }, TP_OTHER_MS);
 
     place();
     loadShared();
@@ -465,6 +598,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         scan,
         stop() {
             win.clearInterval(lookTimer);
+            win.clearInterval(otherTimer);
             if (st.timer) win.clearTimeout(st.timer);
             mo.disconnect();
             doc.removeEventListener('click', onClick, true);

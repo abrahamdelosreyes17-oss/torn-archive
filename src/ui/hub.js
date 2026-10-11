@@ -229,12 +229,27 @@ export function mountHub(doc, actions) {
         drawCharts(whole);
     }
 
+    /** The address keeps the page. A new page is a new step for the browser's Back; a tab only updates the step it is on. */
+    function remember(step) {
+        try { win.history[step ? 'pushState' : 'replaceState']({ page: ui.page, pane: ui.pane }, '', '#' + ui.page); } catch { /* a page that cannot keep its address still works */ }
+    }
+
     function go(page, pane = 0) {
+        const was = ui.page;
         ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
         ui.pane = Math.max(0, Number(pane) || 0);
-        try { win.history.replaceState(null, '', '#' + ui.page); } catch { /* a page that cannot keep its address still works */ }
+        remember(ui.page !== was);
         draw(true);
     }
+
+    // Back and Forward: the browser says which step it is on, and that page is shown. Nothing is added to the steps here.
+    win.addEventListener('popstate', (e) => {
+        const at = e.state || {};
+        const page = at.page || (win.location.hash || '#dashboard').slice(1);
+        ui.page = HUB_PAGES.some((p) => p.key === page) ? page : 'dashboard';
+        ui.pane = Math.max(0, Number(at.pane) || 0);
+        draw(true);
+    });
 
     // ---- presses ---------------------------------------------------------------------------------------------------
 
@@ -280,7 +295,7 @@ export function mountHub(doc, actions) {
     doc.addEventListener('click', (e) => {
         const t = e.target;
         const tab = t.closest('[data-tab]');
-        if (tab) { ui.pane = Number(tab.dataset.tab); draw(true); return; }
+        if (tab) { ui.pane = Number(tab.dataset.tab); remember(false); draw(true); return; }
         const a = t.closest('[data-act]');
         if (a) { press(a, e); return; }
         const g = t.closest('[data-go]');

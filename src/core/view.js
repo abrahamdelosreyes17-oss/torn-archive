@@ -43,6 +43,8 @@ export function setLadder(set, offersOf, most = 500) {
 }
 
 const VW_DEPTH_AT = [1, 10, 50, 100, 250, 500];
+/** The stops of the list the dashboard names under "Do now": as many as its card ever has room for. */
+const VW_FIRST_STOPS = 12;
 
 /**
  * @param i {
@@ -276,9 +278,12 @@ export function archiveView(i) {
 
     // ---- the dashboard -----------------------------------------------------------------------------------------------
     const todo = [];
+    // The stops a thing to do names, the one that saves most first: `gain` is against what the line above them says
+    // (what you pay your sellers for the cheap listings, the pieces' worth for the rest).
+    const firstStops = (stops) => stops.slice(0, VW_FIRST_STOPS).map((s) => ({ im: s.im, who: s.who, whoId: s.whoId, units: s.units, cost: s.cost, gain: s.gain }));
     if (open.length) todo.push({ kind: 'trades', tone: 'warn', n: open.length, wait: trades.wait, money: trades.waitMoney });
-    if (buy.hotUnits) todo.push({ kind: 'hot', tone: '', n: buy.hotUnits, stops: buy.hotStops, pic: hot[0].id });
-    else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id });
+    if (buy.hotUnits) todo.push({ kind: 'hot', tone: '', n: buy.hotUnits, stops: buy.hotStops, pic: hot[0].id, first: firstStops(vwHotStops(hot)), cost: vwSum(hot, (h) => h.q * h.price), full: fullAfter((p) => onList(hot, p.id)) });
+    else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
     if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
     if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice });
 
@@ -299,6 +304,20 @@ export function archiveView(i) {
         share: { ...share, max: settings.shareMax, days: ((i.hist && i.hist.share) || []).slice(-14) },
         tape: pieces.filter((p) => p.low).map((p) => ({ id: p.id, name: p.name, set: p.set, price: p.low.price })),
     };
+}
+
+/** The cheap listings (hotListings) by seller: how many pieces, what they cost, how far under what you pay sellers. */
+function vwHotStops(hot) {
+    const by = new Map();
+    for (const h of hot || []) {
+        const place = h.im ? 'im' : 'b:' + (h.whoId ?? h.who ?? '');
+        if (!by.has(place)) by.set(place, { im: !!h.im, who: h.who, whoId: h.whoId, units: 0, cost: 0, gain: 0 });
+        const s = by.get(place);
+        s.units += h.q;
+        s.cost += h.q * h.price;
+        s.gain += h.q * (h.pay - h.price);
+    }
+    return [...by.values()].sort((a, b) => (a.im - b.im) || b.gain - a.gain);
 }
 
 /** The points price by day: the first wall and the lowest listing, the usual range, your least price. */

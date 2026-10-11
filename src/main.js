@@ -26,7 +26,7 @@ import { viewForTabs } from './core/view.js';
 import { tradeNotice } from './core/trades.js';
 import { makeTabId } from './core/leader.js';
 import { hubLeader, HUB_LEAD_KEY, HUB_LEAD_BEAT_MS } from './core/hub-leader.js';
-import { tradingOnPage, tradingRunning, shouldMarkSeen, shouldMarkView, archiveInFront, shareNow, markText, readMark, SHARES, TRADING_SEEN_KEY, TRADING_VIEW_KEY, ARCHIVE_VIEW_KEY, FRONT_MARK, BEHIND_MARK, ALIVE_MARK, shouldMarkAlive, TRADING_LOOK_EVERY_MS } from './core/turns.js';
+import { tradingOnPage, tradingRunning, shouldMarkSeen, shouldMarkView, archiveInFront, shareNow, markText, readMark, SHARES, TRADING_SEEN_KEY, TRADING_VIEW_KEY, ARCHIVE_VIEW_KEY, FRONT_MARK, BEHIND_MARK, ALIVE_MARK, shouldMarkAlive, TRADING_LOOK_EVERY_MS, W3B_MARK, W3B_OTHER_MARK, w3bMarkText, readW3bMark } from './core/turns.js';
 import { usageAdd, usageMerge, usageSeries, usageLabel, usageCsv } from './core/usage.js';
 import { addLogEntries, logText, logAsText } from './core/errlog.js';
 import { speedFiles } from './core/speed.js';
@@ -158,7 +158,14 @@ function bootHub(tabId) {
         loadListing: () => listWin.load(),
         addListing: (at) => listWin.add(at),
         loadListingDay: () => gmGet('w3bListDay', {}),
-        saveListingDay: (counts) => gmSet('w3bListDay', counts),
+        saveListingDay: (counts) => {
+            gmSet('w3bListDay', counts);
+            // Told to Torn Bids through the page's storage: TornW3B counts the two apps as one address.
+            try { window.localStorage.setItem(W3B_MARK, w3bMarkText(listWin.load(), counts, now())); } catch { /* no page storage: Torn Bids counts only its own */ }
+        },
+        loadListingOther: () => {
+            try { return readW3bMark(window.localStorage.getItem(W3B_OTHER_MARK), now()); } catch { return null; }
+        },
     });
     const own = new Tw3bOwnClient({
         getKey: () => keyOf('w3b'),

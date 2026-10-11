@@ -211,6 +211,7 @@ export class W3bClient {
         addListing = null,
         loadListingDay = null,
         saveListingDay = null,
+        loadListingOther = null,
     } = {}) {
         this.perMinute = perMinute;
         /**
@@ -232,6 +233,8 @@ export class W3bClient {
         this.addListing = addListing;
         this.loadListingDay = loadListingDay;
         this.saveListingDay = saveListingDay;
+        /** () => {m: number[], d: {[hour]: count}} | null: the item-listing requests another app on this PC made (Torn Bids), counted with ours. */
+        this.loadListingOther = loadListingOther;
         /** This tab's own item-listing requests: the last minute's times, and a count for each hour. */
         this.listingRecent = [];
         this.listingDay = {};
@@ -328,6 +331,22 @@ export class W3bClient {
             try {
                 const stored = this.listingDayCounts(this.loadListingDay(), t);
                 if (w3bSum(stored) > w3bSum(day)) day = stored;
+            } catch {
+                // As above.
+            }
+        }
+
+        // TornW3B counts by address: what another app on this PC asked is in the same minute and day.
+        if (this.loadListingOther) {
+            try {
+                const other = this.loadListingOther();
+                const theirs = other && Array.isArray(other.m) ? other.m.filter((x) => Number.isFinite(x) && t - x < 60000 && x <= t) : [];
+                if (theirs.length) recent = [...recent, ...theirs].sort((a, b) => a - b);
+                const theirDay = this.listingDayCounts(other ? other.d : null, t);
+                if (w3bSum(theirDay)) {
+                    day = { ...day };
+                    for (const [h, n] of Object.entries(theirDay)) day[h] = (day[h] || 0) + n;
+                }
             } catch {
                 // As above.
             }

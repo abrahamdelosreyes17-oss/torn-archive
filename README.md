@@ -71,6 +71,10 @@ look at. How the two tell each other is written at the top of `src/core/turns.js
 `tornapps.archive` in the same page storage says Torn Archive's page is open (every 30 s, in view or not), so Torn
 Trading knows the app it makes room for is still there.
 
+TornW3B allows 10 full listings of an item a minute and 1,000 a day for one address. Each app writes its own
+requests of that kind there too (`tornapps.w3b.archive`, `tornapps.w3b.trading`) and counts the other's with its
+own before it asks, so the two together stay under that limit.
+
 ## Torn Shared Server
 
 Off until you save two things in Settings: the server's address (`https://….workers.dev`) and your password for it.
@@ -98,7 +102,13 @@ says the server has to be updated first.
 | The points market | the price and lot to list, or to hold when points are cheap or it would be a loss | none |
 | Your buying thread | whether its title still says what your shop says | beside the title |
 
-The box sits beside Torn's content. Where the window has no room for it, it is a small pill you open yourself.
+On every other Torn page the box shows your sets and what to do next.
+
+The box sits beside Torn's content, in the same column and width as Torn Trading's panel, and never over Torn's
+own content. Drag it by its head to the right or the left side; it stays where you let go. Its fold button folds it
+to a bar, and so does the backtick key on a page where Torn Trading's panel is not (there the key is Torn
+Trading's). Folding is remembered for the pages it has something to say on and for the rest, each on its own.
+Where the window has no room for it, it is a small pill you open yourself.
 
 ## The report
 

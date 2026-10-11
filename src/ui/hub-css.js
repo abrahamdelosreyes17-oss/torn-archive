@@ -156,6 +156,19 @@ svg .cross { stroke: var(--line2); stroke-width: 1; }
 .next { display: grid; grid-auto-rows: minmax(0, 1fr); height: 100%; }
 .nx { display: flex; align-items: center; gap: 11px; padding: 6px 0; border-top: 1px solid var(--line); min-height: 0; }
 .nx:first-child { border-top: 0; }
+.next.few { display: flex; flex-direction: column; gap: 10px; }
+.nx-g { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; } .nx-g.bare { flex: none; } .nx-g + .nx-g { border-top: 1px solid var(--line); padding-top: 6px; }
+.nx-g > .nx { flex: none; padding: 4px 0 10px; border-top: 0; }
+/* The lines that fit are shown whole; one that would be cut goes to a column out of sight. */
+.nx-m { flex: 1; min-height: 0; display: flex; flex-flow: column wrap; overflow: hidden; align-content: flex-start; }
+.nm { flex: 1 0 28px; max-height: 38px; width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 64px 124px; align-items: center; gap: 10px; padding: 0 2px; border-top: 1px solid var(--line); white-space: nowrap; color: var(--text2); }
+.nm b { color: var(--text); font-weight: 600; } .nm-a { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; } .nm-b, .nm-c { text-align: right; }
+.nm.h { flex: 0 0 24px; border-top: 0; color: var(--muted); font-size: 11px; align-items: end; padding-bottom: 5px; }
+.nx-f { flex: none; display: flex; justify-content: space-between; gap: 6px 16px; flex-wrap: wrap; padding-top: 9px; border-top: 1px solid var(--line); color: var(--text2); white-space: nowrap; } .nx-f b { color: var(--text); font-weight: 600; }
+/* A short card with two things to do has no room for their lines: one line each, as with many. */
+.pb.todo { container: todo / size; }
+@container todo (max-height: 250px) { .next.n2 .nx-m, .next.n2 .nx-f { display: none; } .next.n2 .nx-g { justify-content: center; } .next.n2 .nx-g > .nx { padding: 0; } }
+@container todo (max-height: 110px) { .next.n1 .nx-m, .next.n1 .nx-f { display: none; } .next.n1 .nx-g { flex: 1 1 0; justify-content: center; } }
 .nx-i { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: var(--c-bg); color: var(--c); }
 .nx-i svg { width: 17px; height: 17px; }
 .nx-t { flex: 1; min-width: 0; color: var(--text2); line-height: 1.35; } .nx-t b { color: var(--text); }

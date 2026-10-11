@@ -3,6 +3,7 @@
  * go to the one being looked at).
  */
 import test from 'node:test';
+import { W3B_MARK, W3B_OTHER_MARK, w3bMarkText, readW3bMark } from '../src/core/turns.js';
 import assert from 'node:assert/strict';
 
 import {
@@ -171,4 +172,18 @@ test('the page of Torn Archive says it is open, for Torn Trading: every 30 s, tw
     // A tab out of view ticks about once a minute: still two marks inside what Torn Trading believes.
     assert.ok(2 * 60000 + ALIVE_EVERY_MS <= BEHIND_FRESH_MS);
     assert.deepEqual(readMark(markText({ app: 'archive', at: NOW })), { app: 'archive', at: NOW, torn: null, w3b: null });
+});
+
+test('item listings asked of TornW3B are told to Torn Trading, and its own read back: only what still counts', () => {
+    assert.equal(W3B_MARK, 'tornapps.w3b.archive');
+    assert.equal(W3B_OTHER_MARK, 'tornapps.w3b.trading');
+    const hour = Math.floor(NOW / 3600000);
+    const text = w3bMarkText([NOW - 70000, NOW - 5000, NOW - 30000, 'x'], { [hour]: 4, [hour - 24]: 2, [hour - 25]: 9, junk: 3 }, NOW);
+    assert.deepEqual(JSON.parse(text), { at: NOW, m: [NOW - 30000, NOW - 5000], d: { [hour - 24]: 2, [hour]: 4 } });
+    assert.deepEqual(readW3bMark(text, NOW), { m: [NOW - 30000, NOW - 5000], d: { [hour - 24]: 2, [hour]: 4 } });
+    // Read later: the minute has passed, the hours stay until they leave the day.
+    assert.deepEqual(readW3bMark(text, NOW + 60000), { m: [], d: { [hour - 24]: 2, [hour]: 4 } });
+    assert.deepEqual(readW3bMark(text, NOW + 2 * 3600000).d, { [hour]: 4 });
+    for (const bad of [null, '', 'x', '[]', '7', 'null']) assert.equal(readW3bMark(bad, NOW), null);
+    assert.deepEqual(readW3bMark('{"m":"x","d":[1]}', NOW), { m: [], d: {} });
 });

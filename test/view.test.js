@@ -70,6 +70,13 @@ test('buying: the plan, the hot listings, and the list as stops with a margin li
     assert.ok(first.buy.hot.some((h) => h.id === 263));
     assert.equal(first.buy.units, 0);
     assert.ok(first.dash.todo.some((t) => t.kind === 'hot'));
+    // "Do now" names those listings by seller: the same pieces and stops its line says, each under what he pays sellers.
+    const todo = first.dash.todo.find((t) => t.kind === 'hot');
+    assert.equal(todo.first.length, todo.stops);
+    assert.equal(todo.first.reduce((s, x) => s + x.units, 0), todo.n);
+    assert.equal(todo.first.reduce((s, x) => s + x.cost, 0), todo.cost);
+    assert.ok(todo.first.every((x) => x.gain > 0 && x.cost > 0));
+    assert.ok(first.sets.every((s) => todo.full[s.key] >= s.full && todo.full[s.key] <= first.buy.plan.full[s.key]), 'full sets after the cheap listings');
     // Make the list, as the page does.
     const cart = fillPlan(first.pieces, base.offers);
     const worthOf = (id) => viewPiece(first, id).worth;

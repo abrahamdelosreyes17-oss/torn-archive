@@ -92,6 +92,32 @@ function pgTodo(v, t) {
     return row(tone.good, ic('points'), `<b>Sell ${hNum(t.n)} points.</b> At ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
 }
 
+/** Up to this many things to do get their own lines under them; more than that and each is one line. */
+const PG_TODO_ROOMY = 2;
+const PG_TODO_LINES = 12;
+
+/** The lines under a thing to do, drawn when the card has room for them: where it starts, or what it comes to. */
+function pgTodoMore(v, t) {
+    const line = (a, b, c) => `<div class="nm"><span class="nm-a">${a}</span><span class="nm-b num">${b}</span><span class="nm-c num">${c}</span></div>`;
+    const head = (a, b, c) => `<div class="nm h"><span class="nm-a">${a}</span><span class="nm-b">${b}</span><span class="nm-c">${c}</span></div>`;
+    if (t.kind === 'trades') return head('Open with you', 'Pieces', 'You pay') + v.trades.open.slice(0, PG_TODO_LINES).map((o) => line(`<b>${hEsc(o.who)}</b> · ${TURN_WORDS[o.state]}`, hNum(o.units), o.total ? hMoney(o.total) : '')).join('');
+    if (t.kind === 'hot' || t.kind === 'buy') return head(t.kind === 'hot' ? 'Where' : 'The first stops', 'Pieces', t.kind === 'hot' ? 'Under your sellers' : 'Under their worth') + (t.first || []).map((s) => line(`<b>${s.im ? 'Item Market' : hEsc(s.who || 'Bazaar ' + (s.whoId ?? ''))}</b>`, hNum(s.units), `<span class="t-good">${hSigned(s.gain)}</span>`)).join('');
+    if (t.kind === 'swap') return head('Full sets', 'Sets', 'Points') + v.sets.filter((s) => s.full).map((s) => line(`<b>${hEsc(s.label)} Set</b>`, hNum(s.full), hNum(s.full * s.points))).join('');
+    if (t.kind === 'hold') return '';
+    const sell = v.points.sell;
+    return head('At this price', '', '') + line('You get', '', hMoney(sell.lands)) + line('Over what they cost you', '', `<span class="${sell.profit >= 0 ? 't-good' : 't-warn'}">${hSigned(sell.profit)}</span>`);
+}
+
+function pgTodoList(v) {
+    const todo = v.dash.todo;
+    // Under the lines of a buy: what it costs and what it makes of your sets.
+    const foot = (t) => (t.full ? `<div class="nx-f"><span>Costs <b class="num">${hMoney(t.cost)}</b></span><span>Full sets after: ${pgFullWords(v, t.full)}</span></div>` : '');
+    if (!todo.length) return `<div class="next"><div class="nx"><span class="nx-t">${v.ready ? 'Nothing to do now.' : 'Waiting for the first read.'}</span></div></div>`;
+    // Many things to do: one line each, spread over the card. A few: each from the top, with its own lines under it.
+    if (todo.length > PG_TODO_ROOMY) return `<div class="next">${todo.map((t) => pgTodo(v, t)).join('')}</div>`;
+    return `<div class="next few n${todo.length}">${todo.map((t) => { const more = pgTodoMore(v, t); return `<div class="nx-g${more ? '' : ' bare'}">${pgTodo(v, t)}${more ? `<div class="nx-m">${more}</div>${foot(t)}` : ''}</div>`; }).join('')}</div>`;
+}
+
 function pgSky(v) {
     return v.sets.map((s) => {
         const max = Math.max(...s.pieces.map((p) => p.held), s.target, 1) * 1.08;
@@ -128,7 +154,7 @@ function pgDashboard(d, ui) {
     </div>
     <div class="panel s4 tint" data-k="todo">
       <div class="ph"><h2>Do now</h2></div>
-      <div class="pb"><div class="next">${v.dash.todo.length ? v.dash.todo.map((t) => pgTodo(v, t)).join('') : `<div class="nx"><span class="nx-t">${v.ready ? 'Nothing to do now.' : 'Waiting for the first read.'}</span></div>`}</div></div>
+      <div class="pb todo">${pgTodoList(v)}</div>
     </div>
     <div class="panel s4" data-k="margin">
       <div class="ph"><h2>What a set pays</h2><div class="legend">${pgSetKeys(v)}</div><span class="sp"></span><span class="sub">${PG_FEE}</span></div>

@@ -226,6 +226,36 @@ test('TornW3B: every tab draws on one listing window and one day count, through 
     assert.equal(b.client.stats().listingToday, 3);
 });
 
+test('TornW3B: the item listings Torn Bids asked for on this PC count in the same minute and day as ours', async () => {
+    const { client, state } = w3b({ listingPerMinute: 4, listingPerDay: 10 });
+    const hour = Math.floor(T0 / HOUR);
+    let other = null;
+    client.loadListingOther = () => other;
+    await client.get('marketplace/1');
+    // Torn Bids made two in this minute, one of them older than a minute by now, and one from the future (not believed).
+    other = { m: [T0 - 70000, T0 - 20000, T0 - 5000, T0 + 90000], d: { [hour]: 2, [hour - 30]: 50 } };
+    assert.equal(client.stats().listingLastMinute, 3);
+    assert.equal(client.stats().listingToday, 3);
+    await client.get('marketplace/2');
+    const error = await refused(client.get('marketplace/3'));
+    assert.equal(error.reason, 'listing-minute');
+    // Room comes back when Torn Bids' oldest request leaves the minute.
+    assert.equal(error.retryAt, T0 - 20000 + 60000);
+    assert.equal(state.calls.length, 2);
+    // Their count is never written into ours.
+    assert.deepEqual(client.listingDay, { [hour]: 2 });
+    // The day: theirs and ours together reach the cap.
+    state.t += 2 * MIN;
+    other = { m: [], d: { [hour]: 8 } };
+    assert.equal((await refused(client.get('marketplace/4'))).reason, 'listing-day');
+    // What cannot be read is no count at all.
+    other = null;
+    await client.get('marketplace/4');
+    client.loadListingOther = () => { throw new Error('no page storage'); };
+    await client.get('marketplace/5');
+    assert.equal(state.calls.length, 4);
+});
+
 test('TornW3B: the day\'s listings stop at the cap, and start again when the oldest hour has left the day', async () => {
     const { client, state } = w3b({ listingPerDay: 5 });
     for (let i = 1; i <= 5; i += 1) {

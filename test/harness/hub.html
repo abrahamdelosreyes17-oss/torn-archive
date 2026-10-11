@@ -8,6 +8,7 @@
     ?closed=1  the shop closed         ?fell=400  the points price that much lower
     ?one=1     only the plushie set    ?w3b=match | differ | error
     ?server=ok | old | update | password | down | saved
+    ?todo=hot | hot,sell | trades | swap | sell   only these things under "Do now"
 -->
 <script type="module">
 import { mountHub } from '../../src/ui/hub.js';
@@ -51,13 +52,15 @@ const serverOf = () => {
 };
 let notice = null;
 
+// ?todo=hot,sell: the dashboard with only those things to do, to see its card with one or two.
+const only = (view) => { if (q.has('todo')) { const keep = q.get('todo').split(','); view.dash.todo = view.dash.todo.filter((t) => keep.includes(t.kind)); } return view; };
 function desk() {
-    const view = archiveView(input);
+    const view = only(archiveView(input));
     if (q.get('w3b') && input.w3b) {
         const want = desiredList(view.pieces, view.settings.open);
         const list = q.get('w3b') === 'match' && !input.w3bSent ? want : input.w3bSent || [...want.slice(3)].map((x, i) => (i < 2 ? { ...x, price: x.price - 100 } : x));
         input.w3b = { ...input.w3b, list: q.get('w3b') === 'error' ? null : parseOwnList({ items: list.map((x) => ({ itemID: x.itemID, pricingType: 'fixed', pricingValue: x.price })) }), listAt: now, error: q.get('w3b') === 'error' ? 'TornW3B did not answer (timed out). Tried again in a minute.' : '' };
-        return { view: archiveView(input), keys, usage, turns: q.has('behind') ? { mode: 'behind', why: 'trading-in-view', torn: 12, w3b: 8 } : { mode: 'alone', why: '', torn: 85, w3b: 80 }, busy, notice, server: serverOf(), version: 'harness' };
+        return { view: only(archiveView(input)), keys, usage, turns: q.has('behind') ? { mode: 'behind', why: 'trading-in-view', torn: 12, w3b: 8 } : { mode: 'alone', why: '', torn: 85, w3b: 80 }, busy, notice, server: serverOf(), version: 'harness' };
     }
     return { view, keys, usage, turns: q.has('behind') ? { mode: 'behind', why: 'trading-in-view', torn: 12, w3b: 8 } : { mode: 'alone', why: '', torn: 85, w3b: 80 }, busy, notice, server: serverOf(), version: 'harness' };
 }
