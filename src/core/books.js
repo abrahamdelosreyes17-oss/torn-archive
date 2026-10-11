@@ -163,11 +163,16 @@ export function heldByDay(entries, now, days = 14) {
  * @param sales [{ id, t, got }]            points sales, what each put on hand
  * @param mugs  [{ id, t, by, taken }]
  * @param outs  [{ t, amount }]             money that left your hand: a vault or bank deposit, a buy, a trade paid
+ * @param from  the money that left your hand is on record only from this time on (older rows are let go): a sale
+ *              before it is taken as banked or spent long since - with no row left to say so it would otherwise
+ *              stand "on hand" for good, and the next mug, any mug, would count against it
+ * A mug that carries `kept` ({ counted, onHand, saleId, after }) was judged while every row around it was on record:
+ * that judgement stands.
  * @returns { rows (newest first: + counted, onHand, saleId, after), counted, left }
  */
-export function mugCheck(sales, mugs, outs) {
+export function mugCheck(sales, mugs, outs, from = 0) {
     const ev = [
-        ...(sales || []).map((s) => ({ t: bkNum(s.t), k: 0, s })),
+        ...(sales || []).filter((s) => !(from > 0 && bkNum(s.t) < from)).map((s) => ({ t: bkNum(s.t), k: 0, s })),
         ...(outs || []).map((o) => ({ t: bkNum(o.t), k: 1, o })),
         ...(mugs || []).map((m) => ({ t: bkNum(m.t), k: 2, m })),
     ].sort((a, b) => a.t - b.t || a.k - b.k);
@@ -177,7 +182,13 @@ export function mugCheck(sales, mugs, outs) {
     for (const e of ev) {
         if (e.k === 0) { onHand += Math.max(0, bkNum(e.s.got)); last = e.s; }
         else if (e.k === 1) { onHand = Math.max(0, onHand - Math.max(0, bkNum(e.o.amount))); if (!onHand) last = null; }
-        else {
+        else if (e.m.kept) {
+            const taken = Math.max(0, bkNum(e.m.taken));
+            const k = e.m.kept;
+            rows.push({ ...e.m, taken, counted: Math.min(taken, Math.max(0, bkNum(k.counted))), onHand: bkNum(k.onHand), saleId: k.saleId || null, after: bkNum(k.after) });
+            onHand = Math.max(0, onHand - Math.max(0, bkNum(k.counted)));
+            if (!onHand) last = null;
+        } else {
             const taken = Math.max(0, bkNum(e.m.taken));
             const counted = Math.min(taken, onHand);
             rows.push({ ...e.m, taken, counted, onHand, saleId: counted && last ? last.id : null, after: counted && last ? e.t - last.t : 0 });

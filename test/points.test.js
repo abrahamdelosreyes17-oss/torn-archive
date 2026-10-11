@@ -38,7 +38,8 @@ test('the points market: listings cheapest first, folded by price', () => {
 test('the first wall is the first level holding three times everything cheaper; $1 under it, with the points ahead', () => {
     const l = parsePointsMarket(MARKET);
     assert.deepEqual(firstWall(priceLevels(l)), { price: 30000, ahead: 50, index: 1 });
-    assert.deepEqual(listPrice(l), { price: 29999, ahead: 0, rule: 'wall', lowest: 29999, wall: 30000 });
+    // 50 are listed at $29,999 already: they were there first and sell before yours.
+    assert.deepEqual(listPrice(l), { price: 29999, ahead: 50, rule: 'wall', lowest: 29999, wall: 30000 });
     assert.deepEqual(listPrice(l, 'lowest'), { price: 29998, ahead: 0, rule: 'lowest', lowest: 29999, wall: 30000 });
     assert.equal(listPrice([]), null);
     // A few cheap points, then the bulk: the wall is the bulk, however wide or narrow the step in price.

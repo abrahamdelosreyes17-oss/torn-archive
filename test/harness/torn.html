@@ -41,7 +41,8 @@
     ?page=bazaar&userId=N   a bazaar (the first stop of a made list when userId is left out)   &run=1  a run started
                             &away=1  one listing of the list is not on the page (further down, or sold)
     ?page=bazaar&im=1       stands in for the Item Market
-    ?page=trade#step=view&ID=N   a trade (&money=1: the add-money step)
+    ?page=trade#step=view&ID=N   a trade (&money=1: the add-money step; &more=1: ten more of its first piece on the page than the hub read)
+    &late=N   the hub last answered N minutes ago
     ?page=museum   ?page=pmarket   ?page=forum#/p=threads&t=N
     &old=1  the shared view is 20 minutes old      &none=1  nothing shared yet     &trading=1  Torn Trading on this page
     &trading=1&panel=1  with its panel, where Torn Trading stands it (430 wide or the free strip, min(75vh, 640px) tall,
@@ -51,7 +52,7 @@
 <div id="mainContainer"></div>
 <script type="module">
 import { archiveView, viewForTabs, viewPiece } from '../../src/core/view.js';
-import { fillPlan, stopsOf, runStart } from '../../src/core/shopping.js';
+import { fillList, stopsOf, runStart } from '../../src/core/shopping.js';
 import { SETS } from '../../src/core/sets.js';
 import { gmSet, gmGet } from '../../src/platform/gm.js';
 import { mountTornPage, SHARED_VIEW_KEY, SHARED_NOTES_KEY } from '../../src/ui/torn-page.js';
@@ -63,7 +64,7 @@ const now = Date.now();
 const input = fixtureInput(now);
 let view = archiveView(input);
 if (page === 'bazaar' || q.has('list')) {
-    input.cart = fillPlan(view.pieces, input.offers);
+    input.cart = fillList(view.pieces, (id) => input.offers(id).filter((o) => o.ok !== false));
     const stops = stopsOf(input.cart, (id) => (viewPiece(view, id) || {}).worth || 0);
     if (q.has('run')) input.run = runStart(stops);
     view = archiveView(input);
@@ -110,7 +111,8 @@ if (page === 'bazaar') {
     const id = (location.hash.match(/ID=(\d+)/) || [])[1];
     const t = view.trades.open.find((x) => String(x.id) === id) || view.trades.open[0];
     if (!id && t) location.hash = 'step=' + (q.has('money') ? 'addmoney' : 'view') + '&ID=' + t.id;
-    const rows = t ? t.rows : [];
+    const firstPiece = t ? t.rows.findIndex((r) => r.state !== 'other') : -1;
+    const rows = t ? t.rows.map((r, i) => (q.has('more') && i === firstPiece ? { ...r, qty: r.qty + 10 } : r)) : [];
     main.innerHTML = `<h1>Trade</h1><div class="trade-cont">
       <div class="user left"><div class="title-black">You</div><ul class="cont"><li class="color1"><div class="name">${t && t.myMoney ? money(t.myMoney) : 'No money in trade'}</div></li><li class="color2"><ul class="desc"><li><div class="name">No items in trade</div></li></ul></li></ul></div>
       <div class="user right"><div class="title-black">${esc((t && t.who) || 'Someone')}</div><ul class="cont"><li class="color1"><div class="name">No money in trade</div></li><li class="color2"><ul class="desc">${rows.map((r) => `<li><div class="name">${esc(r.name)} x${r.qty}</div></li>`).join('')}</ul></li></ul></div>
@@ -147,7 +149,7 @@ if (q.has('trading')) {
 
 // &key=1: a key was pasted once (a made-up word: nothing is asked of Torn here).
 if (q.has('key')) gmSet('key.limited', 'harness');
-if (!q.has('none')) gmSet(SHARED_VIEW_KEY, { at: q.has('old') ? now - 20 * 60000 : now, v: JSON.parse(JSON.stringify(viewForTabs(view))) });
+if (!q.has('none')) gmSet(SHARED_VIEW_KEY, { at: q.has('old') ? now - 20 * 60000 : now - (Number(q.get('late')) || 0) * 60000, v: JSON.parse(JSON.stringify(viewForTabs(view))) });
 const log = document.createElement('div');
 log.className = 'log';
 main.appendChild(log);

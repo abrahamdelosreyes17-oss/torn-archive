@@ -628,7 +628,7 @@ test('a piece open on "Sold by": every bazaar its table shows is asked of Torn i
     assert.ok(rows.length > 0 && rows.every((o) => o.from === 'torn'), 'and the rows left say so: none is TornW3B\'s copy');
     since = Date.now() + 1;
     await r.wait(1);
-    r.engine.act('readNow');
+    assert.equal(r.engine.act('read'), true, 'the press the hub sends is one the engine knows');
     await r.go(MIN);
     assert.deepEqual(shown.filter((id) => !asked(since).has(id)), [], 'Read now reads them again');
 });
@@ -691,4 +691,186 @@ test('a finished trade Torn will not hand over does not hold up the trades after
     r.fake.fetch = real;
     await r.go(5 * MIN);
     assert.equal(r.view().trades.finished.filter((x) => x.id === b).length, 1);
+});
+
+// ---- Torn's own words for `from` and `to` (its spec: "after this time", "up to and including this time") -------------
+
+const buyRows = (r) => r.engine.state.ledger.rows.filter((x) => x.side === 'buy').length;
+const madeUpBuy = (r, at) => r.fake.addLog(1225, { seller: 3000005, items: [{ id: 186, uid: null, qty: 1 }], cost_each: 880, cost_total: 880 }, at);
+
+test('a row written to your log in the very second the last read ended at is not lost', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    const at = Date.now();
+    madeUpBuy(r, at);
+    await r.go(3 * MIN);
+    const had = buyRows(r);
+    assert.equal(r.engine.state.log.newest, Math.floor(at / 1000), 'the log is read up to that second');
+    // Torn writes another row with the same second, after the read.
+    madeUpBuy(r, at);
+    await r.go(3 * MIN);
+    assert.equal(buyRows(r), had + 1);
+    await r.go(5 * MIN);
+    assert.equal(buyRows(r), had + 1, 'and it is taken once, though that second is asked for every time');
+});
+
+test('more rows than one page, and the page ends inside a second with ten rows: none is skipped', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    await r.go(5 * MIN);
+    const had = buyRows(r);
+    const end = Date.now();
+    // Newest first: 95 rows a second apart, ten in one second, 25 older ones. The first page of 100 ends five rows
+    // into the ten.
+    for (let k = 0; k < 95; k++) madeUpBuy(r, end - k * 1000);
+    for (let k = 0; k < 10; k++) madeUpBuy(r, end - 95 * 1000);
+    for (let k = 0; k < 25; k++) madeUpBuy(r, end - (96 + k) * 1000);
+    await r.go(4 * MIN);
+    assert.equal(buyRows(r), had + 130);
+});
+
+test('whether Torn lists finished trades by when they finished or when they were opened: a trade opened before the last one read, and finished after, is taken', async (t) => {
+    for (const by of ['created', 'completed']) {
+        const r = rig(t, { world: (w) => { w.options.tradesFromIs = by; } });
+        await r.ready();
+        const a = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 2 }] }));
+        await r.go(2 * MIN);
+        const b = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 186, qty: 3 }] }));
+        await r.go(2 * MIN);
+        r.fake.finishTrade(b, { pay: 3 * payOf(r.world, 186) });
+        await r.go(8 * MIN);
+        assert.ok(r.view().trades.finished.some((x) => x.id === b), by + ': the first one finished is in');
+        r.fake.finishTrade(a, { pay: 2 * payOf(r.world, 384) });
+        await r.go(8 * MIN);
+        const done = r.view().trades.finished.map((x) => x.id);
+        assert.ok(done.includes(a), by + ': the one opened earlier and finished later is in');
+        assert.equal(done.filter((x) => x === b).length, 1, by + ': and nothing twice');
+        r.clock.restore();
+    }
+});
+
+test('"Do now"\'s list, made: the pieces and stops its line said, and no more', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    const todo = r.view().dash.todo.find((x) => x.kind === 'hot');
+    r.engine.act('makeList', 'hot');
+    const cart = r.engine.state.cart;
+    if (!todo) { assert.deepEqual(cart, [], 'nothing under what you pay sellers: an empty list'); return; }
+    assert.equal(cart.reduce((s, l) => s + l.q, 0), todo.n);
+    assert.equal(new Set(cart.map((l) => l.place)).size, todo.stops);
+    r.engine.act('makeList');
+    assert.ok(r.engine.state.cart.reduce((s, l) => s + l.q, 0) >= todo.n, 'the whole list is the longer one');
+});
+
+test('a set swapped before the count began costs what your own buys on record say it cost then, not the market value of today', async (t) => {
+    // The made-up history swaps two flower sets three days and two hours before the start. Here every flower was
+    // bought at $1,000 a day before that; the trades that finished after the swap paid far more.
+    let flowers = [];
+    const r = rig(t, { world: (w, fake) => {
+        flowers = w.sets.find((s) => s.key === 'flower').pieces;
+        for (const id of flowers) fake.addLog(1225, { seller: 3000005, items: [{ id, uid: null, qty: 2 }], cost_each: 1000, cost_total: 2000 }, T0 - 4 * 24 * 60 * MIN - 2 * 60 * MIN);
+    } });
+    await r.ready();
+    await r.go(5 * MIN);
+    assert.ok(r.engine.state.stock.invAt > 0, 'the count has begun');
+    const made = r.engine.state.book.filter((e) => e.kind === 'made' && e.set === 'flower' && e.t < T0);
+    assert.equal(made.length, 1);
+    assert.equal(made[0].points, 20);
+    assert.equal(made[0].each, flowers.length * 1000 / 10, 'each piece at your $1,000, ten points a set');
+    const atMarket = flowers.reduce((s, id) => s + r.world.items[id].mv, 0) / 10;
+    assert.notEqual(Math.round(made[0].each), Math.round(atMarket), 'until 1.2.3 it stood at the market value');
+});
+
+// ---- only what was checked lately counts (the owner, 2026-10-11: "if i press refresh now ... make sure nothing is stale") --
+
+const bazRows = (v) => v.pieces.flatMap((p) => p.offers.filter((o) => o.src !== 'market').map((o) => ({ ...o, id: p.id })));
+/** The listing each line of the list stands on, as the view has it now. */
+const cartRows = (r) => { const v = r.view(); return r.engine.state.cart.map((l) => piece(v, l.id).offers.find((o) => (l.im ? o.src === 'market' : String(o.whoId) === String(l.whoId))) || null); };
+
+test('Read now: nothing looked at before the press counts until it has been looked at again, and the bazaars of the list are asked at once', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    const stops = [...new Set(r.engine.state.cart.filter((l) => !l.im).map((l) => String(l.whoId)))];
+    assert.ok(stops.length > 1, 'a list over several bazaars before the press');
+    // A minute with nobody stepping: every look is over 45 seconds old.
+    await r.wait(MIN);
+    assert.ok(r.view().buy.plan.units > 0);
+    const lines = r.engine.state.cart.length;
+    const press = Date.now();
+    r.engine.readNow();
+    const at0 = r.view();
+    assert.equal(at0.buy.plan.units, 0, 'the moment after the press nothing counts');
+    assert.equal(at0.dash.todo.some((x) => x.kind === 'hot' || x.kind === 'buy'), false, '"Do now" names nothing to buy');
+    assert.ok(bazRows(at0).length > 0 && bazRows(at0).every((o) => o.ok === false), 'the rows are still shown, as not checked');
+    assert.deepEqual(stops.filter((id) => !at0.buy.check.includes(id)), [], 'and their bazaars are the ones to ask');
+    assert.equal(r.engine.state.cart.length, lines, 'the list you made is not thrown away for it');
+    r.engine.act('makeList');
+    assert.deepEqual(r.engine.state.cart, [], 'but a list made now holds nothing that was not checked');
+    await r.go(MIN);
+    const asked = new Set(r.torn('/v2/user', (c) => BAZAAR_READ(c) && c.t >= press).map((c) => String(c.query.id)));
+    assert.deepEqual(stops.filter((id) => !asked.has(id)), [], 'every bazaar of the list was read from Torn after the press');
+    const after = r.view();
+    assert.ok(after.buy.plan.units > 0, 'a minute later there is something to buy again');
+    assert.deepEqual(after.buy.check, [], 'and nothing a list would use is left unchecked');
+    r.engine.act('makeList');
+    const rows = cartRows(r);
+    assert.ok(rows.length > 0);
+    for (const o of rows) assert.ok(o && o.ok !== false && o.at >= press - 45000, 'a list made of rows looked at since the press');
+});
+
+test('nothing looked at for six minutes: nothing counts, and a minute of reading later it does again', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    await r.wait(6 * MIN);
+    const v = r.view();
+    assert.equal(v.buy.plan.units, 0);
+    assert.equal(v.dash.todo.some((x) => x.kind === 'hot' || x.kind === 'buy'), false, '"Do now" names no listing either');
+    assert.ok(v.buy.unsure > 0 && v.buy.check.length > 0, 'the Buy page says what is being asked');
+    await r.go(2 * MIN);
+    assert.ok(r.view().buy.plan.units > 0);
+    r.engine.act('makeList');
+    const rows = cartRows(r);
+    assert.ok(rows.length > 0);
+    for (const o of rows) assert.ok(o && o.ok !== false && Date.now() - o.at <= 5 * MIN);
+});
+
+test('a bazaar known from TornW3B alone that a list would use, though it is not among the cheapest: Torn is asked about it, and then it counts', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    // Trader D (3000004) is too dear for anything. Now it lists Sheep as the third cheapest: you need more than the
+    // two cheaper rows hold, so a list would go there.
+    const p = piece(r.view(), 186);
+    const price = p.offers[1].price + 1;
+    assert.ok(price < p.worth && p.need > p.offers[0].qty + p.offers[1].qty, 'the made-up world still leaves room for it');
+    const set = Date.now();
+    r.fake.setPrice(3000004, 186, price, 6);
+    let row = null;
+    // TornW3B's list of a piece whose cheapest price did not move is read again within the hour (its daily limit).
+    for (let k = 0; k < 12 * 90 && !(row && row.from === 'torn'); k++) {
+        await r.go(5000);
+        row = piece(r.view(), 186).offers.find((o) => String(o.whoId) === '3000004') || null;
+    }
+    assert.ok(row && row.from === 'torn' && row.ok !== false, 'Torn itself was asked, and the row counts');
+    assert.ok(r.torn('/v2/user', (c) => BAZAAR_READ(c) && String(c.query.id) === '3000004' && c.t >= set).length > 0);
+    r.engine.act('makeList');
+    assert.equal(r.engine.state.cart.filter((l) => String(l.whoId) === '3000004' && Number(l.id) === 186).reduce((s, l) => s + l.q, 0), 6);
+});
+
+test('a bazaar\'s own page, told by your Torn tab: its price and stock are the hub\'s at once, and a list line it no longer bears comes off', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    const line = r.engine.state.cart.find((l) => !l.im);
+    assert.ok(line, 'a bazaar line on the list');
+    const p = piece(r.view(), line.id);
+    // The page shows that piece there at more than it is worth to you, one left.
+    r.engine.note('shop', { t: Date.now(), whoId: String(line.whoId), items: [{ id: String(line.id), price: p.worth + 1000, qty: 1 }] });
+    const row = piece(r.view(), line.id).offers.find((o) => String(o.whoId) === String(line.whoId));
+    assert.deepEqual([row.price, row.qty, row.from, row.ok], [p.worth + 1000, 1, 'page', true]);
+    assert.equal(r.engine.state.cart.some((l) => l.key === line.key), false, 'the line is off the list');
+    // Torn's next read of that bazaar is the newer look: it wins again.
+    await r.go(2 * MIN);
+    const later = piece(r.view(), line.id).offers.find((o) => String(o.whoId) === String(line.whoId));
+    assert.ok(later && later.from === 'torn' && later.price === line.price, 'Torn\'s later read stands over the page\'s');
 });

@@ -14,7 +14,7 @@
 import { mountHub } from '../../src/ui/hub.js';
 import { archiveView, viewPiece } from '../../src/core/view.js';
 import { archiveSettings } from '../../src/core/settings.js';
-import { fillPlan, toggleLine, dropLine, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, listAfterRun } from '../../src/core/shopping.js';
+import { fillList, cheapPieces, toggleLine, dropLine, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, listAfterRun } from '../../src/core/shopping.js';
 import { desiredList, parseOwnList } from '../../src/core/tw3b-list.js';
 import { tradeNotice } from '../../src/core/trades.js';
 import { fixtureInput } from '../fixture-view.js';
@@ -23,6 +23,8 @@ import { serverLines } from '../../src/core/server.js';
 const q = new URLSearchParams(location.search);
 const now = Date.now();
 let input = fixtureInput(now);
+// ?old: the rows not looked at in the last 5 minutes are marked as the engine marks them (state.js COUNT_MS).
+if (q.has('old')) { const all = input.offers; input.offers = (id) => all(id).map((o) => ({ ...o, ok: now - o.at <= 5 * 60000 })); }
 if (q.has('fell')) input.listings = input.listings.map((l) => ({ ...l, cost: l.cost - (Number(q.get('fell')) || 400) }));
 if (q.has('closed')) input.settings = archiveSettings({ ...input.settings, open: false });
 if (q.has('one')) input.settings = archiveSettings({ ...input.settings, which: { plushie: true, flower: false } });
@@ -80,7 +82,9 @@ const hub = mountHub(document, {
         if (offer) { input.cart = toggleLine(input.cart, p, offer); input.run = { ...RUN_IDLE }; show(); }
     },
     drop(key) { input.cart = dropLine(input.cart, key); input.run = { ...RUN_IDLE }; show(); },
-    makeList() { const v = archiveView(input); input.cart = fillPlan(v.pieces, input.offers); input.run = { ...RUN_IDLE }; show(); },
+    // As main.js and the engine: 'hot' = "Do now"'s list (under what you pay sellers), else the whole list.
+    makeList(kind) { const v = archiveView(input); input.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => input.offers(id).filter((o) => o.ok !== false)); input.run = { ...RUN_IDLE }; show(); },
+    look(id) { window.looked = [...(window.looked || []), String(id)]; },
     clearList() { input.cart = []; input.run = { ...RUN_IDLE }; show(); },
     run(op) {
         const S = stops();

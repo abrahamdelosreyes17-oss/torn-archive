@@ -59,7 +59,7 @@ export function firstWall(levels, { depth = 12, times = WALL_TIMES } = {}) {
 /**
  * The price to type for your points.
  * @param rule 'wall' = $1 under the first wall (the default); 'lowest' = $1 under the lowest listing
- * @returns null with no listings, else { price, ahead, rule, lowest, wall }; `ahead` = points listed cheaper than you
+ * @returns null with no listings, else { price, ahead, rule, lowest, wall }; `ahead` = points listed at your price or cheaper
  */
 export function listPrice(listings, rule = 'wall') {
     const levels = priceLevels(listings);
@@ -69,7 +69,9 @@ export function listPrice(listings, rule = 'wall') {
     const useWall = rule !== 'lowest' && !!wall;
     const price = Math.max(1, (useWall ? wall.price : lowest) - 1);
     let ahead = 0;
-    for (const lv of levels) if (lv.price < price) ahead += lv.qty;
+    // At your price or under it: a listing already there at the same price sells before yours (as the box on the
+    // points market counts it).
+    for (const lv of levels) if (lv.price <= price) ahead += lv.qty;
     return { price, ahead, rule: useWall ? 'wall' : 'lowest', lowest, wall: wall ? wall.price : null };
 }
 

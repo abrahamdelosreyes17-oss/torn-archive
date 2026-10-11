@@ -6,11 +6,11 @@
 import {
     engineLoad, ENGINE_PARTS, ENGINE_PIECES, BACKFILL_MS, foldItems, foldSummary, foldListings, foldMarket, foldShop, foldBids, foldPoints, foldMoney,
     foldInventory, foldLog, foldLogTypes, outLogTypes, logTypeGroups, foldTradeList, foldTradeOpen, foldTradeFinished, tradeHasPieces, foldThreads,
-    foldOwnList, foldReceipt, recordDay, engineInput, offersOf, noteSeenBuy, noteSwap, noteThread, mvOf, foldServer, serverEmpty,
+    foldOwnList, foldReceipt, recordDay, engineInput, offersOf, notePage, noteSeenBuy, noteSwap, noteThread, mvOf, foldServer, serverEmpty, settleMugs,
 } from './state.js';
 import { serverShop, serverListReadAt, serverMarketIn, SERVER_QUIET_MS, SERVER_BOUGHT_MS, SERVER_SYNC_MS } from '../core/server.js';
 import { archiveView, viewPiece, setsTraded, ALL_PIECE_IDS } from '../core/view.js';
-import { fillPlan, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, runView, runOrder, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE } from '../core/shopping.js';
+import { fillPlan, fillList, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, runView, runOrder, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE, cheapPieces } from '../core/shopping.js';
 import { hotSince } from '../core/verdict.js';
 import { stockAge } from '../core/stock.js';
 import { pointsLogTypes } from '../core/points.js';
@@ -62,10 +62,16 @@ const EG_RECEIPT_GAP_MS = 5 * EG_MIN;
 const EG_REFUSED_RETRY_MS = 30 * EG_MIN;
 /** Bazaars confirmed with Torn itself each round: the stops of your list and the cheapest places first. */
 const EG_SHOPS = 12;
+/** ... or this share of what Torn allows you a minute, when that is more (alone on the key: about 34 of 85). */
+const EG_SHOPS_SHARE = 0.4;
+/** A read of Torn's made this lately is the newest there is: "Read now" does not ask for it again. */
+const EG_JUST_READ_MS = 45000;
 /** The piece open on the hub: this many rows of its "Sold by" table are confirmed with Torn, while it was looked at this lately. */
 const EG_LOOK_ROWS = 14;
 /** How often one finished trade is asked for before it is left out and said. */
 const EG_TRADE_TRIES = 3;
+/** How far before the last finished trade read the list is asked from, in seconds (readFinished). */
+const EG_TRADES_BACK_S = 24 * 3600;
 const EG_LOOK_MS = 10 * EG_MIN;
 const EG_SYNC_GAP_MS = 2 * EG_MIN;
 
@@ -127,6 +133,7 @@ export function makeEngine(env) {
         const v = archiveView(engineInput(S, settings(), now, { logRead: logRead() }));
         const hot = hotSince(S.hot, v.buy.hot, now);
         if (JSON.stringify(hot) !== JSON.stringify(S.hot)) { S.hot = hot; dirty.add('hot'); }
+        if (settleMugs(S, v.ledger.mugs.rows, now)) dirty.add('ledger');
         cache = { at: now, view: v };
         return v;
     }
@@ -207,7 +214,7 @@ export function makeEngine(env) {
         const rows = await fetchInventory(env.torn, { categories: ['Plushie', 'Flower'], byCategoryFirst: true, priority: 'high', onStamp: (sec) => { tornAt = tornAt ? Math.min(tornAt, sec * 1000) : sec * 1000; } });
         const had = S.stock.tornAt || 0;
         foldInventory(S, rows, env.now(), tornAt);
-        touch('stock');
+        touch('stock', 'book');
         tidyList();
         // Torn's next count, asked for as it is made.
         const age = stockAge(S.stock);
@@ -244,14 +251,18 @@ export function makeEngine(env) {
             for (;;) {
                 if (pages >= EG_LOG_PAGES) { left = { g, to }; break; }
                 pages += 1;
-                const rows = await fetchLogPage(env.full, { from, to, types: groups[g].ids, use });
+                // Torn's `from` is "after this time": the second already read is asked for again, so a row written in it
+                // after the last read is not lost (a row is taken once, by its id).
+                const rows = await fetchLogPage(env.full, { from: Math.max(0, from - 1), to, types: groups[g].ids, use });
                 const res = foldLog(S, rows, { now, priceNow });
                 for (const u of res.unread) sayOnce('log-row-' + u.type, 'A log row of type ' + u.type + ' ("' + u.title + '") could not be read', 'its data has: ' + u.keys.join(', '));
                 newest = Math.max(newest, res.newest);
                 got[groups[g].name] = (got[groups[g].name] || 0) + rows.length;
                 // A full page: older rows of the same stretch wait behind it.
                 if (rows.length < 100 || !res.oldest) break;
-                to = res.oldest - 1;
+                // `to` is "up to and including": the page's oldest second is asked for again, the rows of it that did
+                // not fit come with the next page. A page that is one second from end to end cannot be split so.
+                to = res.oldest === res.newest || res.oldest === to ? res.oldest - 1 : res.oldest;
             }
         }
         // Bought at a stop of the run: counted there.
@@ -295,7 +306,10 @@ export function makeEngine(env) {
         const now = env.now();
         const use = { tag: 't.setslog', priority: 'low' };
         const from = S.ledger.tradesFrom || Math.floor((now - BACKFILL_MS) / 1000);
-        const list = await fetchTradesPage(env.torn, { from, use });
+        // Whether Torn's `from` goes by when a trade was finished or when it was opened is not known: a day back is
+        // asked for, and a trade is taken once by its id. A full page means a backlog: then from where it stood.
+        let list = await fetchTradesPage(env.torn, { from: Math.max(0, from - EG_TRADES_BACK_S), use });
+        if (list.length >= 100) list = await fetchTradesPage(env.torn, { from: Math.max(0, from - 1), use });
         let newest = from;
         let read = 0;
         let left = false;
@@ -416,15 +430,21 @@ export function makeEngine(env) {
             const rest = [];
             const more = (id) => { if (id != null && id !== '' && !ids.includes(String(id)) && !rest.includes(String(id))) rest.push(String(id)); };
             for (const s of v.buy.stops) if (!s.im) more(s.whoId);
+            for (const id of v.buy.check || []) more(id);
             for (const h of v.buy.hot) if (!h.im) more(h.whoId);
             for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) more(o.whoId);
-            return [...ids, ...rest.slice(0, EG_SHOPS)];
+            return [...ids, ...rest.slice(0, shopsCap())];
         }
         for (const s of v.buy.stops) if (!s.im) add(s.whoId);
+        // The bazaars a list would use that are shown but not checked: checked, they count.
+        for (const id of v.buy.check || []) add(id);
         for (const h of v.buy.hot) if (!h.im) add(h.whoId);
         for (const p of v.pieces) if (p.need > 0) for (const o of p.offers.slice(0, 2)) if (o.src !== 'market' && o.price < p.worth) add(o.whoId);
-        return ids.slice(0, EG_SHOPS);
+        return ids.slice(0, shopsCap());
     }
+
+    /** How many bazaars are kept checked with Torn at once. */
+    const shopsCap = () => Math.max(EG_SHOPS, Math.floor((Number(env.torn && env.torn.maxPerMinute) || 0) * EG_SHOPS_SHARE));
 
     /** The server answered lately: what it holds is in step with Torn. */
     const serverOn = (now) => S.server.at > 0 && now - S.server.at < SERVER_QUIET_MS;
@@ -747,6 +767,10 @@ export function makeEngine(env) {
 
     /** "Read now": everything is due. */
     function readNow() {
+        // Nothing looked at before this press counts until it is looked at again (a read of the last moments is
+        // the newest Torn has: it stands). The bazaars of your list and the ones a list would use are asked first.
+        S.fresh = { since: env.now() - EG_JUST_READ_MS };
+        cache = null;
         for (const k of Object.keys(due)) due[k] = 0;
         for (const kind of Object.keys(per)) if (kind !== 'listings' && kind !== 'bids') for (const id of Object.keys(per[kind])) per[kind][id].due = 0;
         if (looked.id) looked = { ...looked, at: env.now() };
@@ -782,7 +806,8 @@ export function makeEngine(env) {
         },
         drop(key) { S.cart = dropLine(S.cart, key); idle(); touch('cart', 'run'); },
         // A list is made from the count as it stands, and Torn is asked for its own at once: the list follows it.
-        makeList() { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); S.cart = fillPlan(v.pieces, (id) => offersOf(S, id, env.now())); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
+        // `kind` 'hot': only what "Do now" counted - under what you pay your sellers. Else everything under its worth.
+        makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false)); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
         clearList() { S.cart = []; idle(); touch('cart', 'run'); },
         run(op) {
             const list = stops();
@@ -839,6 +864,10 @@ export function makeEngine(env) {
             }
         } else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); }
         else if (kind === 'thread') { noteThread(S, what, now); touch('thread'); }
+        // A Torn tab sees a trade that is not as it was read: read again now, not at the minute.
+        else if (kind === 'trade') { due.trades = 0; again(); }
+        // A bazaar's own page, in front of you: the newest look at it there is.
+        else if (kind === 'shop') { if (notePage(S, what, now)) { cache = null; tidyList(); } }
         flush();
         env.changed();
     }

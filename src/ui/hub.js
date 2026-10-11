@@ -274,7 +274,7 @@ export function mountHub(doc, actions) {
         else if (a === 'unit') { ui.unit = v; draw(false); }
         else if (a === 'cart') act('cart', id, v);
         else if (a === 'drop') act('drop', v);
-        else if (a === 'make-list') { act('makeList'); go('buy', 2); }
+        else if (a === 'make-list') { act('makeList', v || ''); go('buy', 2); }
         else if (a === 'clear-list') act('clearList');
         // Start and Next are links: the press opens the bazaar itself, here the run only moves on.
         else if (a === 'run') act('run', v);

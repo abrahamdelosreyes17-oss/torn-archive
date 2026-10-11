@@ -24,7 +24,7 @@ import { gmGet, gmSet, gmOnChange, gmCopy, gmOpenTab } from '../platform/gm.js';
 import { MARKS_CSS } from './marks-css.js';
 import { BOX_CSS, BOX_MARKS_CSS, BOX_GAP } from './box-css.js';
 import { hIcon, hMoney, hNum } from './fmt.js';
-import { boxClosed, boxAny, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum } from './box-pages.js';
+import { boxClosed, boxAny, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum, boxLate } from './box-pages.js';
 import { overlayStrips, overlaySide, overlayPlace, OV_WIDTH, OV_BAR, OV_GAP, OV_TOP } from '../core/overlay.js';
 import { scanDom } from '../sources/dom/scan.js';
 import { setMark, setRule, markBeside, clearSetMarks, museumExchanges, pieceTiles, pointsListing, pointsRows, tradeTheirRows, forumThread, boxTwins } from '../sources/dom/sets-pages.js';
@@ -52,6 +52,34 @@ export const VIEW_OLD_MS = 15 * 60 * 1000;
 const TP_PRESS_MS = 90 * 1000;
 /** A buy seen here is shown on this page at once, until the hub's view holds it - or this long, if it never does. */
 const TP_PEND_MS = 3 * 60 * 1000;
+/**
+ * The buys seen in a tab that still wait for the hub: [{ nid, id, qty, t }]. One leaves when the hub's view names
+ * its note (`taken`), or when a view worked out more than TP_PEND_MS after it still does not.
+ * @param viewAt when the hub worked out the view this tab holds
+ */
+/** A bazaar's page is told to the hub again after this long, though nothing on it changed: its rows stay checked. */
+export const TP_SHOP_EVERY_MS = 60 * 1000;
+const TP_PIECES = new Set(SETS.flatMap((s) => s.pieces.map((p) => String(p.id))));
+
+/**
+ * The set pieces a bazaar's page shows with a price and a stock: [{ id, price, qty }], a piece listed twice at its
+ * cheaper price. A card whose stock is not stated (its Buy box is open and says none) is left out: it says nothing.
+ */
+export function shopSeen(listings) {
+    const by = new Map();
+    for (const c of listings || []) {
+        const id = String(c && c.itemId);
+        const price = Math.floor(Number(c && c.listingPrice)) || 0;
+        const qty = c && !c.qtyAssumed ? Math.floor(Number(c.qty)) || 0 : 0;
+        if (!TP_PIECES.has(id) || !(price > 1) || !(qty > 0)) continue;
+        if (!by.has(id) || price < by.get(id).price) by.set(id, { id, price, qty });
+    }
+    return [...by.values()].sort((a, b) => (a.id < b.id ? -1 : 1));
+}
+
+export function pendLeft(pend, taken, viewAt) {
+    return (pend || []).filter((p) => !taken.has(p.nid) && !(viewAt - p.t > TP_PEND_MS));
+}
 /** After a press on Torn's page it is looked at again this soon, and once more: Torn redraws in steps. */
 const TP_AFTER_PRESS_MS = [150, 700];
 const TP_SCAN_MS = 250;
@@ -108,7 +136,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         cards: [], tiles: [], seen: {}, seenPlace: '', pressed: new Map(), images: 0,
         // What this tab saw you buy here: `pend` until the hub's view holds it, `took` for as long as you stay.
         pend: [], took: {}, fillAll: null, fill: [], said: new Set(),
-        exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null,
+        exchanges: [], presses: [], pressAt: 0, listing: null, moneyBox: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
         marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
         // Your stock on its own: what this tab adds to the view (buys seen, numbers typed), and its fold.
         live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false,
@@ -217,7 +245,8 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         // The pill is the overlay at its smallest: it says what the folded bar would.
         const small = said.head || said.where || 'Torn Archive';
         if (pillWords.textContent !== small) pillWords.textContent = small;
-        const html = said.html;
+        // Numbers from the hub are on show (this page's, or your sets): if it has gone quiet, that is said first.
+        const html = (st.content || fresh ? boxLate(st.shared.at, now()) : '') + said.html;
         if (st.html !== html) {
             st.html = html;
             const top = body.scrollTop;
@@ -440,9 +469,24 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             st.took[id] = (st.took[id] || 0) + b.qty;
             say('', `A buy seen on the page: ${b.qty} × ${b.name || 'item ' + id} at $${b.price}`, gone ? `the listing was gone after you pressed Buy with ${goneNow.get(key)} in its box` : 'the stock on its listing fell after your press in it');
         }
+        // What this bazaar's page shows of your pieces, told to the hub: the page in front of you is the newest look
+        // at a bazaar there is (as Torn Trading lets the page correct its list). Told when it changes, and once a
+        // minute while you stand here. After the buys above: what it shows is the bazaar after them.
+        if (kind === 'bazaar' && whoId) {
+            const shop = shopSeen(listings);
+            const sig = whoId + '|' + shop.map((x) => x.id + ':' + x.price + ':' + x.qty).join(',');
+            if (shop.length && (sig !== st.shopSig || t - st.shopAt > TP_SHOP_EVERY_MS)) {
+                st.shopSig = sig;
+                st.shopAt = t;
+                note('shop', { t, whoId, items: shop });
+            }
+        }
         // Held by the hub's view now (it names the notes it has taken), or never taken: no longer added here.
         const taken = new Set((st.shared && st.shared.notes) || []);
-        st.pend = st.pend.filter((p) => !taken.has(p.nid) && t - p.t < TP_PEND_MS);
+        // A view worked out well after the buy that still does not name it never will. A hub that is closed makes
+        // no new view: the buy then stays in this tab's numbers (until 1.2.3 it left after three minutes, and the
+        // count fell back to what it was before you bought).
+        st.pend = pendLeft(st.pend, taken, st.shared ? st.shared.at : 0);
         const pend = {};
         for (const p of st.pend) pend[p.id] = (pend[p.id] || 0) + p.qty;
 
@@ -500,7 +544,13 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         const money = step === 'addmoney' ? [...doc.querySelectorAll('.input-money-group input.input-money, input.input-money')].find((i) => i.type !== 'hidden' && i.getClientRects().length && !i.closest('#tarc-host')) || null : null;
         st.moneyBox = money;
         if (!id) return null;
-        const out = boxTrade(v, t, rows, step, !!money);
+        // The rows as this tab saw them on the trade's own view: the add-money step shows none to compare.
+        if (rows.length) st.tradeRows = { id, t: now(), rows: rows.map((r) => ({ name: r.name, qty: r.qty })) };
+        const known = st.tradeRows && st.tradeRows.id === id && now() - st.tradeRows.t < VIEW_OLD_MS ? st.tradeRows.rows : null;
+        const out = boxTrade(v, t, rows, step, !!money, known);
+        // Not the trade the hub read (or not read at all): the hub is asked to read it now, at most every 20 s.
+        if (((out && out.changed) || (!t && rows.length)) && now() - (st.tradeAsked || 0) > 20000) { st.tradeAsked = now(); note('trade', { id }); }
+        if (out && out.changed) st.moneyBox = null;
         const marks = new Map((out ? out.marks : []).map((m) => [m.i, m]));
         rows.forEach((row, i) => {
             const m = marks.get(i);

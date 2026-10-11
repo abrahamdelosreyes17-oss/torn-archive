@@ -3,7 +3,7 @@
 // Nothing here presses anything of Torn's: a button either types into a box of Torn's on your press (Fill),
 // copies text, or opens one page.
 
-import { hEsc, hNum, hMoney, hSigned, hPic, hPlural, hRate } from './fmt.js';
+import { hEsc, hNum, hMoney, hSigned, hPic, hPlural, hRate, hAge } from './fmt.js';
 import { marginWords } from '../core/margin.js';
 import { lotsWords } from '../core/lots.js';
 import { typedListing, listLines } from '../core/points.js';
@@ -12,6 +12,17 @@ import { IM_PLACE } from '../core/shopping.js';
 
 const bxKv = (l, r, cls = '') => `<div class="ta-kv ${cls}"><span>${l}</span><b class="num">${r}</b></div>`;
 const bxNote = (t) => `<div class="ta-n">${t}</div>`;
+
+/** The hub shares its numbers at least once a minute. Silent for longer than this, a Torn tab says how old they are. */
+export const VIEW_LATE_MS = 3 * 60 * 1000;
+/**
+ * '' while the hub answers. Else one line, first in the box: since when it has not - by the whole minute, so the box
+ * is not drawn again every second. (Past VIEW_OLD_MS no number is shown at all: boxClosed.)
+ */
+export function boxLate(at, now) {
+    if (!(at > 0) || !(now - at > VIEW_LATE_MS)) return '';
+    return `<div class="ta-hold"><b>The hub last answered ${Math.floor((now - at) / 60000)} min ago.</b> These numbers are from then. Open its tab and they are current again.</div>`;
+}
 const bxBtn = (act, label, cls = '', v = '', more = '') => `<button class="btn sm ${cls}" data-act="${act}"${v !== '' ? ` data-v="${hEsc(v)}"` : ''}${more}>${label}</button>`;
 const bxHead = (title, right = '') => `<h4>${title}<span>${right}</span></h4>`;
 
@@ -241,20 +252,56 @@ export function boxBazaar(v, cards, place, live = {}) {
  * @param rows   [{ name, qty }] the other side's rows on the page, in page order
  * @param step   'view' | 'addmoney'
  */
-export function boxTrade(v, t, rows, step, hasMoneyBox) {
+/**
+ * Whether the set pieces on Torn's page are the ones the hub read: the same pieces, the same counts. The total,
+ * the message and Fill are of the trade as it was read; a pile put in or taken out since makes them wrong.
+ * Only set pieces are compared (their names are Torn's own on both sides). No rows from the page: nothing to compare.
+ * @param rows [{ name, qty }] the other side's rows on the page
+ * @returns { same, diff: Set of lower-case names whose count differs }
+ */
+export function tradeSame(v, t, rows) {
+    const diff = new Set();
+    if (!t || !rows || !rows.length) return { same: true, diff };
+    const pieces = new Set(v.pieces.map((p) => String(p.name).toLowerCase()));
+    const sum = (list, ok) => { const m = new Map(); for (const r of list) { const k = String(r.name).toLowerCase(); if (ok(r, k)) m.set(k, (m.get(k) || 0) + Math.max(1, Math.floor(Number(r.qty) || 0))); } return m; };
+    const here = sum(rows, (r, k) => pieces.has(k));
+    const read = sum(t.rows, (r) => r.state !== 'other');
+    for (const k of new Set([...here.keys(), ...read.keys()])) if (here.get(k) !== read.get(k)) diff.add(k);
+    return { same: !diff.size, diff };
+}
+
+/**
+ * A trade.
+ * @param known the other side's rows as this tab last saw them on the trade's own view (the add-money step shows none)
+ */
+export function boxTrade(v, t, rows, step, hasMoneyBox, known = null) {
     const marks = [];
     if (!t) {
         return rows.length ? { where: 'a trade', html: bxNote('This trade has not been read yet. The hub reads your open trades once a minute.'), marks } : null;
     }
+    const same = tradeSame(v, t, rows.length ? rows : known || []);
+    const pieceNames = new Set(v.pieces.map((p) => String(p.name).toLowerCase()));
     rows.forEach((row, i) => {
-        const r = t.rows.find((x) => String(x.name).toLowerCase() === String(row.name).toLowerCase());
-        if (!r) return;
+        const key = String(row.name).toLowerCase();
+        const r = t.rows.find((x) => String(x.name).toLowerCase() === key);
+        if (!r) { if (pieceNames.has(key)) marks.push({ i, text: 'not read yet', state: 'over', where: 'right' }); return; }
         if (r.state === 'other' || !r.each) { marks.push({ i, text: 'not a set piece, not priced', state: 'over', where: 'right' }); return; }
+        if (same.diff.has(key)) { marks.push({ i, text: `${hMoney(r.each)} each · its count changed`, state: 'over', where: 'right' }); return; }
         const word = r.take >= r.qty ? `need all ${hNum(r.qty)}` : r.take ? `need ${hNum(r.take)} of ${hNum(r.qty)}` : r.ahead ? 'ahead already' : 'enough for now';
         marks.push({ i, text: `${hMoney(r.each)} · ${word}`, state: r.take ? (r.top ? 'top' : '') : 'ahead', where: 'right' });
     });
     const m = t.margin;
     const pct = v.settings.pct;
+    if (!same.same) {
+        // The numbers of the trade as it was would be paid for the trade as it is: none is shown, nothing is filled.
+        const others = v.trades.open.filter((x) => x.id !== t.id);
+        return {
+            where: 'a trade', marks, changed: true,
+            html: bxHead('Your prices', `${hRate(pct)}% of market value`)
+                + `<div class="ta-hold"><b>This trade changed since it was read${t.readAt ? ' ' + hAge(t.readAt, v.at) : ''}.</b> Its total is being worked out again: it is here within a minute. Nothing is filled until then.</div>`
+                + (others.length ? `<div class="ta-kv sep"><span>Also open with you</span><span>${others.map((x) => `<a class="lk" data-act="open-trade" data-v="${hEsc(x.id)}">${hEsc(x.who || 'a trade')}</a>`).join(' · ')}</span></div>` : ''),
+        };
+    }
     let html = bxHead('Your prices', `${hRate(pct)}% of market value`)
         + bxKv('Only what you need', hMoney(t.needTotal)) + bxKv(`Everything, ${hPlural(t.units, 'piece')}`, hMoney(t.total));
     if (m && m.state === 'ok') html += `<div class="ta-ok">Everything in it ${marginWords(m.all)} before any fee.</div>`;
@@ -382,7 +429,7 @@ export function boxPoints(v, hasBoxes, page = null) {
     const ready = (v.sets || []).reduce((a, s) => a + s.full * s.points, 0);
     html += bxHead(p.hold ? 'If you list anyway' : 'Your points', `${hNum(sell.points)} made from sets`)
         + bxKv(`Price to type · $1 under the ${p.rule === 'wall' ? 'first wall' : 'lowest'}`, hMoney(p.price))
-        + bxKv('Listed cheaper than that', `${hNum(p.ahead)} points`)
+        + bxKv('Listed at that or cheaper', `${hNum(p.ahead)} points`)
         + bxKv('Lot', sell.quick ? `${lotsWords(sell.quick.lots)} · the size that leaves quickest` : `all ${hNum(sell.points)} in one`)
         + (ready ? bxKv('Or wait for a bigger lot', `${hNum(sell.points + ready)} with your ${hPlural(readySets, 'full set')}`) : '')
         + bxKv('One lot puts on hand', hMoney(lot * p.price));

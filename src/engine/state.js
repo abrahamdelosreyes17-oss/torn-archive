@@ -56,6 +56,11 @@ export function engineEmpty() {
         offers: {},
         summary: { at: 0, low: {} },
         shops: {},
+        // What a bazaar's own page showed in one of your Torn tabs: { whoId: { at, items: { id: { price, qty } } } }.
+        // Only the pieces that were on the screen (a bazaar draws its list as you scroll). Not kept over a reload.
+        pages: {},
+        // "Read now" was pressed then: a row looked at before it does not count until it is looked at again.
+        fresh: { since: 0 },
         bids: {},
         points: { listings: [], at: 0, days: [], wallDays: [], lots: { ...LOTS_EMPTY } },
         money: { points: null, onHand: null, vault: null, at: 0 },
@@ -144,7 +149,7 @@ export function foldListings(S, id, raw, now) {
         .slice(0, 40);
     for (const r of rows) enName(S, r.sellerId, r.sellerName);
     const prev = S.offers[id] || {};
-    S.offers = { ...S.offers, [id]: { ...prev, baz: rows.map((r) => ({ price: r.price, qty: r.qty, whoId: r.sellerId, at: r.dataAt || now })), bazAt: now, bazLow: enWhole(S.summary.low[id]) } };
+    S.offers = { ...S.offers, [id]: { ...prev, baz: rows.map((r) => ({ price: r.price, qty: r.qty, whoId: r.sellerId, at: r.dataAt || now, ch: r.changedAt || 0 })), bazAt: now, bazLow: enWhole(S.summary.low[id]) } };
 }
 
 /** One piece's Item Market listings (api/torn.js fetchItemMarket's `listings`). */
@@ -233,22 +238,117 @@ export function shopNow(S, whoId, now) {
     return best && now - best.at < SHOP_KEEP_MS ? best : null;
 }
 
+/** Your own buys at a bazaar (seen on its page, or read in your log) are held against its listing for this long. */
+export const OWN_KEEP_MS = 3 * EN_HOUR;
+/**
+ * A look at a bazaar counts as made after your buy only when it is over a minute later: TornW3B's answer is a copy
+ * one to three minutes old, and Torn's own is some seconds old. (Measured for Torn Trading, 3.16.4.)
+ */
+export const OWN_MARGIN_MS = EN_MIN;
+
+const EN_OWN_INDEX = new WeakMap();
+/**
+ * Your bazaar buys of the last hours, each of them once: Map 'item:who' -> [{ t, qty }]. A buy seen on the page
+ * stands until its row in Torn's log is in; from then on the row does (a buy made with no Torn tab of ours open -
+ * on a phone, or with the hub closed - is known from the log alone, and until 1.2.3 never came off a listing).
+ */
+function ownBuys(S, now) {
+    const hit = EN_OWN_INDEX.get(S.ledger.rows);
+    if (hit && hit.seen === S.seen && now - hit.at < EN_MIN && now >= hit.at) return hit.by;
+    const by = new Map();
+    const put = (item, who, t, qty) => { const k = item + ':' + who; if (!by.has(k)) by.set(k, []); by.get(k).push({ t, qty }); };
+    const claimed = new Set();
+    for (const b of S.seen) {
+        if (b.logged) claimed.add(b.logged);
+        else if (b.whoId && !b.im && now - b.t < OWN_KEEP_MS) put(String(b.id), String(b.whoId), b.t, enWhole(b.qty));
+    }
+    const rows = S.ledger.rows;
+    for (let k = rows.length - 1; k >= 0 && now - rows[k].t < OWN_KEEP_MS; k--) {
+        const r = rows[k];
+        if (r.side === 'buy' && r.venue === 'bazaar' && r.who) put(String(r.itemId), String(r.who), r.t, enWhole(r.qty));
+    }
+    EN_OWN_INDEX.set(S.ledger.rows, { seen: S.seen, at: now, by });
+    return by;
+}
+
+/**
+ * Was this look at a bazaar made after `t` - so that it shows what happened then?
+ * Torn's own read: over a minute later. TornW3B's row: its check over a minute later AND that check found the bazaar
+ * changed since (`ch`, TornW3B's content_updated: its last check that found a change). Its "last checked" alone
+ * moves on while its copy is still the old one - so a listing you bought out came back, with your buy in it.
+ * (A row kept from before 1.2.3 has no `ch`: its check time alone decides, with the margin.)
+ */
+function lookedSince(at, ch, from, t) {
+    // The bazaar's own page, in front of you: what it shows after your buy is the bazaar after your buy.
+    if (from === 'page') return at >= t;
+    if (!(at - t > OWN_MARGIN_MS)) return false;
+    return from !== 'w3b' || !ch || ch > t;
+}
+
+/**
+ * A listing COUNTS - goes on a list, into "Do now", is called the cheapest - only when it was looked at this lately.
+ * An older row is still shown, apart, as "not checked": it is asked of Torn before anything is made of it.
+ * (Torn Trading shows nothing it has not confirmed within two minutes; that is why its finds are true. Here a list
+ * of bazaars takes longer to walk than a flip, so the time is longer - and every stop of a list is asked again each
+ * minute.)
+ */
+export const COUNT_MS = 5 * EN_MIN;
+
+/**
+ * What a bazaar's page showed in a Torn tab of yours (the tab's note 'shop'): the pieces on the screen, their price
+ * and stock. The newest look there is; a piece NOT on the screen says nothing (the page draws as you scroll).
+ * @returns false when there was nothing to take
+ */
+export function notePage(S, what, now) {
+    const whoId = String((what && what.whoId) || '');
+    const at = Math.min(enNum(what && what.t) || now, now);
+    if (!whoId || whoId === String(S.self.id) || !Array.isArray(what.items)) return false;
+    const items = {};
+    for (const r of what.items) {
+        const id = String(r && r.id);
+        const price = enWhole(r && r.price);
+        const qty = enWhole(r && r.qty);
+        if (!EN_PIECE_SET.has(id) || !(price > 1) || !qty) continue;
+        if (!items[id] || price < items[id].price) items[id] = { price, qty, at };
+    }
+    if (!Object.keys(items).length) return false;
+    const pages = {};
+    for (const [k, v] of Object.entries(S.pages || {})) if (now - v.at < SHOP_KEEP_MS) pages[k] = v;
+    const prev = pages[whoId];
+    if (prev && prev.at >= at) return false;
+    // A piece that was on the screen a moment ago and is not now (you scrolled on): its look stays, as old as it is.
+    pages[whoId] = { at, items: { ...(prev ? prev.items : {}), ...items } };
+    S.pages = pages;
+    return true;
+}
+
 /**
  * A piece's listings as the view takes them: its bazaars (Torn's own read of a bazaar, yours or the server's, wins
- * when newer than TornW3B's list), the bazaars only the server knows of, and the Item Market.
+ * when newer than TornW3B's list; the bazaar's own page in a tab of yours wins over both), the bazaars only the
+ * server knows of, and the Item Market.
+ * Each row: `at` when it was looked at, `from` by whom, `ok` whether it counts (COUNT_MS, and "Read now").
  */
 export function offersOf(S, id, now) {
     const key = String(id);
     const o = S.offers[key] || {};
     const out = [];
     const done = new Set();
-    // `at`: when the bazaar was last looked at, and `from` by whom - 'torn' (Torn itself, by you or the server) or
-    // 'w3b' (TornW3B's copy). The screen says both: a row is never shown as newer than it is.
-    const add = (whoId, price, units, at, from) => {
+    const own = ownBuys(S, now);
+    const floor = Math.max(now - COUNT_MS, enNum(S.fresh && S.fresh.since));
+    // `at`: when the bazaar was last looked at, and `from` by whom - 'torn' (Torn itself, by you or the server),
+    // 'page' (its own page in a tab of yours) or 'w3b' (TornW3B's copy). The screen says both: a row is never shown
+    // as newer than it is.
+    const push = (whoId, price, units, at, from, ch) => {
         let qty = units;
-        // What you were seen buying there since comes off, until the next read shows the bazaar as it is.
-        for (const b of S.seen) if (String(b.id) === key && String(b.whoId || '') === String(whoId) && b.t > at) qty -= enWhole(b.qty);
-        if (qty > 0) out.push({ price, qty, src: 'bazaar', who: S.names[whoId] || null, whoId, at, from });
+        // What you bought there comes off, until a look that can have seen the buy shows the bazaar as it is.
+        for (const b of own.get(key + ':' + whoId) || []) if (!lookedSince(at, ch, from, b.t)) qty -= b.qty;
+        if (qty > 0) out.push({ price, qty, src: 'bazaar', who: S.names[whoId] || null, whoId, at, from, ok: at >= floor });
+    };
+    const add = (whoId, price, units, at, from, ch = 0) => {
+        const page = (S.pages || {})[whoId];
+        const it = page ? page.items[key] : null;
+        if (it && it.at > at && now - it.at < SHOP_KEEP_MS) push(whoId, it.price, it.qty, it.at, 'page', 0);
+        else if (units > 0) push(whoId, price, units, at, from, ch);
     };
     if (o.bazAt && now - o.bazAt < LISTINGS_KEEP_MS) {
         for (const r of o.baz || []) {
@@ -258,12 +358,14 @@ export function offersOf(S, id, now) {
             // list: Torn's own read wins whenever it is the newer of the two (until 1.2.2 a list asked for after
             // Torn's read brought a sold-out listing back, and a buy of yours with it).
             const rowAt = Math.min(enNum(r.at) || o.bazAt, o.bazAt);
-            if (shop && shop.at > rowAt) {
+            // ... and TornW3B's later check counts as newer only when it found the bazaar changed since Torn's read:
+            // a check that found nothing new has nothing to say against what Torn itself showed.
+            if (shop && (shop.at > rowAt || (r.ch > 0 && !(r.ch > shop.at)))) {
                 const it = shop.items[key];
-                // Torn says this bazaar no longer has it: sold out or taken down.
-                if (it) add(r.whoId, it.price, it.qty, shop.at, 'torn');
+                // Torn says this bazaar no longer has it: sold out or taken down (unless its page showed it since).
+                add(String(r.whoId), it ? it.price : 0, it ? it.qty : 0, shop.at, 'torn');
             } else {
-                add(r.whoId, r.price, r.qty, rowAt, 'w3b');
+                add(String(r.whoId), r.price, r.qty, rowAt, 'w3b', enNum(r.ch));
             }
         }
     }
@@ -285,7 +387,12 @@ export function offersOf(S, id, now) {
         const it = shop && shop.items[key];
         if (it) add(s.whoId, it.price, it.qty, shop.at, 'torn');
     }
-    if (o.imAt && now - o.imAt < MARKET_KEEP_MS) for (const l of o.im || []) out.push({ price: l.price, qty: l.qty, src: 'market', at: o.imAt, from: 'torn' });
+    // Bazaars known from their own page alone.
+    for (const whoId of Object.keys(S.pages || {})) {
+        if (done.has(whoId) || whoId === String(S.self.id)) continue;
+        add(whoId, 0, 0, 0, 'page');
+    }
+    if (o.imAt && now - o.imAt < MARKET_KEEP_MS) for (const l of o.im || []) out.push({ price: l.price, qty: l.qty, src: 'market', at: o.imAt, from: 'torn', ok: o.imAt >= floor });
     return out;
 }
 
@@ -343,8 +450,40 @@ export function foldInventory(S, rows, now, tornAt = 0) {
             pool[id] = { n, cost: cost + left * mv(id), est: left };
         }
         stock = { ...stock, pool, floor: now };
+        // The history is in now. A set swapped before the count began was costed, as its log row was read, at the
+        // market value of its pieces (your buys of them may not have been read yet): now it takes what your own buys
+        // on record say a set cost you then.
+        const buys = enBuysByPiece(S);
+        const book = S.book.map((e) => {
+            const set = e.kind === 'made' && e.src === 'log' && !e.twin && e.set ? setByKey(e.set) : null;
+            const cost = set ? enSetCostAt(set, e.t, buys, mv) : 0;
+            return cost > 0 && set.points > 0 ? { ...e, each: cost / set.points } : e;
+        });
+        if (book.some((e, k) => e !== S.book[k])) S.book = book;
     }
     S.stock = stock;
+}
+
+/** Your buys of each piece on record: { itemId: [{ t, qty, each }] }. */
+function enBuysByPiece(S) {
+    const by = {};
+    for (const r of S.ledger.rows) {
+        if (r.side !== 'buy' || !(enWhole(r.qty) > 0) || !(enNum(r.each) > 0)) continue;
+        (by[String(r.itemId)] = by[String(r.itemId)] || []).push({ t: enNum(r.t), qty: enWhole(r.qty), each: enNum(r.each) });
+    }
+    return by;
+}
+
+/**
+ * What a set cost you at a time in the history: each piece at the average of your buys of it up to then - or, with
+ * none on record before then, of all your buys of it on record - and at its market value when you bought none.
+ */
+function enSetCostAt(set, t, buys, mv) {
+    const avg = (rows) => { const n = rows.reduce((s, r) => s + r.qty, 0); return n ? rows.reduce((s, r) => s + r.qty * r.each, 0) / n : 0; };
+    return set.pieces.reduce((s, p) => {
+        const rows = buys[String(p.id)] || [];
+        return s + (avg(rows.filter((r) => r.t <= t)) || avg(rows) || mv(p.id));
+    }, 0);
 }
 
 /**
@@ -491,6 +630,26 @@ function enAddRows(S, rows) {
     const all = [...S.ledger.rows, ...fresh].sort((a, b) => a.t - b.t || String(a.id).localeCompare(String(b.id))).slice(-EN_ROWS_KEPT);
     S.ledger = { ...S.ledger, rows: all };
     return fresh;
+}
+
+/**
+ * A mug's verdict (did it take points money, and how much) is kept once it can no longer change: an hour old, the
+ * log read past it, and every money row around it still on record. The rows it was judged by are let go later.
+ * @param rows the view's ledger.mugs.rows
+ * @returns true when a verdict was kept
+ */
+export function settleMugs(S, rows, now) {
+    const from = S.outs.length >= EN_OUTS_KEPT ? enNum(S.outs[0].t) : 0;
+    const by = new Map((rows || []).map((r) => [r.id, r]));
+    let any = false;
+    const mugs = S.ledger.mugs.map((m) => {
+        const r = by.get(m.id);
+        if (m.kept || !r || !(m.t < now - EN_HOUR) || !(S.log.until >= m.t) || m.t < from) return m;
+        any = true;
+        return { ...m, kept: { counted: enWhole(r.counted), onHand: enWhole(r.onHand), saleId: r.saleId || null, after: enNum(r.after) } };
+    });
+    if (any) S.ledger = { ...S.ledger, mugs };
+    return any;
 }
 
 function enAddOuts(S, outs) {
@@ -717,11 +876,13 @@ export function engineInput(S, settings, now, { logRead = false } = {}) {
         listings: S.points.listings, pointsAt: S.points.at, days: S.points.days, wallDays: S.points.wallDays,
         lots: S.points.lots, mineLots: [],
         pool: S.stock.pool, book: S.book,
-        mugs: S.ledger.mugs.map((m) => ({ id: m.id, t: m.t, by: (m.who && S.names[m.who]) || '', taken: m.taken })),
+        mugs: S.ledger.mugs.map((m) => ({ id: m.id, t: m.t, by: (m.who && S.names[m.who]) || '', taken: m.taken, ...(m.kept ? { kept: m.kept } : {}) })),
         outs: S.outs,
+        // Money rows are kept EN_OUTS_KEPT deep: once that many are held, the oldest is where the record begins.
+        outsFrom: S.outs.length >= EN_OUTS_KEPT ? enNum(S.outs[0].t) : 0,
         money: { points: S.money.points, onHand: S.money.onHand, vault: S.money.vault },
         // Only trades read in full, with a piece of your sets on their side.
-        trades: S.trades.open.filter((t) => full[t.id] != null && tradeHasPieces(t)),
+        trades: S.trades.open.filter((t) => full[t.id] != null && tradeHasPieces(t)).map((t) => ({ ...t, readAt: enNum(full[t.id]) })),
         finished: S.trades.finished,
         rows: S.ledger.rows,
         cart: S.cart, run: S.run, hotSince: S.hot,

@@ -472,7 +472,7 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             const limit = Math.min(100, ftWhole(q('limit')) || 100);
             if (types && types.size > world.options.logMostKinds) return answer(200, { log: [], _metadata: { links: { next: null, prev: null } } });
             const rows = world.log
-                .filter((e) => (!types || types.has(e.type)) && e.timestamp >= from && e.timestamp <= to)
+                .filter((e) => (!types || types.has(e.type)) && e.timestamp > from && e.timestamp <= to)
                 .sort((a, b) => b.timestamp - a.timestamp || (a.id < b.id ? 1 : -1))
                 .slice(0, limit)
                 .map((e) => ({ id: e.id, timestamp: e.timestamp, details: { id: e.type, title: world.logTypes[e.type] || 'Unknown', category: FT_LOG_CATEGORY[e.type] || 'Other' }, data: ftCopy(e.data), params: {} }));
@@ -487,7 +487,7 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             const limit = Math.min(100, ftWhole(q('limit')) || 20);
             const want = cat === 'ongoing' ? ['open'] : cat === 'finished' ? ['finished'] : ['open', 'finished'];
             const when = (t) => (t.status === 'finished' && world.options.tradesFromIs !== 'created' ? t.completedAt : t.createdAt);
-            const rows = world.trades.filter((t) => want.includes(t.status) && ftSec(when(t)) >= from).sort((a, b) => when(a) - when(b));
+            const rows = world.trades.filter((t) => want.includes(t.status) && ftSec(when(t)) > from).sort((a, b) => when(a) - when(b));
             if (String(q('sort') || 'DESC').toUpperCase() !== 'ASC') rows.reverse();
             return answer(200, { trades: rows.slice(0, limit).map(tradeHead), _metadata: { links: { next: null, prev: null } } });
         }

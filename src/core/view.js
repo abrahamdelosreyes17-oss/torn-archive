@@ -5,7 +5,7 @@
 import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
 import { setsCtx } from './settings.js';
 import { safeWorth, pieceBrings, tradeMargin, placeMargin, mendRate } from './margin.js';
-import { fillPlan, stopsOf, runView, runOrder, onList, listAfterRun } from './shopping.js';
+import { fillPlan, fillList, stopsOf, runView, runOrder, onList, listAfterRun, cheapPieces, placeOf } from './shopping.js';
 import { listPrice, priceLevels, usualLevel, pointsCheap } from './points.js';
 import { avgBook, heldByDay, mugCheck, profitBuckets, profitSum, runningTotal, poolSum, poolSetCost } from './books.js';
 import { lotTable, sellPlan } from './lots.js';
@@ -76,7 +76,15 @@ export function archiveView(i) {
     const on = setsTraded(settings);
     const money = i.money || {};
     const mv = (id) => vwWhole(i.mv(id));
-    const offersOf = (id) => [...((i.offers && i.offers(id)) || [])].filter((o) => o.price > 0 && o.qty > 0).sort((a, b) => a.price - b.price);
+    // A row that was not looked at lately (`ok: false`, engine/state.js COUNT_MS) is shown, after the checked ones,
+    // and counts for nothing: no list, no "Do now", no "cheapest". It is asked of Torn first (buy.check).
+    const rowsMemo = new Map();
+    const offersOf = (id) => {
+        const k = String(id);
+        if (!rowsMemo.has(k)) rowsMemo.set(k, [...((i.offers && i.offers(id)) || [])].filter((o) => o.price > 0 && o.qty > 0).sort((a, b) => (a.ok === false) - (b.ok === false) || a.price - b.price));
+        return rowsMemo.get(k);
+    };
+    const checkedOf = (id) => offersOf(id).filter((o) => o.ok !== false);
 
     // ---- the points price --------------------------------------------------------------------------------------------
     const price = listPrice(i.listings || [], settings.pointsRule);
@@ -88,7 +96,12 @@ export function archiveView(i) {
     const pointsHeld = money.points == null ? null : vwWhole(money.points);
     const plain = avgBook(i.book || [], pointsPrice);
     const before = pointsHeld == null ? null : Math.max(0, pointsHeld - plain.left);
-    const book = settings.beforeEach > 0 && before ? avgBook(i.book || [], pointsPrice, { points: before, each: settings.beforeEach }) : plain;
+    // With a cost typed for them, the points you had before open the book - as many as they were when the book
+    // began: what you hold now, less every point made since, plus every point sold or used since. (Until 1.2.3 the
+    // book was opened with what is left of them NOW, and the sales that had already taken some took them again.)
+    const flow = vwSum(i.book || [], (e) => (e.kind === 'made' ? -1 : 1) * vwWhole(e.points));
+    const opened = pointsHeld == null ? 0 : Math.max(0, pointsHeld + flow);
+    const book = settings.beforeEach > 0 && opened ? avgBook(i.book || [], pointsPrice, { points: opened, each: settings.beforeEach }) : plain;
     const pool = poolSum(i.pool);
     const cash = money.onHand == null && money.vault == null ? null : vwWhole(money.onHand) + vwWhole(money.vault);
     const share = moneyShare({ pieces: pool.cost, points: book.cost, cash: money.onHand, vault: money.vault });
@@ -120,7 +133,7 @@ export function archiveView(i) {
             const offers = offersOf(p.id);
             const worth = safeWorth(p.id, mv, pointsPrice, settings.least);
             const pay = ratePrice(mv(p.id), settings.pct);
-            const under = offers.filter((o) => o.price < worth);
+            const under = offers.filter((o) => o.ok !== false && o.price < worth);
             const bid = (i.topBid && i.topBid(p.id)) || null;
             return {
                 ...p, set: set.key, short: shortName(p.name), target: stock.target, mv: mv(p.id), pay, worth,
@@ -157,12 +170,20 @@ export function archiveView(i) {
 
     // ---- buying ------------------------------------------------------------------------------------------------------
     const marginCtx = { mv, pointsPrice, leastPct: settings.least };
-    const plan = fillPlan(pieces, offersOf);
+    const plan = fillList(pieces, checkedOf);
     const planStops = stopsOf(plan, worthOf);
+    // What the list would hold if every row shown were true: the bazaars of it that are not checked are the ones
+    // to ask Torn about next. Checked, they count - or are gone, and the next ones are asked.
+    const wish = fillPlan(pieces, offersOf);
+    const unsure = wish.filter((l) => !l.im && (offersOf(l.id).find((o) => placeOf(o) === l.place) || {}).ok === false);
+    const check = [...new Set(unsure.map((l) => String(l.whoId)))];
     const stops = runOrder(stopsOf(cartList, worthOf), i.run).map((s) => ({ ...s, margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
     // `took` (line key -> units you took) rides along: the box on a bazaar says it per line.
     const run = { ...runView(i.run, stops), took: (i.run && i.run.took) || {} };
-    const hot = hotListings(pieces, offersOf);
+    const hot = hotListings(pieces, checkedOf);
+    // What "Do now" says to buy, as the list its button makes: under what you pay sellers and under the worth.
+    const hotPlan = fillList(cheapPieces(pieces), checkedOf);
+    const hotPlanStops = stopsOf(hotPlan, (id) => (pieceOf(id) || {}).pay || 0);
     const leftStops = leftList === cartList ? stops : stopsOf(leftList, worthOf);
     const cartCost = vwSum(leftStops, (s) => s.cost);
     const depthN = Math.min(...sets.map((s) => s.ladder.length), Infinity);
@@ -173,6 +194,8 @@ export function archiveView(i) {
             full: fullAfter((p) => onList(plan, p.id)),
         },
         stops, run,
+        // Bazaars shown but not checked lately that a list would use (asked of Torn next), and their units.
+        check, unsure: vwSum(unsure, (l) => l.q),
         units: vwSum(leftStops, (s) => s.units), cost: cartCost, gain: vwSum(leftStops, (s) => s.gain),
         full: fullAfter((p) => p.listed),
         left: listAfterRun(cartList, i.run),
@@ -194,7 +217,7 @@ export function archiveView(i) {
         const total = offer.all.total;
         const state = tradeTurn(t, total);
         return {
-            id: t.id, who: t.who, whoId: t.whoId, modified: t.modified, ago: agoWords(t.modified, now), state,
+            id: t.id, who: t.who, whoId: t.whoId, modified: t.modified, ago: agoWords(t.modified, now), state, readAt: t.readAt || 0,
             rows: offer.rows, items: offer.rows.length, units: offer.all.items, total, needTotal: offer.need.total, needUnits: offer.need.items,
             margin, myMoney: t.myMoney, other: t.other,
             message: total ? `Hi! At ${settings.pct}% of market value that is $${total.toLocaleString('en-US')} for all ${offer.all.items.toLocaleString('en-US')}. I will add the money now, thank you.` : '',
@@ -221,7 +244,7 @@ export function archiveView(i) {
     const ladder = levels.slice(0, 14).map((lv) => { const row = { price: lv.price, qty: lv.qty, lots: lv.lots, ahead, wall: !!price && lv.price === price.wall }; ahead += lv.qty; return row; });
     const table = lotTable((i.lots && i.lots.gone) || [], i.mineLots || [], now);
     const sell = sellPlan(book.left, table);
-    const mugs = mugCheck(book.rows.filter((r) => r.kind === 'sold').map((r) => ({ id: r.id, t: r.t, got: Math.round(r.mine * r.each) })), i.mugs || [], i.outs || []);
+    const mugs = mugCheck(book.rows.filter((r) => r.kind === 'sold').map((r) => ({ id: r.id, t: r.t, got: Math.round(r.mine * r.each) })), i.mugs || [], i.outs || [], i.outsFrom || 0);
     const hold = cheap && settings.cheapRule === 'hold';
     const points = {
         price: pointsPrice, lowest: price ? price.lowest : 0, wall: price ? price.wall : null, rule: price ? price.rule : settings.pointsRule,
@@ -292,7 +315,7 @@ export function archiveView(i) {
     // (what you pay your sellers for the cheap listings, the pieces' worth for the rest).
     const firstStops = (stops) => stops.slice(0, VW_FIRST_STOPS).map((s) => ({ im: s.im, who: s.who, whoId: s.whoId, units: s.units, cost: s.cost, gain: s.gain }));
     if (open.length) todo.push({ kind: 'trades', tone: 'warn', n: open.length, wait: trades.wait, money: trades.waitMoney });
-    if (buy.hotUnits) todo.push({ kind: 'hot', tone: '', n: buy.hotUnits, stops: buy.hotStops, pic: hot[0].id, first: firstStops(vwHotStops(hot)), cost: vwSum(hot, (h) => h.q * h.price), full: fullAfter((p) => onList(hot, p.id)) });
+    if (hotPlan.length) todo.push({ kind: 'hot', tone: '', n: vwSum(hotPlan, (l) => l.q), stops: hotPlanStops.length, pic: hotPlan[0].id, first: firstStops(hotPlanStops), cost: vwSum(hotPlanStops, (s) => s.cost), full: fullAfter((p) => onList(hotPlan, p.id)) });
     else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
     if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
     if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice, each: Math.ceil(book.cost / book.left), loss: pointsPrice > 0 && book.left * pointsPrice < book.cost });

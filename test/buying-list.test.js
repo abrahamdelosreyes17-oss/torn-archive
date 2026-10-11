@@ -208,3 +208,66 @@ test('"Sell your points" is not said of a sale under what they cost you', () => 
     const t = dear.dash.todo.find((x) => x.kind === 'sell');
     if (t && dear.points.book.cost > t.n * t.price) assert.equal(t.loss, true);
 });
+
+// ---- "i already bought in that bazaar, card still shows" (the owner, 2026-10-11) ---------------------------------------
+// TornW3B's "last checked" moves on while its copy of the bazaar is still the old one (measured for Torn Trading,
+// 3.16.4 / 3.20.6). Until 1.2.3 a buy came off a listing only while the row's check was older than the buy.
+
+const w3bList = (S, askedAt, checkedAt, changedAt, qty = 5) => foldListings(S, String(SHEEP), [
+    { player_id: 501, player_name: 'Seller_A', price: 600, quantity: qty, last_checked: Math.floor(checkedAt / 1000), content_updated: Math.floor(changedAt / 1000) },
+], askedAt);
+const fresh = () => { const S = engineEmpty(); S.self = { id: '2000001', name: '' }; return S; };
+
+test('you bought a listing out; TornW3B checks again and still has its old copy: the listing does not come back', () => {
+    const S = fresh();
+    w3bList(S, NOW - 10 * MIN, NOW - 12 * MIN, NOW - 30 * MIN);
+    noteSeenBuy(S, { id: SHEEP, qty: 5, whoId: '501', price: 600, t: NOW - 5 * MIN }, NOW - 5 * MIN);
+    assert.equal(who(S, 501), null, 'bought out');
+    // A new list: TornW3B "checked" the bazaar three minutes after the buy and found nothing changed - the old copy.
+    w3bList(S, NOW - MIN, NOW - 2 * MIN, NOW - 30 * MIN);
+    assert.equal(who(S, 501), null, 'until 1.2.3 it was back here, all five, with your buy in it');
+    // Checked within the minute after the buy, change or no: too close to have seen it.
+    w3bList(S, NOW - MIN, NOW - 5 * MIN + 30000, NOW - 5 * MIN + 30000);
+    assert.equal(who(S, 501), null);
+    // A check that found the bazaar changed, over a minute after the buy: TornW3B has seen it. Its number stands.
+    w3bList(S, NOW, NOW - MIN, NOW - MIN, 2);
+    assert.equal(who(S, 501).qty, 2, 'restocked, or two were left: what TornW3B now says');
+});
+
+test('a buy known from your log alone (no Torn tab of ours saw it) comes off the listing too, and a buy seen and logged comes off once', () => {
+    const S = fresh();
+    w3bList(S, NOW - 10 * MIN, NOW - 12 * MIN, NOW - 30 * MIN);
+    const row = { id: '900:0', t: NOW - 5 * MIN, itemId: String(SHEEP), qty: 2, each: 600, fee: 0, side: 'buy', venue: 'bazaar', who: '501', whoName: null };
+    S.ledger = { ...S.ledger, rows: [row] };
+    assert.equal(who(S, 501).qty, 3, 'until 1.2.3 only a buy seen on the page came off');
+    // The same buy, seen on the page as well and tied to its log row: once.
+    S.seen = [{ t: NOW - 5 * MIN, id: String(SHEEP), qty: 2, whoId: '501', price: 600, v: 2, logged: '900:0' }];
+    assert.equal(who(S, 501).qty, 3);
+    // Seen on the page, its log row not in yet: the page's buy stands in.
+    S.ledger = { ...S.ledger, rows: [] };
+    S.seen = [{ t: NOW - 5 * MIN, id: String(SHEEP), qty: 2, whoId: '501', price: 600, v: 2 }];
+    assert.equal(who(S, 501).qty, 3);
+    // Another seller's listing, another item, a trade, an Item Market buy: none of them touches this listing.
+    S.seen = [];
+    S.ledger = { ...S.ledger, rows: [{ ...row, who: '502' }, { ...row, id: '901:0', itemId: '187' }, { ...row, id: '902:0', venue: 'market', who: null }, { ...row, id: '903:0', venue: 'trade' }] };
+    assert.equal(who(S, 501).qty, 5);
+    // A buy of four hours ago is long in every copy.
+    S.ledger = { ...S.ledger, rows: [{ ...row, t: NOW - 4 * 60 * MIN }] };
+    assert.equal(who(S, 501).qty, 5);
+});
+
+test('Torn\'s own read of the bazaar: a read in the minute after your buy may be the copy from before it; a later one is the bazaar as it is', () => {
+    const S = fresh();
+    w3bList(S, NOW - 20 * MIN, NOW - 22 * MIN, NOW - 40 * MIN);
+    noteSeenBuy(S, { id: SHEEP, qty: 2, whoId: '501', price: 600, t: NOW - 5 * MIN }, NOW - 5 * MIN);
+    foldShop(S, '501', { bazaar: [{ ID: SHEEP, price: 600, quantity: 5 }] }, NOW - 5 * MIN + 20000);
+    assert.deepEqual([who(S, 501).qty, who(S, 501).from], [3, 'torn'], 'twenty seconds after: your two still come off');
+    foldShop(S, '501', { bazaar: [{ ID: SHEEP, price: 600, quantity: 3 }] }, NOW - 3 * MIN);
+    assert.equal(who(S, 501).qty, 3, 'two minutes after: Torn\'s count stands, nothing taken off twice');
+    // TornW3B checks after Torn's read and finds nothing changed: Torn's read, the newer fact, still stands.
+    w3bList(S, NOW, NOW - MIN, NOW - 40 * MIN);
+    assert.deepEqual([who(S, 501).qty, who(S, 501).from], [3, 'torn'], 'until 1.2.3 TornW3B\'s old five were back');
+    // TornW3B checks and finds a change after Torn's read: that is news.
+    w3bList(S, NOW, NOW - MIN, NOW - MIN, 9);
+    assert.deepEqual([who(S, 501).qty, who(S, 501).from], [9, 'w3b']);
+});

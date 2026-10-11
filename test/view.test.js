@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { archiveView, viewForTabs, viewPiece, setLadder, setsTraded, ALL_PIECE_IDS } from '../src/core/view.js';
 import { archiveSettings, ARCHIVE_DEFAULTS, setsCtx } from '../src/core/settings.js';
-import { fillPlan, runStart, stopsOf } from '../src/core/shopping.js';
+import { fillPlan, fillList, runStart, stopsOf } from '../src/core/shopping.js';
 import { SETS } from '../src/core/sets.js';
 import { parseOwnList } from '../src/core/tw3b-list.js';
 import { fixtureInput } from './fixture-view.js';
@@ -78,7 +78,7 @@ test('buying: the plan, the hot listings, and the list as stops with a margin li
     assert.ok(todo.first.every((x) => x.gain > 0 && x.cost > 0));
     assert.ok(first.sets.every((s) => todo.full[s.key] >= s.full && todo.full[s.key] <= first.buy.plan.full[s.key]), 'full sets after the cheap listings');
     // Make the list, as the page does.
-    const cart = fillPlan(first.pieces, base.offers);
+    const cart = fillList(first.pieces, base.offers);
     const worthOf = (id) => viewPiece(first, id).worth;
     const v = archiveView({ ...base, cart, run: runStart(stopsOf(cart, worthOf)) });
     assert.equal(v.buy.units, first.buy.plan.units);

@@ -57,6 +57,65 @@ export function fillPlan(pieces, offersOf) {
 }
 
 /**
+ * Fewer stops for the same pieces. A stop is dropped when everything it has for you can also be had at bazaars you
+ * are going to anyway - each unit still under the piece's worth. The smallest stops are tried first, so the list
+ * gathers at the bazaars that hold a lot of what you need. (The owner, 2026-10-11: "prioritize for example a bazaar
+ * has a lot of things i need instead of just 1 bazaar 1 bazaar".) The price of it: those units at the other
+ * bazaar's price, which is the dearer one - never over the worth. The Item Market's line is left as it is.
+ * @param plan     fillPlan's lines
+ * @param pieces   [{ id, worth }] as given to fillPlan
+ * @param offersOf id -> [{ price, qty, src, who, whoId }]
+ */
+export function fewerStops(plan, pieces, offersOf) {
+    const worth = new Map((pieces || []).map((p) => [String(p.id), shWhole(p.worth)]));
+    let cart = (plan || []).map((l) => ({ ...l }));
+    const rowAt = (id, place) => {
+        const w = worth.get(String(id)) || 0;
+        const o = placeOffer((offersOf && offersOf(id)) || [], place, w);
+        return o && w > 0 && shWhole(o.price) < w ? o : null;
+    };
+    for (;;) {
+        const units = new Map();
+        for (const l of cart) if (!l.im) units.set(l.place, (units.get(l.place) || 0) + l.q);
+        if (units.size < 2) return cart;
+        const order = [...units].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1)).map(([place]) => place);
+        let moved = false;
+        for (const from of order) {
+            const others = order.filter((x) => x !== from);
+            const next = cart.filter((l) => l.place !== from).map((l) => ({ ...l }));
+            let fits = true;
+            for (const line of cart.filter((l) => l.place === from)) {
+                let left = line.q;
+                // Where else on the list this piece is sold under its worth, cheapest first, and how many are still free there.
+                const spots = others.map((place) => ({ place, o: rowAt(line.id, place) })).filter((s) => s.o).sort((a, b) => a.o.price - b.o.price || (a.place < b.place ? -1 : 1));
+                for (const s of spots) {
+                    if (!left) break;
+                    const have = next.find((l) => l.place === s.place && String(l.id) === String(line.id));
+                    const free = shWhole(s.o.qty) - (have ? have.q : 0);
+                    const q = Math.min(left, free);
+                    if (q <= 0) continue;
+                    if (have) have.q += q;
+                    else next.push(shLine({ id: line.id, name: line.name, set: line.set }, s.o, q));
+                    left -= q;
+                }
+                if (left) { fits = false; break; }
+            }
+            if (fits) { cart = next; moved = true; break; }
+        }
+        if (!moved) return cart;
+    }
+}
+
+/** The list as it is made: the cheapest way to what you need (fillPlan), then gathered at fewer bazaars (fewerStops). */
+export const fillList = (pieces, offersOf) => fewerStops(fillPlan(pieces, offersOf), pieces, offersOf);
+
+/**
+ * The pieces as "Do now" counts them: a unit is worth buying only under what you pay your sellers AND under its
+ * safe worth. The list made from them is the one its line names - the same pieces, the same stops.
+ */
+export const cheapPieces = (pieces) => (pieces || []).map((p) => ({ ...p, worth: Math.min(shWhole(p.worth), shWhole(p.pay)) }));
+
+/**
  * What one place has of a piece for you. A bazaar: its cheapest listing. The Item Market: it is one page with a
  * row for every price, so it is its rows under the piece's worth taken together - `qty` all of them, `price`
  * what each of the cheapest `want` costs on average (none under the worth: its cheapest row, which is then dear).

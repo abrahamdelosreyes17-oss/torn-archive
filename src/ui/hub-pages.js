@@ -85,7 +85,7 @@ function pgTodo(v, t) {
     const ic = (name) => `<span class="nx-i">${hIcon(name)}</span>`;
     const pic = (id) => `<span class="nx-p">${pgItem(v, id, '')}</span>`;
     if (t.kind === 'trades') return row(tone.warn, ic('trades'), `<b>${hPlural(t.n, 'trade')} open with you.</b> ${t.wait ? `${t.wait} ${t.wait === 1 ? 'waits' : 'wait'} for your money: ${hMoney(t.money)}.` : 'None waits for you.'}`, '<button class="btn sm go" data-go="trades">See them</button>');
-    if (t.kind === 'hot') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Cheaper than from your sellers, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
+    if (t.kind === 'hot') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Cheaper than from your sellers, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list" data-v="hot">The list</button>');
     if (t.kind === 'buy') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Under their worth, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
     if (t.kind === 'swap') return row(tone.brand, ic('brand'), `<b>Swap ${hPlural(t.n, 'set')}.</b> ${hNum(t.points)} points.`, hOut(MUSEUM_URL, 'Museum', 'btn sm out'));
     if (t.kind === 'hold') return row(tone.warn, ic('points'), `<b>Hold your points.</b> Under the usual ${hMoney(t.usual)}.`, '<button class="btn sm" data-go="points">Points</button>');
@@ -195,7 +195,7 @@ function pgStock(d) {
       <div class="panel" data-k="flow"><div class="ph"><h2>From pieces to money</h2></div><div class="pb"><div class="flow">
         <div class="fl"><div class="k-l">Pieces held</div><div class="k-v">${hNum(v.stock.units)}</div><div class="k-s">${v.stock.est ? 'about ' : ''}${hShort(v.stock.cost)} paid</div></div>
         <div class="fl"><div class="k-l">Full sets</div><div class="k-v">${hNum(v.nav.full)}</div></div>
-        <div class="fl"><div class="k-l">Points made</div><div class="k-v">${hNum(v.stock.made)}</div></div>
+        <div class="fl"><div class="k-l">Points held, made from sets</div><div class="k-v">${hNum(v.stock.made)}</div></div>
         <div class="fl"><div class="k-l">Points sold, 14 days</div><div class="k-v">${hNum(v.stock.sold14)}</div></div>
       </div></div></div>
       <div class="panel grow minc" style="min-height:160px" data-k="swapped"><div class="ph"><h2>Sets swapped</h2><div class="legend">${pgSetKeys(v, 1)}</div></div><div class="pb"><div class="chart" data-chart="swapped"></div></div></div>
@@ -213,8 +213,10 @@ const pgSeller = (p, o) => (o.src === 'market' ? hOut(itemMarketUrl(p.id, p.name
 function pgWhere(v, p, lines) {
     if (!p) return '';
     const hist = sparkSvg(p.hist, 'var(--muted)', 54, 20);
-    const under = p.offers.filter((o) => o.price < p.worth);
+    const under = p.offers.filter((o) => o.ok !== false && o.price < p.worth);
     const shown = p.offers.slice(0, 14);
+    // Rows not looked at lately come after the checked ones (core/view.js), under a line that says what they are.
+    const firstOld = shown.findIndex((o) => o.ok === false);
     // The Item Market is one line for all its rows: each row says its own part of it, cheapest first.
     const imLine = lines.get(lineKey(p.id, IM_PLACE));
     const want = Math.max(0, p.need - p.listed);
@@ -226,8 +228,10 @@ function pgWhere(v, p, lines) {
         const q = im ? (imLine ? 0 : imPart[k]) : Math.min(o.qty, want);
         const btn = on ? `<button class="btn sm" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}" title="Take it off the list">${on.q} on list ✓</button>` : o.price < p.worth && q ? `<button class="btn sm go" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}">Add ${q}</button>` : '';
         // Torn's own answer, or TornW3B's older copy of that bazaar: said on the row, with its age.
-        const age = o.at ? `<span class="n num ${o.from === 'w3b' ? 't-warn' : 't-muted'}" title="${o.from === 'w3b' ? "TornW3B's copy of this bazaar: Torn itself has not been asked yet" : 'Read from Torn itself'}">${o.from === 'w3b' ? 'TornW3B · ' : ''}${hAge(o.at, v.at).replace(' ago', '')}</span>` : '<span></span>';
-        return `<div class="wl ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
+        const how = o.from === 'w3b' ? "TornW3B's copy of this bazaar: Torn itself has not been asked yet" : o.from === 'page' ? 'Seen on its own page, in your Torn tab' : 'Read from Torn itself';
+        const age = o.at ? `<span class="n num ${o.ok === false || o.from === 'w3b' ? 't-warn' : 't-muted'}" title="${how}">${o.from === 'w3b' ? 'TornW3B · ' : ''}${hAge(o.at, v.at).replace(' ago', '')}</span>` : '<span></span>';
+        const split = k === firstOld ? `<div class="wl-s old-h">Not checked in the last 5 minutes${firstOld ? '' : ': nothing here is'}. These are not counted until Torn has been asked${v.buy.check && v.buy.check.length ? ': it is being asked now' : ''}.</div>` : '';
+        return `${split}<div class="wl ${o.ok === false ? 'old' : ''} ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
     }).join('');
     const u = p.under.units;
     const foot = (under.length ? `<b>${hNum(u)}</b> under its worth in ${hPlural(p.under.places, 'place')}` : 'Nowhere under its worth now')
@@ -319,7 +323,7 @@ function pgBuy(d, ui) {
       <div class="col">
         <div class="panel tint" data-k="rec"><div class="ph"><h2>Fill my stock</h2></div><div class="pb">
           <div class="rec"><div class="hero">${hNum(plan.units)}<small>of the ${hPlural(plan.need, 'piece')} you need ${plan.units === 1 ? 'is' : 'are'} under ${plan.units === 1 ? 'its' : 'their'} worth</small></div><div class="rec-t"><b>${hPlural(plan.stops, 'stop')}</b> · ${hMoney(plan.cost)}<br>${pgFullWords(v, plan.full)}</div><div class="rec-b"><button class="btn go" data-act="make-list"${plan.units ? '' : ' disabled'}>Make the list</button></div></div>
-          <div class="rows"><div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div></div>
+          <div class="rows"><div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div>${v.buy.unsure ? `<div class="row"><span class="grow1 t-muted">${hPlural(v.buy.unsure, 'more piece')} in ${hPlural(v.buy.check.length, 'bazaar')} not checked in the last 5 minutes: not counted until Torn has been asked, which it is being now.</span></div>` : ''}</div>
         </div></div>
         <div class="panel grow" data-k="buy-t"><div class="ph"><h2>Where each piece is cheapest</h2><span class="sub">press a piece to see every place that sells it</span></div>
           <div class="pb flush">${rows.length ? `<table class="t wrapth">${table}</table>` : pgNone('You need nothing: every set is at its target. "All pieces" lists them anyway.')}</div></div>
