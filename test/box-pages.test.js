@@ -188,3 +188,58 @@ test('nothing shared yet, or shared long ago: said plainly', () => {
     assert.ok(boxWaiting(false).html.includes('Open the hub once'));
     assert.ok(boxWaiting(true).html.includes('would be old'));
 });
+
+test('the points market as you type: a hairline where your listing would sit, the ones above which a price is cheap or a loss, and the words beside ADD LISTING', () => {
+    const base = shared(fixtureInput(NOW));
+    const rows = [[405, 30893], [1111, 30895], [4000, 30898], [21, 31000], [100, 31119]].map(([points, each]) => ({ points, each }));
+    const at = (points) => ({ ...base, points: { ...base.points, hold: false, cheap: false, level: { lo: 31000, hi: 31750, days: 30 }, ...points } });
+    const made = at({ sell: { ...base.points.sell, points: 120, least: 29956, loss: false } });
+    // Nothing typed yet: the least price beside the button, and the line of the usual level in the list.
+    const idle = boxPoints(made, true, { typed: { amount: 0, price: 0 }, rows });
+    assert.deepEqual(idle.note, { text: 'Your least price: $29,956', state: '' });
+    assert.deepEqual(idle.marks, [{ i: 3, state: 'ahead' }]);
+    assert.ok(!idle.html.includes('What you typed'));
+    assert.match(idle.html, /In Torn's list: the <b style="color:#f6b74a">amber line<\/b> has the prices under the usual \$31,000 to \$31,750 above it\./);
+    // $1 under the lowest: first in the list - a line on the first row, with no words on it.
+    const first = boxPoints(made, true, { typed: { amount: 50, price: 30892 }, rows });
+    assert.deepEqual(first.note, { text: 'First in the list · under the usual $31,000 to $31,750', state: 'ahead' });
+    assert.deepEqual(first.marks.find((m) => m.i === 0), { i: 0, state: '' });
+    assert.match(first.html, /the <b style="color:#5aa7ff">blue line<\/b> is where yours would sit; the <b style="color:#f6b74a">amber line<\/b>/);
+    assert.ok(first.html.includes('What you typed') && first.html.includes('50 at $30,892') && first.html.includes('none: first in the list'));
+    // Over the level, behind others.
+    const good = boxPoints(made, true, { typed: { amount: 50, price: 31100 }, rows });
+    assert.deepEqual(good.note, { text: '5,537 points sell first · +$1,145 a point over cost', state: 'good' });
+    assert.deepEqual(good.marks.find((m) => m.i === 4), { i: 4, state: '' });
+    // Under your least price: a loss, said in red, with what it costs on the lot.
+    const loss = boxPoints(made, true, { typed: { amount: 120, price: 29900 }, rows });
+    assert.deepEqual(loss.note, { text: 'First in the list · a loss of $55 a point', state: 'bad' });
+    assert.ok(loss.html.includes('<b>A loss.</b> $29,900 is under your least price $29,956: $6,600 on these 120.'));
+    // A slip of the finger.
+    const slip = boxPoints(at({ sell: { ...base.points.sell, points: 0, least: 0 } }), true, { typed: { amount: 50, price: 3089 }, rows });
+    assert.equal(slip.note.state, 'ahead');
+    assert.match(slip.note.text, /^First in the list · \$27,803 under the lowest: \$1 under is enough$/);
+    assert.ok(slip.html.includes('$1,390,150 given away on these 50'));
+    // The market fell under your cost: the red line is in the list, and where it meets yours the two are one mark.
+    const fell = boxPoints(at({ level: {}, sell: { ...base.points.sell, points: 120, least: 30897, loss: true } }), true, { typed: { amount: 120, price: 30896 }, rows });
+    assert.deepEqual(fell.marks, [{ i: 2, state: 'bad' }]);
+    assert.match(fell.html, /the <b style="color:#ff7878">red line<\/b> is where yours would sit, and has the prices that are a loss \(under your \$30,897\) above it\./);
+    // No cost on record (points held before): nothing is called a loss, and the box says why.
+    const before = boxPoints(at({ before: 1183, sell: { ...base.points.sell, points: 0, least: 0 } }), true, { typed: { amount: 50, price: 31050 }, rows });
+    assert.deepEqual(before.note, { text: '5,537 points sell first', state: '' });
+    assert.ok(before.html.includes('have no cost on record'));
+    // The page's list could not be read: no line, and the hub's own read of the market says what sells first.
+    const blind = boxPoints(made, true, { typed: { amount: 50, price: 31100 }, rows: [] });
+    assert.deepEqual(blind.marks, []);
+    assert.ok(blind.note && blind.note.text.includes('over cost'));
+    // The boxes were not found: as before, and nothing is drawn.
+    assert.deepEqual([boxPoints(made, false).marks, boxPoints(made, false).note], [[], { text: 'Your least price: $29,956', state: '' }]);
+});
+
+test('the points market: full sets not swapped yet are named as the bigger lot they would make', () => {
+    const v = shared(fixtureInput(NOW));
+    const sets = v.sets.map((s, i) => ({ ...s, full: i === 0 ? 3 : 0 }));
+    const made = { ...v, sets, points: { ...v.points, sell: { ...v.points.sell, points: 120, least: 29956, loss: false } } };
+    const more = 120 + 3 * sets[0].points;
+    assert.ok(boxPoints(made, true).html.includes(`Or wait for a bigger lot</span><b class="num">${more.toLocaleString('en-US')} with your 3 full sets</b>`));
+    assert.ok(!boxPoints({ ...made, sets: sets.map((s) => ({ ...s, full: 0 })) }, true).html.includes('bigger lot'));
+});

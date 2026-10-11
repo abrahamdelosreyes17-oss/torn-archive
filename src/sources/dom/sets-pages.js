@@ -16,11 +16,15 @@
 
 import { parseTradeItemLine } from './trade.js';
 import { holdMarks, releaseMarks } from './float.js';
+import { parsePointsRow } from '../../core/points.js';
 
 export const SET_MARK_CLASS = 'tarc-setmark';
 export const SET_FILL_CLASS = 'tarc-setfill';
+/* A hairline on the top edge of a row of Torn's (the points market). */
+export const SET_RULE_CLASS = 'tarc-setrule';
 
-const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS;
+const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS;
+const OUR_WORDS = '.' + SET_MARK_CLASS;
 
 function setsShown(el) {
     return Boolean(el && el.getClientRects && el.getClientRects().length);
@@ -34,7 +38,7 @@ function setsWords(el) {
     if (!el) return '';
     let raw = String((el.tagName === 'INPUT' ? el.value : el.textContent) || '');
     // A mark of ours inside the element is not its words (a thread's title was read back with its mark in it).
-    if (el.tagName !== 'INPUT' && el.getElementsByClassName) for (const m of el.getElementsByClassName(SET_MARK_CLASS)) raw = raw.replace(m.textContent, '');
+    if (el.tagName !== 'INPUT' && el.querySelectorAll) for (const m of el.querySelectorAll(OUR_WORDS)) raw = raw.replace(m.textContent, '');
     return raw.replace(/\s+/g, ' ').trim();
 }
 
@@ -72,7 +76,7 @@ export function setMark(host, text, state = '', where = '') {
 
 /** Every Sets mark and Fill button off the page, and Torn's elements given back as they were. */
 export function clearSetMarks(doc = document) {
-    for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS)) {
+    for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS)) {
         const host = m.parentElement;
         m.remove();
         if (host && !host.querySelector(':scope > .tarc-float')) releaseMarks(host);
@@ -169,6 +173,96 @@ export function pointsListing(doc) {
         price = boxes[1];
     }
     return { button, amount, price, root };
+}
+
+/** A row's words, cell by cell with a space between (Torn's cells stand side by side with none), ours left out. */
+function rowWords(el) {
+    const parts = [];
+    const walk = (node) => {
+        for (const c of node.childNodes) {
+            if (c.nodeType === 3) parts.push(c.nodeValue);
+            else if (c.nodeType === 1 && !c.matches(OUR_WORDS)) walk(c);
+        }
+    };
+    walk(el);
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The points market's list as the page shows it: [{ el, points, each, total }], cheapest first. A row is told by its
+ * own numbers (count x price = total), never by a class name of Torn's. Empty when no rows are found, or when they
+ * are not in the order of their prices (then nothing can say where a listing would sit).
+ */
+export function pointsRows(doc) {
+    const found = [];
+    for (const el of doc.querySelectorAll('li, tr')) {
+        if (setsOurs(el) || !setsShown(el)) continue;
+        const text = rowWords(el);
+        if (text.length > 400 || !text.includes('$')) continue;
+        const row = parsePointsRow(text);
+        if (row) found.push({ el, ...row });
+    }
+    // A row holding another row is the list around it: the innermost ones are the listings.
+    const inner = found.filter((r) => !found.some((o) => o !== r && r.el.contains(o.el)));
+    const by = new Map();
+    for (const r of inner) by.set(r.el.parentElement, [...(by.get(r.el.parentElement) || []), r]);
+    const rows = [...by.values()].sort((a, b) => b.length - a.length)[0] || [];
+    return rows.every((r, i) => !i || r.each >= rows[i - 1].each) ? rows : [];
+}
+
+/**
+ * A hairline on the top edge of one of Torn's rows: on the edge between two rows, with no words on it, so it
+ * stands on nothing of Torn's. Absolutely placed: it takes no room and catches no click. `on` false takes it away.
+ */
+export function setRule(host, on, state = '') {
+    if (!host || !host.children) return null;
+    let rule = null;
+    for (const c of host.children) {
+        if (c.classList && c.classList.contains(SET_RULE_CLASS)) {
+            rule = c;
+            break;
+        }
+    }
+    if (!on) {
+        if (rule) {
+            rule.remove();
+            if (!host.querySelector(':scope > .tarc-float')) releaseMarks(host);
+        }
+        return null;
+    }
+    if (!rule) {
+        // An <i>, not a <span> or a cell: Torn styles the spans of its rows, and the line must take none of that.
+        rule = host.ownerDocument.createElement('i');
+        rule.className = 'tarc-float ' + SET_RULE_CLASS;
+        host.appendChild(rule);
+        holdMarks(host);
+    }
+    if (rule.dataset.state !== state) rule.dataset.state = state;
+    return rule;
+}
+
+/**
+ * Put a mark of ours beside one of Torn's controls, in the empty room to its right; where that room is too small,
+ * under it. By measure only: nothing of Torn's is sized or moved.
+ */
+export function markBeside(mark, anchor) {
+    const host = mark && mark.parentElement;
+    if (!host || !anchor || !anchor.getBoundingClientRect) return;
+    const h = host.getBoundingClientRect();
+    const a = anchor.getBoundingClientRect();
+    // The room is the widest thing around the control that starts where its own row starts: Torn's panel.
+    let room = h;
+    for (let node = host.parentElement, up = 0; node && up < 6 && node !== host.ownerDocument.body; node = node.parentElement, up += 1) {
+        const r = node.getBoundingClientRect();
+        if (Math.abs(r.left - h.left) > 24) break;
+        if (r.width > room.width) room = r;
+    }
+    const width = mark.getBoundingClientRect().width;
+    const fits = a.right + 12 + width <= room.right - 6;
+    const left = Math.round(fits ? a.right - h.left + 12 : Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)));
+    const top = Math.round(fits ? a.top - h.top + a.height / 2 : a.bottom - h.top + 14);
+    if (mark.style.left !== left + 'px') mark.style.left = left + 'px';
+    if (mark.style.top !== top + 'px') mark.style.top = top + 'px';
 }
 
 /** The other side's item rows on the trade view: [{ el, name, qty }]. */

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import {
     parsePointsMarket, priceLevels, firstWall, listPrice, goneLots, lotAdvice, recordPrice, usualLevel, pointsCheap, USUAL_DAYS,
-    bookAdd, bookState, pointsLogTypes, entryFromLog,
+    bookAdd, bookState, pointsLogTypes, entryFromLog, parsePointsRow, typedListing, listLines,
 } from '../src/core/points.js';
 
 const NOW = Date.UTC(2026, 9, 5, 14, 30);
@@ -163,4 +163,49 @@ test('points used with no price on record claim no saving and no loss', () => {
         { id: 'b', t: 2, kind: 'used', points: 25, each: 0 },
     ], 30900);
     assert.deepEqual([b.used, b.saved, b.left, b.rows[0].gain], [25, 0, 5, 0]);
+});
+
+// ---- a listing as you type it (mockup Z7; the list is the owner's own page, 2026-10-11) -------------------------------
+
+const PAGE_ROWS = [[405, 30893], [1111, 30895], [1111, 30895], [4000, 30898], [4000, 30898], [21, 31000], [100, 31119]].map(([points, each]) => ({ points, each }));
+
+test('a row of Torn\'s points list is told by its own numbers: count x price = total, and nothing else is a row', () => {
+    assert.deepEqual(parsePointsRow('Some_Seller 405 $30,893 $12,511,665'), { points: 405, each: 30893, total: 12511665 });
+    assert.deepEqual(parsePointsRow('Name2000 [2000001] 1,111 $30,895 $34,324,345 buy'), { points: 1111, each: 30895, total: 34324345 });
+    assert.deepEqual(parsePointsRow('x 1 $31,000 $31,000'), { points: 1, each: 31000, total: 31000 });
+    // What Torn asks before a buy, written after the row's own numbers, does not change them.
+    assert.deepEqual(parsePointsRow('x 21 $31,000 $651,000 Are you sure you want to buy 21 points for $651,000?'), { points: 21, each: 31000, total: 651000 });
+    for (const not of ['', 'Name Points Cost Each Total Price Action', 'x 405 $30,893', 'x 400 $30,893 $12,511,665', 'x $30,893 $12,511,665', 'Maximum price each is $100,000. You have 1,183 points available.', 'x 2 $200,000 $400,000']) assert.equal(parsePointsRow(not), null, not);
+});
+
+test('a price typed on the points market: what sells before it, and a loss, cheap or more under the lowest than it takes', () => {
+    assert.equal(typedListing(PAGE_ROWS, { price: 0, amount: 50 }), null);
+    assert.equal(typedListing(PAGE_ROWS, { price: 100001, amount: 50 }), null);
+    // $1 under the lowest: first, nothing given away, and with no cost on record nothing is called a loss.
+    const first = typedListing(PAGE_ROWS, { price: 30892, amount: 50 });
+    assert.deepEqual([first.ahead, first.at, first.past, first.state, first.by, first.under], [0, 0, false, '', null, 0]);
+    // At a price others are at: they were there first.
+    const same = typedListing(PAGE_ROWS, { price: 30895, amount: 50, least: 29956 });
+    assert.deepEqual([same.ahead, same.at, same.state, same.by], [405 + 1111 + 1111, 3, 'good', 30895 - 29955]);
+    // Over every row of the page: more sell first than the page shows.
+    const past = typedListing(PAGE_ROWS, { price: 32000, amount: 50 });
+    assert.deepEqual([past.ahead, past.at, past.past], [10748, null, true]);
+    // Under your least price: a loss, whatever else it is.
+    const loss = typedListing(PAGE_ROWS, { price: 29900, amount: 120, least: 29956, level: { lo: 31000, hi: 31750 } });
+    assert.deepEqual([loss.state, loss.by, loss.under, loss.given], ['loss', -55, 992, 992 * 120]);
+    assert.equal(typedListing(PAGE_ROWS, { price: 29955, amount: 1, least: 29956 }).by, 0, 'what they cost: no profit, no loss');
+    // A profit, but under the month's level: cheap.
+    assert.equal(typedListing(PAGE_ROWS, { price: 30892, amount: 50, least: 29956, level: { lo: 31000, hi: 31750 } }).state, 'cheap');
+    // A slip of the finger: far under the lowest.
+    const slip = typedListing(PAGE_ROWS, { price: 3089, amount: 50 });
+    assert.deepEqual([slip.under, slip.given], [30892 - 3089, (30892 - 3089) * 50]);
+    // No list read: the price is still judged against your cost.
+    assert.deepEqual([typedListing([], { price: 30000, least: 29956 }).state, typedListing([], { price: 30000 }).past], ['good', false]);
+});
+
+test('the lines in the list: above them a price is cheap, or a loss - none where no row is under it, or every row is', () => {
+    assert.deepEqual(listLines(PAGE_ROWS, { least: 29956, level: { lo: 31000, hi: 31750 } }), { lossAt: null, cheapAt: 5 });
+    assert.deepEqual(listLines(PAGE_ROWS, { least: 30897, level: { lo: 30000 } }), { lossAt: 3, cheapAt: null });
+    assert.deepEqual(listLines(PAGE_ROWS, { least: 40000, level: {} }), { lossAt: null, cheapAt: null });
+    assert.deepEqual(listLines([], { least: 29956 }), { lossAt: null, cheapAt: null });
 });

@@ -6,6 +6,7 @@
 import { hEsc, hNum, hMoney, hSigned, hPic, hPlural, hRate } from './fmt.js';
 import { marginWords } from '../core/margin.js';
 import { lotsWords } from '../core/lots.js';
+import { typedListing, listLines } from '../core/points.js';
 import { viewPiece } from '../core/view.js';
 import { IM_PLACE } from '../core/shopping.js';
 
@@ -252,10 +253,66 @@ export function boxMuseum(v, found, off = {}) {
     return { where: 'the museum', html, marks: [], tiles };
 }
 
-/** The points market. `hasBoxes` = Torn's Amount and Price boxes were found. */
-export function boxPoints(v, hasBoxes) {
+const PM_RANK = { '': 1, ahead: 2, bad: 3 };
+
+/**
+ * The points market as you type (mockup Z7): where the price in Torn's box would sit in the list, and whether it is
+ * a loss, cheap, or more under the lowest than it takes.
+ * @param page { typed: { amount, price } | null, rows: [{ points, each }] } - the page's own list, cheapest first
+ * @returns { html, marks: [{ i, state }] (a line on the top edge of row i of the page's list), note: { text, state } | null }
+ */
+function pointsTyped(v, page) {
     const p = v.points;
-    if (!p.price) return { where: 'the points market', html: bxNote('The points price has not been read yet. The hub reads it once a minute.'), marks: [] };
+    const onPage = !!(page && page.rows && page.rows.length);
+    // The page's own list is of now; without it, the hub's read of the market (a minute old at most).
+    const rows = onPage ? page.rows : (p.ladder || []).map((l) => ({ points: l.qty, each: l.price }));
+    const least = p.sell.least || 0;
+    const usual = p.level && p.level.lo ? `${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}` : '';
+    const t = page && page.typed ? typedListing(rows, { ...page.typed, least, level: p.level }) : null;
+    // A line in Torn's list is a hairline on the edge between two rows, with no words on it: the box says what it is.
+    const marks = new Map();
+    const said = [];
+    const add = (i, state, words) => {
+        const m = marks.get(i);
+        marks.set(i, { i, state: m && PM_RANK[m.state] > PM_RANK[state] ? m.state : state });
+        said.push({ i, words });
+    };
+    if (onPage) {
+        const lines = listLines(rows, { least, level: p.level });
+        if (t && t.at != null) add(t.at, '', 'is where yours would sit');
+        if (lines.cheapAt != null) add(lines.cheapAt, 'ahead', `has the prices under the usual ${usual} above it`);
+        if (lines.lossAt != null) add(lines.lossAt, 'bad', `has the prices that are a loss (under your ${hMoney(least)}) above it`);
+    }
+    const hue = { '': ['blue', '#5aa7ff'], ahead: ['amber', '#f6b74a'], bad: ['red', '#ff7878'] };
+    const by = new Map();
+    for (const s of said) by.set(s.i, [...(by.get(s.i) || []), s.words]);
+    const legend = by.size ? bxNote(`In Torn's list: ${[...by].map(([i, words]) => `the <b style="color:${hue[marks.get(i).state][1]}">${hue[marks.get(i).state][0]} line</b> ${words.join(', and ')}`).join('; ')}.`) : '';
+    if (!t) return { html: legend, marks: [...marks.values()], note: least ? { text: `Your least price: ${hMoney(least)}`, state: '' } : null };
+    const pos = t.past ? `over ${hNum(t.ahead)} points sell first` : t.ahead ? `${hNum(t.ahead)} points sell first` : rows.length ? 'first in the list' : '';
+    const verdict = t.state === 'loss' ? (t.by < 0 ? `a loss of ${hMoney(-t.by)} a point` : 'no profit: what they cost you')
+        : t.under ? `${hMoney(t.under)} under the lowest: $1 under is enough`
+        : t.state === 'cheap' ? `${p.hold ? 'hold: ' : ''}under the usual ${usual}`
+        : t.state === 'good' ? `${hSigned(t.by)} a point over cost` : '';
+    const text = [pos, verdict].filter(Boolean).join(' · ');
+    const note = text ? { text: text.charAt(0).toUpperCase() + text.slice(1), state: t.state === 'loss' ? 'bad' : t.under || t.state === 'cheap' ? 'ahead' : t.state === 'good' ? 'good' : '' } : null;
+    let html = bxHead('What you typed', `${t.amount ? hNum(t.amount) + ' at ' : ''}${hMoney(t.price)}`)
+        + bxKv('Sell before yours', t.past ? `over ${hNum(t.ahead)} points` : t.ahead ? `${hNum(t.ahead)} points` : rows.length ? 'none: first in the list' : 'not read')
+        + (t.by == null ? '' : bxKv(`${t.by < 0 ? 'Under' : 'Over'} your cost, ${hMoney(least - 1)}`, `${hMoney(Math.abs(t.by))} a point`, t.by > 0 ? 't-good' : 't-bad'))
+        + (t.amount ? bxKv('Puts on hand', hMoney(t.amount * t.price)) : '');
+    if (t.state === 'loss') html += `<div class="ta-hold"><b>A loss.</b> ${hMoney(t.price)} is under your least price ${hMoney(least)}${t.amount && t.by < 0 ? `: ${hMoney(-t.by * t.amount)} on these ${hNum(t.amount)}` : ''}.</div>`;
+    else if (t.under) html += `<div class="ta-hold"><b>${hMoney(t.under)} under the lowest listing.</b> ${hMoney(t.lowest - 1)} is first already${t.given ? `: ${hMoney(t.given)} given away on these ${hNum(t.amount)}` : ''}.</div>`;
+    else if (t.state === 'cheap' && !(p.hold || p.cheap)) html += `<div class="ta-hold"><b>Cheap.</b> ${hMoney(t.price)} is under the usual ${usual}.</div>`;
+    return { html: html + legend, marks: [...marks.values()], note };
+}
+
+/**
+ * The points market. `hasBoxes` = Torn's Amount and Price boxes were found.
+ * `page` = what the page itself shows: { typed: { amount, price } | null, rows: [{ points, each }] } (see pointsTyped).
+ */
+export function boxPoints(v, hasBoxes, page = null) {
+    const p = v.points;
+    if (!p.price) return { where: 'the points market', html: bxNote('The points price has not been read yet. The hub reads it once a minute.'), marks: [], note: null };
+    const typed = pointsTyped(v, page);
     const sell = p.sell;
     const lot = sell.quick && sell.quick.size ? sell.quick.size : sell.points;
     let html = '';
@@ -264,19 +321,23 @@ export function boxPoints(v, hasBoxes) {
     if (p.hold && p.level && p.level.lo) html += `<div class="ta-hold"><b>Hold.</b> The lowest listing is ${hMoney(low)}, under the usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}. Your rule: cheap points are not sold.</div>`;
     else if (p.cheap && p.level && p.level.lo) html += `<div class="ta-hold"><b>Cheap today.</b> The lowest listing is ${hMoney(low)}, under the usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}.</div>`;
     if (!sell.points) {
-        html += bxNote(`No points made from your sets are waiting to be sold.${p.before ? ` The ${hNum(p.before)} you had before are left alone.` : ''}`);
-        return { where: 'the points market', html, marks: [] };
+        html += typed.html + bxNote(`No points made from your sets are waiting to be sold.${p.before ? ` The ${hNum(p.before)} you had before have no cost on record, so no price is called a loss for them: type what a point cost you on the hub's Points page and it is.` : ''}`);
+        return { where: 'the points market', html, marks: typed.marks, note: typed.note };
     }
+    // Mockup Z7: the full sets not swapped yet would make the lot bigger.
+    const readySets = (v.sets || []).reduce((a, s) => a + s.full, 0);
+    const ready = (v.sets || []).reduce((a, s) => a + s.full * s.points, 0);
     html += bxHead(p.hold ? 'If you list anyway' : 'Your points', `${hNum(sell.points)} made from sets`)
         + bxKv(`Price to type · $1 under the ${p.rule === 'wall' ? 'first wall' : 'lowest'}`, hMoney(p.price))
         + bxKv('Listed cheaper than that', `${hNum(p.ahead)} points`)
         + bxKv('Lot', sell.quick ? `${lotsWords(sell.quick.lots)} · the size that leaves quickest` : `all ${hNum(sell.points)} in one`)
+        + (ready ? bxKv('Or wait for a bigger lot', `${hNum(sell.points + ready)} with your ${hPlural(readySets, 'full set')}`) : '')
         + bxKv('One lot puts on hand', hMoney(lot * p.price));
     if (sell.loss) html += `<div class="ta-hold"><b>A loss.</b> ${hMoney(p.price)} is under the ${hMoney(sell.least)} these points cost you. Wait.</div>`;
     else if (v.settings.fillPoints) html += '<div class="ta-btns">' + (hasBoxes ? bxBtn('fill-points', `${p.hold ? 'Fill anyway' : 'Fill'}: ${hNum(lot)} at ${hMoney(p.price)}`, p.hold ? '' : 'go', String(lot), ` data-n="${p.price}"`) : '') + '</div>'
         + (hasBoxes ? '' : bxNote("Torn's Amount and Price boxes were not found on this page: type them yourself."));
-    html += bxNote(`${p.before ? `The ${hNum(p.before)} points you had before are left alone. ` : ''}Bank each lot when it sells: a buy-mug takes cash on hand. Fill types lot and price. <b>You press ADD LISTING.</b>`);
-    return { where: 'the points market', html, marks: [] };
+    html += typed.html + bxNote(`${p.before ? `The ${hNum(p.before)} points you had before are left alone. ` : ''}Bank each lot when it sells: a buy-mug takes cash on hand. Fill types lot and price. <b>You press ADD LISTING.</b>`);
+    return { where: 'the points market', html, marks: typed.marks, note: typed.note };
 }
 
 /** Your buying thread. `title` = its title as the page shows it. */

@@ -216,6 +216,8 @@ export const MARKS_CSS = `
 .tarc-setmark[data-where="right"] { top: 50%; left: auto; right: 8px; transform: translateY(-50%); }
 .tarc-setmark[data-where="under"] { top: calc(100% - 4px); left: 4px; }
 .tarc-setmark[data-where="tile"] { top: auto; bottom: 2px; left: 2px; }
+/* Beside one of Torn's controls (the points market's ADD LISTING): its left and top are set by measure. */
+.tarc-setmark[data-where="note"] { height: 22px; padding: 0 10px; border-radius: 11px; font-size: 12px; line-height: 20px; transform: translateY(-50%); }
 .tarc-setmark[data-state="top"] { border-color: #5aa7ff; background: #173a63; color: #fff; box-shadow: 0 0 0 1px #5aa7ff, 0 0 10px rgba(90, 167, 255, 0.5); }
 .tarc-setmark[data-state="ok"] { border-color: rgba(160, 168, 184, 0.45); background: #1c2029; color: #c3c9d4; }
 .tarc-setmark[data-state="ahead"], .tarc-setmark[data-state="over"] { border-color: rgba(246, 183, 74, 0.6); background: #33260c; color: #ffd98a; }
@@ -247,6 +249,36 @@ export const MARKS_CSS = `
         inset 0 0 0 2px #f6b74a,
         inset 0 0 0 9999px rgba(246, 183, 74, 0.1) !important;
 }
+
+/*
+ * The points market (mockup Z7): a hairline in Torn's list, on the edge between two rows - where your listing
+ * would sit (blue), above which a price is under the usual (amber) or a loss (red). Two pixels on the rows' own
+ * border and no words: it stands on nothing of Torn's (the owner: a thicker line "blocks the torn page").
+ * Everything a row of Torn's could hand down to it is set here, so it is two pixels on any page.
+ */
+.tarc-setrule {
+    display: block !important;
+    top: -1px !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    height: 2px !important;
+    min-height: 0 !important;
+    max-height: 2px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    float: none !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    background: #5aa7ff !important;
+    box-shadow: none !important;
+    pointer-events: none !important;
+}
+.tarc-setrule[data-state="ahead"] { background: #f6b74a !important; }
+.tarc-setrule[data-state="bad"] { background: #ff7878 !important; }
 
 /* Fill beside Torn's own box on the museum and the points market: it types, you press Torn's button. */
 .tarc-setfill {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.2.0
+// @version      1.2.1
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.2.0';
+    const TARC_BUILD_VERSION = '1.2.1';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -4985,6 +4985,72 @@
         const points = ptWhole(ptPick(data, ['points', 'points_used', 'points_spent']));
         if (!points) return null;
         return { id: 'log:' + id, t, kind, points, each: ptWhole(ctx.priceNow), set: null, src: 'log' };
+    }
+
+    // ---- A listing as you type it on Torn's page (mockup Z7) -----------------------------------------------------------
+
+    /**
+     * One row of Torn's points list, from its words ("... 405 $30,893 $12,511,665"): the count, the price each and the
+     * total. Null unless count x price is the total, so a row that is something else is never taken for a listing.
+     */
+    function parsePointsRow(text) {
+        const s = String(text || '');
+        const money = [...s.matchAll(/\$\s?(\d[\d,]*)/g)].map((m) => ({ n: Number(m[1].replace(/,/g, '')), at: m.index }));
+        for (let k = 0; k + 1 < money.length; k += 1) {
+            const each = money[k].n;
+            const total = money[k + 1].n;
+            if (!each || each > POINT_PRICE_MAX || total < each || total % each) continue;
+            const points = total / each;
+            const before = s.slice(0, money[k].at).replace(/\$\s?\d[\d,]*/g, ' ');
+            if ([...before.matchAll(/\d[\d,]*/g)].some((m) => Number(m[0].replace(/,/g, '')) === points)) return { points, each, total };
+        }
+        return null;
+    }
+
+    /** The first row at or over `price`, when some rows are under it (else null: no line to draw). */
+    const ptFirstAtOrOver = (rows, price) => {
+        if (!price) return null;
+        const i = rows.findIndex((r) => r.each >= price);
+        return i > 0 ? i : null;
+    };
+
+    /**
+     * The lines in a list of points, cheapest first: the rows above `lossAt` are under your least price, the rows above
+     * `cheapAt` are under the usual level. Null where no row is under it, or every row is.
+     */
+    function listLines(rows, o = {}) {
+        const list = rows || [];
+        return { lossAt: ptFirstAtOrOver(list, ptWhole(o.least)), cheapAt: ptFirstAtOrOver(list, ptWhole(o.level && o.level.lo)) };
+    }
+
+    /**
+     * A price typed into Torn's "Price each" box, against the list and against what your points cost.
+     * @param rows [{ points, each }] the list, cheapest first
+     * @param o { price, amount, least, level } - least: the least price that is a profit (0 = no cost on record)
+     * @returns null with no price, else
+     *   ahead   points listed at your price or under it: they sell before yours
+     *   at      the row your listing would sit above (null and `past`: under every row here)
+     *   state   'loss' | 'cheap' | 'good' | '' (no cost on record, and not cheap)
+     *   by      dollars a point over (+) or under (-) what they cost you; null with no cost on record
+     *   under   dollars under what it takes to be first ($1 under the lowest): given away on every point
+     */
+    function typedListing(rows, o = {}) {
+        const price = ptWhole(o.price);
+        if (!price || price > POINT_PRICE_MAX) return null;
+        const list = rows || [];
+        const amount = ptWhole(o.amount);
+        let ahead = 0;
+        let at = 0;
+        while (at < list.length && list[at].each <= price) { ahead += list[at].points; at += 1; }
+        const lowest = list.length ? list[0].each : 0;
+        const least = ptWhole(o.least);
+        const lo = ptWhole(o.level && o.level.lo);
+        const state = least && price < least ? 'loss' : lo && price < lo ? 'cheap' : least ? 'good' : '';
+        const under = lowest && price < lowest - 1 ? lowest - 1 - price : 0;
+        return {
+            price, amount, ahead, at: at < list.length ? at : null, past: list.length > 0 && at >= list.length, lowest, state,
+            least, by: least ? price - (least - 1) : null, under, given: under * amount,
+        };
     }
 
     /* ===== src/core/lots.js ===== */
@@ -11118,6 +11184,8 @@
     .tarc-setmark[data-where="right"] { top: 50%; left: auto; right: 8px; transform: translateY(-50%); }
     .tarc-setmark[data-where="under"] { top: calc(100% - 4px); left: 4px; }
     .tarc-setmark[data-where="tile"] { top: auto; bottom: 2px; left: 2px; }
+    /* Beside one of Torn's controls (the points market's ADD LISTING): its left and top are set by measure. */
+    .tarc-setmark[data-where="note"] { height: 22px; padding: 0 10px; border-radius: 11px; font-size: 12px; line-height: 20px; transform: translateY(-50%); }
     .tarc-setmark[data-state="top"] { border-color: #5aa7ff; background: #173a63; color: #fff; box-shadow: 0 0 0 1px #5aa7ff, 0 0 10px rgba(90, 167, 255, 0.5); }
     .tarc-setmark[data-state="ok"] { border-color: rgba(160, 168, 184, 0.45); background: #1c2029; color: #c3c9d4; }
     .tarc-setmark[data-state="ahead"], .tarc-setmark[data-state="over"] { border-color: rgba(246, 183, 74, 0.6); background: #33260c; color: #ffd98a; }
@@ -11149,6 +11217,36 @@
             inset 0 0 0 2px #f6b74a,
             inset 0 0 0 9999px rgba(246, 183, 74, 0.1) !important;
     }
+
+    /*
+     * The points market (mockup Z7): a hairline in Torn's list, on the edge between two rows - where your listing
+     * would sit (blue), above which a price is under the usual (amber) or a loss (red). Two pixels on the rows' own
+     * border and no words: it stands on nothing of Torn's (the owner: a thicker line "blocks the torn page").
+     * Everything a row of Torn's could hand down to it is set here, so it is two pixels on any page.
+     */
+    .tarc-setrule {
+        display: block !important;
+        top: -1px !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+        height: 2px !important;
+        min-height: 0 !important;
+        max-height: 2px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        float: none !important;
+        font-size: 0 !important;
+        line-height: 0 !important;
+        background: #5aa7ff !important;
+        box-shadow: none !important;
+        pointer-events: none !important;
+    }
+    .tarc-setrule[data-state="ahead"] { background: #f6b74a !important; }
+    .tarc-setrule[data-state="bad"] { background: #ff7878 !important; }
 
     /* Fill beside Torn's own box on the museum and the points market: it types, you press Torn's button. */
     .tarc-setfill {
@@ -11361,6 +11459,7 @@
     // from what the page in front of you holds. Strings and plain data only; ui/torn-page.js puts them on the page.
     // Nothing here presses anything of Torn's: a button either types into a box of Torn's on your press (Fill),
     // copies text, or opens one page.
+
 
 
 
@@ -11611,10 +11710,66 @@
         return { where: 'the museum', html, marks: [], tiles };
     }
 
-    /** The points market. `hasBoxes` = Torn's Amount and Price boxes were found. */
-    function boxPoints(v, hasBoxes) {
+    const PM_RANK = { '': 1, ahead: 2, bad: 3 };
+
+    /**
+     * The points market as you type (mockup Z7): where the price in Torn's box would sit in the list, and whether it is
+     * a loss, cheap, or more under the lowest than it takes.
+     * @param page { typed: { amount, price } | null, rows: [{ points, each }] } - the page's own list, cheapest first
+     * @returns { html, marks: [{ i, state }] (a line on the top edge of row i of the page's list), note: { text, state } | null }
+     */
+    function pointsTyped(v, page) {
         const p = v.points;
-        if (!p.price) return { where: 'the points market', html: bxNote('The points price has not been read yet. The hub reads it once a minute.'), marks: [] };
+        const onPage = !!(page && page.rows && page.rows.length);
+        // The page's own list is of now; without it, the hub's read of the market (a minute old at most).
+        const rows = onPage ? page.rows : (p.ladder || []).map((l) => ({ points: l.qty, each: l.price }));
+        const least = p.sell.least || 0;
+        const usual = p.level && p.level.lo ? `${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}` : '';
+        const t = page && page.typed ? typedListing(rows, { ...page.typed, least, level: p.level }) : null;
+        // A line in Torn's list is a hairline on the edge between two rows, with no words on it: the box says what it is.
+        const marks = new Map();
+        const said = [];
+        const add = (i, state, words) => {
+            const m = marks.get(i);
+            marks.set(i, { i, state: m && PM_RANK[m.state] > PM_RANK[state] ? m.state : state });
+            said.push({ i, words });
+        };
+        if (onPage) {
+            const lines = listLines(rows, { least, level: p.level });
+            if (t && t.at != null) add(t.at, '', 'is where yours would sit');
+            if (lines.cheapAt != null) add(lines.cheapAt, 'ahead', `has the prices under the usual ${usual} above it`);
+            if (lines.lossAt != null) add(lines.lossAt, 'bad', `has the prices that are a loss (under your ${hMoney(least)}) above it`);
+        }
+        const hue = { '': ['blue', '#5aa7ff'], ahead: ['amber', '#f6b74a'], bad: ['red', '#ff7878'] };
+        const by = new Map();
+        for (const s of said) by.set(s.i, [...(by.get(s.i) || []), s.words]);
+        const legend = by.size ? bxNote(`In Torn's list: ${[...by].map(([i, words]) => `the <b style="color:${hue[marks.get(i).state][1]}">${hue[marks.get(i).state][0]} line</b> ${words.join(', and ')}`).join('; ')}.`) : '';
+        if (!t) return { html: legend, marks: [...marks.values()], note: least ? { text: `Your least price: ${hMoney(least)}`, state: '' } : null };
+        const pos = t.past ? `over ${hNum(t.ahead)} points sell first` : t.ahead ? `${hNum(t.ahead)} points sell first` : rows.length ? 'first in the list' : '';
+        const verdict = t.state === 'loss' ? (t.by < 0 ? `a loss of ${hMoney(-t.by)} a point` : 'no profit: what they cost you')
+            : t.under ? `${hMoney(t.under)} under the lowest: $1 under is enough`
+            : t.state === 'cheap' ? `${p.hold ? 'hold: ' : ''}under the usual ${usual}`
+            : t.state === 'good' ? `${hSigned(t.by)} a point over cost` : '';
+        const text = [pos, verdict].filter(Boolean).join(' · ');
+        const note = text ? { text: text.charAt(0).toUpperCase() + text.slice(1), state: t.state === 'loss' ? 'bad' : t.under || t.state === 'cheap' ? 'ahead' : t.state === 'good' ? 'good' : '' } : null;
+        let html = bxHead('What you typed', `${t.amount ? hNum(t.amount) + ' at ' : ''}${hMoney(t.price)}`)
+            + bxKv('Sell before yours', t.past ? `over ${hNum(t.ahead)} points` : t.ahead ? `${hNum(t.ahead)} points` : rows.length ? 'none: first in the list' : 'not read')
+            + (t.by == null ? '' : bxKv(`${t.by < 0 ? 'Under' : 'Over'} your cost, ${hMoney(least - 1)}`, `${hMoney(Math.abs(t.by))} a point`, t.by > 0 ? 't-good' : 't-bad'))
+            + (t.amount ? bxKv('Puts on hand', hMoney(t.amount * t.price)) : '');
+        if (t.state === 'loss') html += `<div class="ta-hold"><b>A loss.</b> ${hMoney(t.price)} is under your least price ${hMoney(least)}${t.amount && t.by < 0 ? `: ${hMoney(-t.by * t.amount)} on these ${hNum(t.amount)}` : ''}.</div>`;
+        else if (t.under) html += `<div class="ta-hold"><b>${hMoney(t.under)} under the lowest listing.</b> ${hMoney(t.lowest - 1)} is first already${t.given ? `: ${hMoney(t.given)} given away on these ${hNum(t.amount)}` : ''}.</div>`;
+        else if (t.state === 'cheap' && !(p.hold || p.cheap)) html += `<div class="ta-hold"><b>Cheap.</b> ${hMoney(t.price)} is under the usual ${usual}.</div>`;
+        return { html: html + legend, marks: [...marks.values()], note };
+    }
+
+    /**
+     * The points market. `hasBoxes` = Torn's Amount and Price boxes were found.
+     * `page` = what the page itself shows: { typed: { amount, price } | null, rows: [{ points, each }] } (see pointsTyped).
+     */
+    function boxPoints(v, hasBoxes, page = null) {
+        const p = v.points;
+        if (!p.price) return { where: 'the points market', html: bxNote('The points price has not been read yet. The hub reads it once a minute.'), marks: [], note: null };
+        const typed = pointsTyped(v, page);
         const sell = p.sell;
         const lot = sell.quick && sell.quick.size ? sell.quick.size : sell.points;
         let html = '';
@@ -11623,19 +11778,23 @@
         if (p.hold && p.level && p.level.lo) html += `<div class="ta-hold"><b>Hold.</b> The lowest listing is ${hMoney(low)}, under the usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}. Your rule: cheap points are not sold.</div>`;
         else if (p.cheap && p.level && p.level.lo) html += `<div class="ta-hold"><b>Cheap today.</b> The lowest listing is ${hMoney(low)}, under the usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}.</div>`;
         if (!sell.points) {
-            html += bxNote(`No points made from your sets are waiting to be sold.${p.before ? ` The ${hNum(p.before)} you had before are left alone.` : ''}`);
-            return { where: 'the points market', html, marks: [] };
+            html += typed.html + bxNote(`No points made from your sets are waiting to be sold.${p.before ? ` The ${hNum(p.before)} you had before have no cost on record, so no price is called a loss for them: type what a point cost you on the hub's Points page and it is.` : ''}`);
+            return { where: 'the points market', html, marks: typed.marks, note: typed.note };
         }
+        // Mockup Z7: the full sets not swapped yet would make the lot bigger.
+        const readySets = (v.sets || []).reduce((a, s) => a + s.full, 0);
+        const ready = (v.sets || []).reduce((a, s) => a + s.full * s.points, 0);
         html += bxHead(p.hold ? 'If you list anyway' : 'Your points', `${hNum(sell.points)} made from sets`)
             + bxKv(`Price to type · $1 under the ${p.rule === 'wall' ? 'first wall' : 'lowest'}`, hMoney(p.price))
             + bxKv('Listed cheaper than that', `${hNum(p.ahead)} points`)
             + bxKv('Lot', sell.quick ? `${lotsWords(sell.quick.lots)} · the size that leaves quickest` : `all ${hNum(sell.points)} in one`)
+            + (ready ? bxKv('Or wait for a bigger lot', `${hNum(sell.points + ready)} with your ${hPlural(readySets, 'full set')}`) : '')
             + bxKv('One lot puts on hand', hMoney(lot * p.price));
         if (sell.loss) html += `<div class="ta-hold"><b>A loss.</b> ${hMoney(p.price)} is under the ${hMoney(sell.least)} these points cost you. Wait.</div>`;
         else if (v.settings.fillPoints) html += '<div class="ta-btns">' + (hasBoxes ? bxBtn('fill-points', `${p.hold ? 'Fill anyway' : 'Fill'}: ${hNum(lot)} at ${hMoney(p.price)}`, p.hold ? '' : 'go', String(lot), ` data-n="${p.price}"`) : '') + '</div>'
             + (hasBoxes ? '' : bxNote("Torn's Amount and Price boxes were not found on this page: type them yourself."));
-        html += bxNote(`${p.before ? `The ${hNum(p.before)} points you had before are left alone. ` : ''}Bank each lot when it sells: a buy-mug takes cash on hand. Fill types lot and price. <b>You press ADD LISTING.</b>`);
-        return { where: 'the points market', html, marks: [] };
+        html += typed.html + bxNote(`${p.before ? `The ${hNum(p.before)} points you had before are left alone. ` : ''}Bank each lot when it sells: a buy-mug takes cash on hand. Fill types lot and price. <b>You press ADD LISTING.</b>`);
+        return { where: 'the points market', html, marks: typed.marks, note: typed.note };
     }
 
     /** Your buying thread. `title` = its title as the page shows it. */
@@ -13245,10 +13404,14 @@
 
 
 
+
     const SET_MARK_CLASS = 'tarc-setmark';
     const SET_FILL_CLASS = 'tarc-setfill';
+    /* A hairline on the top edge of a row of Torn's (the points market). */
+    const SET_RULE_CLASS = 'tarc-setrule';
 
-    const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS;
+    const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS;
+    const OUR_WORDS = '.' + SET_MARK_CLASS;
 
     function setsShown(el) {
         return Boolean(el && el.getClientRects && el.getClientRects().length);
@@ -13262,7 +13425,7 @@
         if (!el) return '';
         let raw = String((el.tagName === 'INPUT' ? el.value : el.textContent) || '');
         // A mark of ours inside the element is not its words (a thread's title was read back with its mark in it).
-        if (el.tagName !== 'INPUT' && el.getElementsByClassName) for (const m of el.getElementsByClassName(SET_MARK_CLASS)) raw = raw.replace(m.textContent, '');
+        if (el.tagName !== 'INPUT' && el.querySelectorAll) for (const m of el.querySelectorAll(OUR_WORDS)) raw = raw.replace(m.textContent, '');
         return raw.replace(/\s+/g, ' ').trim();
     }
 
@@ -13300,7 +13463,7 @@
 
     /** Every Sets mark and Fill button off the page, and Torn's elements given back as they were. */
     function clearSetMarks(doc = document) {
-        for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS)) {
+        for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS)) {
             const host = m.parentElement;
             m.remove();
             if (host && !host.querySelector(':scope > .tarc-float')) releaseMarks(host);
@@ -13397,6 +13560,96 @@
             price = boxes[1];
         }
         return { button, amount, price, root };
+    }
+
+    /** A row's words, cell by cell with a space between (Torn's cells stand side by side with none), ours left out. */
+    function rowWords(el) {
+        const parts = [];
+        const walk = (node) => {
+            for (const c of node.childNodes) {
+                if (c.nodeType === 3) parts.push(c.nodeValue);
+                else if (c.nodeType === 1 && !c.matches(OUR_WORDS)) walk(c);
+            }
+        };
+        walk(el);
+        return parts.join(' ').replace(/\s+/g, ' ').trim();
+    }
+
+    /**
+     * The points market's list as the page shows it: [{ el, points, each, total }], cheapest first. A row is told by its
+     * own numbers (count x price = total), never by a class name of Torn's. Empty when no rows are found, or when they
+     * are not in the order of their prices (then nothing can say where a listing would sit).
+     */
+    function pointsRows(doc) {
+        const found = [];
+        for (const el of doc.querySelectorAll('li, tr')) {
+            if (setsOurs(el) || !setsShown(el)) continue;
+            const text = rowWords(el);
+            if (text.length > 400 || !text.includes('$')) continue;
+            const row = parsePointsRow(text);
+            if (row) found.push({ el, ...row });
+        }
+        // A row holding another row is the list around it: the innermost ones are the listings.
+        const inner = found.filter((r) => !found.some((o) => o !== r && r.el.contains(o.el)));
+        const by = new Map();
+        for (const r of inner) by.set(r.el.parentElement, [...(by.get(r.el.parentElement) || []), r]);
+        const rows = [...by.values()].sort((a, b) => b.length - a.length)[0] || [];
+        return rows.every((r, i) => !i || r.each >= rows[i - 1].each) ? rows : [];
+    }
+
+    /**
+     * A hairline on the top edge of one of Torn's rows: on the edge between two rows, with no words on it, so it
+     * stands on nothing of Torn's. Absolutely placed: it takes no room and catches no click. `on` false takes it away.
+     */
+    function setRule(host, on, state = '') {
+        if (!host || !host.children) return null;
+        let rule = null;
+        for (const c of host.children) {
+            if (c.classList && c.classList.contains(SET_RULE_CLASS)) {
+                rule = c;
+                break;
+            }
+        }
+        if (!on) {
+            if (rule) {
+                rule.remove();
+                if (!host.querySelector(':scope > .tarc-float')) releaseMarks(host);
+            }
+            return null;
+        }
+        if (!rule) {
+            // An <i>, not a <span> or a cell: Torn styles the spans of its rows, and the line must take none of that.
+            rule = host.ownerDocument.createElement('i');
+            rule.className = 'tarc-float ' + SET_RULE_CLASS;
+            host.appendChild(rule);
+            holdMarks(host);
+        }
+        if (rule.dataset.state !== state) rule.dataset.state = state;
+        return rule;
+    }
+
+    /**
+     * Put a mark of ours beside one of Torn's controls, in the empty room to its right; where that room is too small,
+     * under it. By measure only: nothing of Torn's is sized or moved.
+     */
+    function markBeside(mark, anchor) {
+        const host = mark && mark.parentElement;
+        if (!host || !anchor || !anchor.getBoundingClientRect) return;
+        const h = host.getBoundingClientRect();
+        const a = anchor.getBoundingClientRect();
+        // The room is the widest thing around the control that starts where its own row starts: Torn's panel.
+        let room = h;
+        for (let node = host.parentElement, up = 0; node && up < 6 && node !== host.ownerDocument.body; node = node.parentElement, up += 1) {
+            const r = node.getBoundingClientRect();
+            if (Math.abs(r.left - h.left) > 24) break;
+            if (r.width > room.width) room = r;
+        }
+        const width = mark.getBoundingClientRect().width;
+        const fits = a.right + 12 + width <= room.right - 6;
+        const left = Math.round(fits ? a.right - h.left + 12 : Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)));
+        const top = Math.round(fits ? a.top - h.top + a.height / 2 : a.bottom - h.top + 14);
+        if (mark.style.left !== left + 'px') mark.style.left = left + 'px';
+        if (mark.style.top !== top + 'px') mark.style.top = top + 'px';
     }
 
     /** The other side's item rows on the trade view: [{ el, name, qty }]. */
@@ -14183,12 +14436,42 @@
                     setMark(tile.el, pieceWords(live), p.top ? 'top' : live.need > 0 ? '' : live.ahead > 0 ? 'ahead' : 'ok');
                 }
             }
+            // Mockup Z6: more sets typed than you hold is said beside Torn's button. Torn's box is never changed for you.
+            for (const ex of found) {
+                const s = v.sets.find((x) => x.key === ex.set);
+                const host = ex.root || ex.button.parentElement;
+                if (!s || !ex.box || !host) continue;
+                const full = Math.max(0, s.full - (off[s.key] || 0));
+                const over = tpDigits(ex.box.value) > full;
+                const mark = setMark(host, over ? (full ? `You hold ${hNum(full)} full ${full === 1 ? 'set' : 'sets'}` : 'No full set yet') : '', 'bad', 'note');
+                if (mark) markBeside(mark, ex.button);
+            }
             return boxMuseum(v, found.map((f) => ({ set: f.set, hasBox: !!f.box })), off);
         }
 
+        /**
+         * The points market (mockup Z7): what the price in Torn's box is, said beside ADD LISTING, and a hairline in
+         * Torn's list where that listing would sit - and above which a price is cheap, or a loss. The hairline is on
+         * the edge between two rows and carries no words (the owner, 2026-10-11: a line with words on it "blocks the
+         * torn page"). Read only: the boxes are looked at as you type, never written here.
+         */
         function onPoints(v) {
-            st.listing = pointsListing(doc);
-            return boxPoints(v, !!st.listing);
+            const l = pointsListing(doc);
+            st.listing = l;
+            const rows = pointsRows(doc);
+            say('pm', 'The points market, as this tab sees it', `${l ? 'the Points and Price boxes found' : 'the Points and Price boxes NOT found'} · ${rows.length ? `${rows.length} rows of the list read, from ${hMoney(rows[0].each)}` : 'no row of the list could be read: no line is drawn'}`);
+            const typed = l ? { amount: tpDigits(l.amount.value), price: tpDigits(l.price.value) } : null;
+            const out = boxPoints(v, !!l, { typed, rows: rows.map((r) => ({ points: r.points, each: r.each })) });
+            const lines = new Map(out.marks.map((m) => [m.i, m]));
+            rows.forEach((r, i) => {
+                const m = lines.get(i);
+                setRule(r.el, !!m, m ? m.state : '');
+            });
+            if (l && l.root) {
+                const mark = setMark(l.root, out.note ? out.note.text : '', out.note ? out.note.state : '', 'note');
+                if (mark) markBeside(mark, l.button);
+            }
+            return out;
         }
 
         function onForum(v) {
@@ -14412,6 +14695,8 @@
         doc.addEventListener('keydown', onKey, true);
         // A number typed into a card's box: its mark says at once when it is more than you need.
         const onInput = (event) => {
+            // The points market and the museum: a number typed into Torn's box is judged as you type.
+            if (st.kind === 'points' || st.kind === 'museum') { later(120); return; }
             if (st.kind !== 'bazaar' && st.kind !== 'itemmarket') return;
             // Typed by you outside every listing (the bazaar's own search): listings that go now were filtered, not bought.
             const el = event.target;
@@ -14426,9 +14711,9 @@
             // Our own marks changing is not the page changing.
             for (const m of list) {
                 const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
-                if (el && el.closest && el.closest('#tarc-host, .tarc-setmark')) continue;
+                if (el && el.closest && el.closest('#tarc-host, .tarc-setmark, .tarc-setrule')) continue;
                 const nodes = m.type === 'childList' ? [...m.addedNodes, ...m.removedNodes] : [];
-                if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && x.classList.contains('tarc-setmark'))) continue;
+                if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && (x.classList.contains('tarc-setmark') || x.classList.contains('tarc-setrule')))) continue;
                 later();
                 return;
             }

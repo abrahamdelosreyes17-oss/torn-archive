@@ -291,3 +291,69 @@ export function entryFromLog(id, row, types, ctx = {}) {
     if (!points) return null;
     return { id: 'log:' + id, t, kind, points, each: ptWhole(ctx.priceNow), set: null, src: 'log' };
 }
+
+// ---- A listing as you type it on Torn's page (mockup Z7) -----------------------------------------------------------
+
+/**
+ * One row of Torn's points list, from its words ("... 405 $30,893 $12,511,665"): the count, the price each and the
+ * total. Null unless count x price is the total, so a row that is something else is never taken for a listing.
+ */
+export function parsePointsRow(text) {
+    const s = String(text || '');
+    const money = [...s.matchAll(/\$\s?(\d[\d,]*)/g)].map((m) => ({ n: Number(m[1].replace(/,/g, '')), at: m.index }));
+    for (let k = 0; k + 1 < money.length; k += 1) {
+        const each = money[k].n;
+        const total = money[k + 1].n;
+        if (!each || each > POINT_PRICE_MAX || total < each || total % each) continue;
+        const points = total / each;
+        const before = s.slice(0, money[k].at).replace(/\$\s?\d[\d,]*/g, ' ');
+        if ([...before.matchAll(/\d[\d,]*/g)].some((m) => Number(m[0].replace(/,/g, '')) === points)) return { points, each, total };
+    }
+    return null;
+}
+
+/** The first row at or over `price`, when some rows are under it (else null: no line to draw). */
+const ptFirstAtOrOver = (rows, price) => {
+    if (!price) return null;
+    const i = rows.findIndex((r) => r.each >= price);
+    return i > 0 ? i : null;
+};
+
+/**
+ * The lines in a list of points, cheapest first: the rows above `lossAt` are under your least price, the rows above
+ * `cheapAt` are under the usual level. Null where no row is under it, or every row is.
+ */
+export function listLines(rows, o = {}) {
+    const list = rows || [];
+    return { lossAt: ptFirstAtOrOver(list, ptWhole(o.least)), cheapAt: ptFirstAtOrOver(list, ptWhole(o.level && o.level.lo)) };
+}
+
+/**
+ * A price typed into Torn's "Price each" box, against the list and against what your points cost.
+ * @param rows [{ points, each }] the list, cheapest first
+ * @param o { price, amount, least, level } - least: the least price that is a profit (0 = no cost on record)
+ * @returns null with no price, else
+ *   ahead   points listed at your price or under it: they sell before yours
+ *   at      the row your listing would sit above (null and `past`: under every row here)
+ *   state   'loss' | 'cheap' | 'good' | '' (no cost on record, and not cheap)
+ *   by      dollars a point over (+) or under (-) what they cost you; null with no cost on record
+ *   under   dollars under what it takes to be first ($1 under the lowest): given away on every point
+ */
+export function typedListing(rows, o = {}) {
+    const price = ptWhole(o.price);
+    if (!price || price > POINT_PRICE_MAX) return null;
+    const list = rows || [];
+    const amount = ptWhole(o.amount);
+    let ahead = 0;
+    let at = 0;
+    while (at < list.length && list[at].each <= price) { ahead += list[at].points; at += 1; }
+    const lowest = list.length ? list[0].each : 0;
+    const least = ptWhole(o.least);
+    const lo = ptWhole(o.level && o.level.lo);
+    const state = least && price < least ? 'loss' : lo && price < lo ? 'cheap' : least ? 'good' : '';
+    const under = lowest && price < lowest - 1 ? lowest - 1 - price : 0;
+    return {
+        price, amount, ahead, at: at < list.length ? at : null, past: list.length > 0 && at >= list.length, lowest, state,
+        least, by: least ? price - (least - 1) : null, under, given: under * amount,
+    };
+}

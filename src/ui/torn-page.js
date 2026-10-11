@@ -23,11 +23,11 @@
 import { gmGet, gmSet, gmOnChange, gmCopy, gmOpenTab } from '../platform/gm.js';
 import { MARKS_CSS } from './marks-css.js';
 import { BOX_CSS, BOX_MARKS_CSS, BOX_GAP } from './box-css.js';
-import { hIcon } from './fmt.js';
+import { hIcon, hMoney, hNum } from './fmt.js';
 import { boxClosed, boxAny, boxBazaar, boxTrade, boxMuseum, boxPoints, boxForum } from './box-pages.js';
 import { overlayStrips, overlaySide, overlayPlace, OV_WIDTH, OV_BAR, OV_GAP, OV_TOP } from '../core/overlay.js';
 import { scanDom } from '../sources/dom/scan.js';
-import { setMark, clearSetMarks, museumExchanges, pieceTiles, pointsListing, tradeTheirRows, forumThread, boxTwins } from '../sources/dom/sets-pages.js';
+import { setMark, setRule, markBeside, clearSetMarks, museumExchanges, pieceTiles, pointsListing, pointsRows, tradeTheirRows, forumThread, boxTwins } from '../sources/dom/sets-pages.js';
 import { writeInputs } from '../sources/dom/fill.js';
 import { listingTile, buyBox } from '../sources/dom/buy-box.js';
 import { detectPage, PAGE_BAZAAR, PAGE_ITEM_MARKET, isTradePage, isMuseumPage, isPointsMarketPage, isForumPage, bazaarOwnerId, itemMarketUrl, tradeViewUrl, ARCHIVE_PAGE_URL } from '../sources/route.js';
@@ -454,12 +454,42 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
                 setMark(tile.el, pieceWords(live), p.top ? 'top' : live.need > 0 ? '' : live.ahead > 0 ? 'ahead' : 'ok');
             }
         }
+        // Mockup Z6: more sets typed than you hold is said beside Torn's button. Torn's box is never changed for you.
+        for (const ex of found) {
+            const s = v.sets.find((x) => x.key === ex.set);
+            const host = ex.root || ex.button.parentElement;
+            if (!s || !ex.box || !host) continue;
+            const full = Math.max(0, s.full - (off[s.key] || 0));
+            const over = tpDigits(ex.box.value) > full;
+            const mark = setMark(host, over ? (full ? `You hold ${hNum(full)} full ${full === 1 ? 'set' : 'sets'}` : 'No full set yet') : '', 'bad', 'note');
+            if (mark) markBeside(mark, ex.button);
+        }
         return boxMuseum(v, found.map((f) => ({ set: f.set, hasBox: !!f.box })), off);
     }
 
+    /**
+     * The points market (mockup Z7): what the price in Torn's box is, said beside ADD LISTING, and a hairline in
+     * Torn's list where that listing would sit - and above which a price is cheap, or a loss. The hairline is on
+     * the edge between two rows and carries no words (the owner, 2026-10-11: a line with words on it "blocks the
+     * torn page"). Read only: the boxes are looked at as you type, never written here.
+     */
     function onPoints(v) {
-        st.listing = pointsListing(doc);
-        return boxPoints(v, !!st.listing);
+        const l = pointsListing(doc);
+        st.listing = l;
+        const rows = pointsRows(doc);
+        say('pm', 'The points market, as this tab sees it', `${l ? 'the Points and Price boxes found' : 'the Points and Price boxes NOT found'} · ${rows.length ? `${rows.length} rows of the list read, from ${hMoney(rows[0].each)}` : 'no row of the list could be read: no line is drawn'}`);
+        const typed = l ? { amount: tpDigits(l.amount.value), price: tpDigits(l.price.value) } : null;
+        const out = boxPoints(v, !!l, { typed, rows: rows.map((r) => ({ points: r.points, each: r.each })) });
+        const lines = new Map(out.marks.map((m) => [m.i, m]));
+        rows.forEach((r, i) => {
+            const m = lines.get(i);
+            setRule(r.el, !!m, m ? m.state : '');
+        });
+        if (l && l.root) {
+            const mark = setMark(l.root, out.note ? out.note.text : '', out.note ? out.note.state : '', 'note');
+            if (mark) markBeside(mark, l.button);
+        }
+        return out;
     }
 
     function onForum(v) {
@@ -683,6 +713,8 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     doc.addEventListener('keydown', onKey, true);
     // A number typed into a card's box: its mark says at once when it is more than you need.
     const onInput = (event) => {
+        // The points market and the museum: a number typed into Torn's box is judged as you type.
+        if (st.kind === 'points' || st.kind === 'museum') { later(120); return; }
         if (st.kind !== 'bazaar' && st.kind !== 'itemmarket') return;
         // Typed by you outside every listing (the bazaar's own search): listings that go now were filtered, not bought.
         const el = event.target;
@@ -697,9 +729,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         // Our own marks changing is not the page changing.
         for (const m of list) {
             const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
-            if (el && el.closest && el.closest('#tarc-host, .tarc-setmark')) continue;
+            if (el && el.closest && el.closest('#tarc-host, .tarc-setmark, .tarc-setrule')) continue;
             const nodes = m.type === 'childList' ? [...m.addedNodes, ...m.removedNodes] : [];
-            if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && x.classList.contains('tarc-setmark'))) continue;
+            if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && (x.classList.contains('tarc-setmark') || x.classList.contains('tarc-setrule')))) continue;
             later();
             return;
         }

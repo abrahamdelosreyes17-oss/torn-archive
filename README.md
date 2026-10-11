@@ -125,8 +125,8 @@ says the server has to be updated first.
 | --- | --- | --- |
 | Someone's bazaar, the Item Market | what is on your list here, what else is under its worth, the next stop of your run | on each set piece: on your list, need, ahead |
 | A trade | your price for each row, the total, what it leaves you, the money to take out of the vault | beside each of their items |
-| The museum | full sets, what they cost you, what they are worth at today's points price | on each piece: held, need |
-| The points market | the price and lot to list, or to hold when points are cheap or it would be a loss | none |
+| The museum | full sets, what they cost you, what they are worth at today's points price | on each piece: held, need; beside EXCHANGE, when you type more sets than you hold |
+| The points market | the price and lot to list, or to hold when points are cheap or it would be a loss; and for the price you type into Torn's box: how many points sell before yours, and whether it is a loss, cheap, or more under the lowest than it takes | beside ADD LISTING: the same, in a line; in Torn's list: a hairline on the edge between two rows where your listing would sit, and one above which a price is cheap or a loss (no words on them: the box says which is which) |
 | Your buying thread | whether its title still says what your shop says | beside the title |
 
 On every other Torn page the box shows your sets and what to do next.
