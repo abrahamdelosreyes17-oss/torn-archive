@@ -439,6 +439,7 @@ export function setFills(host, spec, onPress, anchor = null, within = null) {
             el.type = 'button';
             el.className = SET_FILL_CLASS;
             el.textContent = b.label;
+            el.dataset.full = b.label;
             if (b.short) el.dataset.short = b.short;
             if (b.state) el.dataset.state = b.state;
             if (b.title) el.title = b.title;
@@ -459,12 +460,33 @@ export function setFills(host, spec, onPress, anchor = null, within = null) {
             row.appendChild(a);
         }
     }
-    // One line, never wider than Torn's own panel: where the words do not fit (your vault's half is 392 wide on
-    // the real page, and four sums with their words are more), the buttons keep the sum and the word is their
-    // title; the box beside the page names each sum.
-    const roomWidth = (within || host).getBoundingClientRect().width - 12;
-    if (roomWidth > 0 && row.getBoundingClientRect().width > roomWidth) {
-        for (const el of row.children) if (el.dataset.short) el.textContent = el.dataset.short;
+    // Where they stand, in this order: beside Torn's control with their words; beside it with the sum alone (the
+    // word is the button's title, and the box beside the page names each sum); beside it one above the other,
+    // where that stays inside Torn's own panel; and only then in one line just under it. 1.3.9, the owner on his
+    // vault, where 85 px are free right of WITHDRAW and the button stood under it: "put it just at the side of
+    // withdraw". Worked out once for what is shown and the room there is, not on every look at the page.
+    const a = (anchor || host).getBoundingClientRect();
+    const room = (within || host).getBoundingClientRect();
+    const free = Math.floor(room.right - 6 - (a.right + 12));
+    const key = [sig, free, Math.round(room.width), Math.round(room.height)].join('|');
+    if (row.dataset.laid !== key) {
+        row.dataset.laid = key;
+        const lay = (short, column) => {
+            for (const el of row.children) {
+                const want = short && el.dataset.short ? el.dataset.short : el.dataset.full;
+                if (want && el.textContent !== want) el.textContent = want;
+            }
+            if (column) row.dataset.col = '1';
+            else delete row.dataset.col;
+            return row.getBoundingClientRect();
+        };
+        const mid = a.top + a.height / 2;
+        const inside = (r) => r.width <= free && mid - r.height / 2 >= room.top && mid + r.height / 2 <= room.bottom;
+        let beside = lay(false, false).width <= free;
+        if (!beside) beside = lay(true, false).width <= free;
+        if (!beside && row.children.length > 1) beside = inside(lay(true, true));
+        // Under it: one line, never wider than Torn's panel.
+        if (!beside && lay(false, false).width > room.width - 12) lay(true, false);
     }
     markBeside(row, anchor || host, within);
     return row;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.8
+// @version      1.3.9
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.8';
+    const TARC_BUILD_VERSION = '1.3.9';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -14272,6 +14272,9 @@
      * page space"). Their left and top are set by measure (markBeside); "top" is their middle line.
      */
     .tarc-fillrow { display: inline-flex !important; align-items: center; gap: 6px; margin: 0 !important; padding: 0 !important; transform: translateY(-50%); }
+    /* Two sums in the little room right of Torn's button: one above the other (1.3.9). */
+    .tarc-fillrow[data-col="1"] { flex-direction: column; align-items: stretch; gap: 2px; }
+    .tarc-fillrow[data-col="1"] .tarc-setfill { text-align: center; }
     .tarc-fillrow .tarc-setfill { position: static; transform: none; display: inline-block; box-sizing: border-box; height: 24px; line-height: 22px; font-size: 11px; text-decoration: none; white-space: nowrap; margin: 0; }
     /* What is on you, or in the vault, is short of it. */
     .tarc-fillrow .tarc-setfill[data-state="over"] { border-color: rgba(255, 120, 120, 0.7); background: #3a1414; color: #ffc9c9; }
@@ -17169,6 +17172,7 @@
                 el.type = 'button';
                 el.className = SET_FILL_CLASS;
                 el.textContent = b.label;
+                el.dataset.full = b.label;
                 if (b.short) el.dataset.short = b.short;
                 if (b.state) el.dataset.state = b.state;
                 if (b.title) el.title = b.title;
@@ -17189,12 +17193,33 @@
                 row.appendChild(a);
             }
         }
-        // One line, never wider than Torn's own panel: where the words do not fit (your vault's half is 392 wide on
-        // the real page, and four sums with their words are more), the buttons keep the sum and the word is their
-        // title; the box beside the page names each sum.
-        const roomWidth = (within || host).getBoundingClientRect().width - 12;
-        if (roomWidth > 0 && row.getBoundingClientRect().width > roomWidth) {
-            for (const el of row.children) if (el.dataset.short) el.textContent = el.dataset.short;
+        // Where they stand, in this order: beside Torn's control with their words; beside it with the sum alone (the
+        // word is the button's title, and the box beside the page names each sum); beside it one above the other,
+        // where that stays inside Torn's own panel; and only then in one line just under it. 1.3.9, the owner on his
+        // vault, where 85 px are free right of WITHDRAW and the button stood under it: "put it just at the side of
+        // withdraw". Worked out once for what is shown and the room there is, not on every look at the page.
+        const a = (anchor || host).getBoundingClientRect();
+        const room = (within || host).getBoundingClientRect();
+        const free = Math.floor(room.right - 6 - (a.right + 12));
+        const key = [sig, free, Math.round(room.width), Math.round(room.height)].join('|');
+        if (row.dataset.laid !== key) {
+            row.dataset.laid = key;
+            const lay = (short, column) => {
+                for (const el of row.children) {
+                    const want = short && el.dataset.short ? el.dataset.short : el.dataset.full;
+                    if (want && el.textContent !== want) el.textContent = want;
+                }
+                if (column) row.dataset.col = '1';
+                else delete row.dataset.col;
+                return row.getBoundingClientRect();
+            };
+            const mid = a.top + a.height / 2;
+            const inside = (r) => r.width <= free && mid - r.height / 2 >= room.top && mid + r.height / 2 <= room.bottom;
+            let beside = lay(false, false).width <= free;
+            if (!beside) beside = lay(true, false).width <= free;
+            if (!beside && row.children.length > 1) beside = inside(lay(true, true));
+            // Under it: one line, never wider than Torn's panel.
+            if (!beside && lay(false, false).width > room.width - 12) lay(true, false);
         }
         markBeside(row, anchor || host, within);
         return row;

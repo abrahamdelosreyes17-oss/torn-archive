@@ -318,6 +318,9 @@ export const MARKS_CSS = `
  * page space"). Their left and top are set by measure (markBeside); "top" is their middle line.
  */
 .tarc-fillrow { display: inline-flex !important; align-items: center; gap: 6px; margin: 0 !important; padding: 0 !important; transform: translateY(-50%); }
+/* Two sums in the little room right of Torn's button: one above the other (1.3.9). */
+.tarc-fillrow[data-col="1"] { flex-direction: column; align-items: stretch; gap: 2px; }
+.tarc-fillrow[data-col="1"] .tarc-setfill { text-align: center; }
 .tarc-fillrow .tarc-setfill { position: static; transform: none; display: inline-block; box-sizing: border-box; height: 24px; line-height: 22px; font-size: 11px; text-decoration: none; white-space: nowrap; margin: 0; }
 /* What is on you, or in the vault, is short of it. */
 .tarc-fillrow .tarc-setfill[data-state="over"] { border-color: rgba(255, 120, 120, 0.7); background: #3a1414; color: #ffc9c9; }

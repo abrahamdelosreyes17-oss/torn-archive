@@ -48,7 +48,9 @@ your browser. Nothing is sent to that site.
   - **Your vault** (Properties, the vault tab). Small buttons floating by Torn's WITHDRAW: exactly what to take
     out for your open trades, for your shopping list, or for both - what they want less what is on you already.
     By its DEPOSIT: **All $...**. A press types the number and presses Torn's WITHDRAW or DEPOSIT in that same
-    press. They take no room on Torn's page: nothing of Torn's moves (1.3.8).
+    press. They take no room on Torn's page: nothing of Torn's moves (1.3.8). They stand right beside Torn's
+    button wherever they fit there - with the sum alone when the word does not fit (it is the button's hover
+    text) - and under it only when they do not (1.3.9).
   - **A trade's Add Money step.** Beside Torn's box: **Add $...** (everything) and **Add only what I need**. A
     press types the money and presses Torn's Change. Accept stays yours. Your own money row of the trade shows
     the total, red when what is on you is short, with a link to your vault.

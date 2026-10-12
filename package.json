@@ -1,6 +1,6 @@
 {
   "name": "torn-archive",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "private": true,
   "type": "module",
   "description": "Museum sets and points for Torn: what to buy, what your trades hold, what a set earns.",
