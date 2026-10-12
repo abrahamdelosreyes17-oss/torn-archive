@@ -170,9 +170,15 @@ rest is worked out.
   price in a trade and its message, on your TornW3B list, in "cheaper than you pay your sellers", and in the
   number of sets your cash covers.
 - **Fixed for an hour while your shop is open.** The whole price table is fixed, kept through a reload, and not
-  worked out again until the hour is over. Your TornW3B list is written right after a fix, if it differs - so at
-  most once an hour by itself; your own press sends at any time. Changing your rate, your least profit or which
-  sets you trade fixes at once.
+  worked out again until the hour is over. Changing your rate, your least profit or which sets you trade fixes at
+  once.
+- **Your TornW3B list is written whenever it does not say those prices**: after each hour's fix, and inside the
+  hour when a price was changed on TornW3B's own page (your list is read every five minutes; a write is at
+  least two minutes after the last). Every price is set fixed, in dollars, with TornW3B's inflation protection
+  on. Your own press sends at any time.
+- **A piece you hold too many of is not on the list** (over your target: the word "ahead" on Your stock). It
+  comes back by itself when you no longer do. The pieces of a trade that ended in the last six hours stay on
+  until its receipt is made, since TornW3B makes a receipt from this list.
 - **The one thing that moves it inside the hour**: the points price falling so far that a set would no longer
   leave your least profit. That set comes down to its ceiling at once, the list is written, and the log, the
   Prices page and an open trade say so. Nothing goes up before the hour ends.
@@ -186,6 +192,11 @@ ceiling, and what the other buyers pay for the whole set - from their prices rea
 age said from an hour on. When the piece you are shortest of has a buyer over your ceiling, the line names it;
 you are not made to pay over the ceiling for it. Your forum text keeps your rate; when a set is paid less today,
 the page and the box on your thread say so.
+
+The forum post names every piece, plushies and flowers each on a line, and strikes out the ones you hold too
+many of - the same pieces your TornW3B list leaves out. "Copy the post" puts the post on the clipboard both
+with the look and as plain text (a line through each letter), so the struck pieces stay struck where you paste.
+It also tells sellers to look at your profile picture for whether you are open.
 
 ## The Ledger
 
@@ -204,7 +215,16 @@ the page and the box on your thread say so.
   later. When set pieces first show in a trade you are told once.
 - **A receipt** is made on TornW3B by itself when a trade ends, from your price list there - once every piece of the
   trade is priced on that list, up to three tries five minutes apart, for a trade that ended in the last six hours.
-  A trade with a piece your TornW3B list does not price says so beside its button.
+  A trade with a piece your TornW3B list does not price says so beside its button. "Generate receipt" on a
+  finished trade (Trades, and Ledger > Receipts) makes it on your press; a press that made none says why on the
+  row.
+- **View receipt** opens a box with the receipt's link to copy and a message for the seller: thanks, your thread
+  when Torn has said where it is, and the link last. The link is kept with the trade.
+- **A receipt you made on TornW3B's own page** is found with your receipts (read every half hour) and given to
+  the finished trade with the same set pieces and counts, within a day of it. Torn numbers a trade one way while
+  it is open and another once it has ended, so the number on the receipt is not what it goes by.
+- **The receipt request** is known from TornW3B's documentation only. It is tried in up to three forms until
+  TornW3B takes one; that form goes first from then on. Every form tried is in the log, names and kinds, no value.
 - **Your log** is asked for a few kinds of row at a time (eight at most a request). The log line "Your log, read
   through" says how many rows of each sort came in.
 - **"From my cash and stock"**: the number of sets is worked out from your money and what you hold. While a shopping
@@ -240,7 +260,9 @@ is there too: whether it was your press or "Keep it at my rate by itself", how m
 off, and what TornW3B answered. With your shop closed the line says so. When TornW3B refuses a write,
 the log has its words, the request's shape and what was sent (item ids and prices - your public list; never the
 key). With the switch on and nothing sent, the log says why, once each time the reason changes. A request
-TornW3B calls wrong is not sent by itself again until your prices change; your own press still sends it.
+TornW3B calls wrong is not sent by itself again until your prices change; your own press still sends it. The
+same holds for a write TornW3B took while its list still reads differently afterwards: the log names the pieces,
+with your price and the one read, and the panel says why nothing is being sent.
 
 ## Development
 

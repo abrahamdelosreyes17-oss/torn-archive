@@ -1096,7 +1096,8 @@ export function foldOwnList(S, json, now) {
 
 export function foldReceipt(S, tradeId, receipt, now) {
     const rest = S.w3b.receipts.filter(([id]) => id !== String(tradeId));
-    S.w3b = { ...S.w3b, receipts: [...rest, [String(tradeId), { id: receipt.id ?? null, total: enWhole(receipt.total), url: receipt.url || '', at: now }]].slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, now) };
+    // `rows`: the pieces it was made for; `tid`: the trade number TornW3B has it under (the one it was made with).
+    S.w3b = { ...S.w3b, receipts: [...rest, [String(tradeId), { id: receipt.id ?? null, tid: String(tradeId), total: enWhole(receipt.total), url: receipt.url || '', at: now, rows: receipt.rows || [] }]].slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, now) };
 }
 
 // ---- What is kept by day -------------------------------------------------------------------------------------------
@@ -1147,7 +1148,7 @@ export function engineInput(S, settings, now, { logRead = false } = {}) {
         pricesAt: Math.max(S.summary.at || 0, ...Object.values(S.offers).map((o) => Math.max(o.bazAt || 0, o.imAt || 0)), 0),
         topBid: (id) => { const b = S.bids[String(id)]; const v = mv(id); return b && b.price > 0 && v > 0 ? { pct: Math.round(b.price / v * 1000) / 10, name: b.name, price: b.price, at: b.at } : null; },
         // What you pay your sellers, fixed for the hour (core/sellrate.js): null while nothing is fixed.
-        rate: (S.rate && S.rate.table) || null, rateSent: (S.rate && S.rate.sent) || 0,
+        rate: (S.rate && S.rate.table) || null,
         listings: S.points.listings, pointsAt: S.points.at, days: S.points.days, wallDays: S.points.wallDays,
         lots: S.points.lots, mineLots: [],
         pool: S.stock.pool, book: S.book,
@@ -1163,7 +1164,7 @@ export function engineInput(S, settings, now, { logRead = false } = {}) {
         cart: S.cart, run: S.run, hotSince: S.hot,
         kept: settings.targetMode !== 'number' && S.cart.length && S.plan && S.plan.targets ? S.plan.targets : null,
         thread: S.thread,
-        w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error, receiptsError: S.w3b.receiptsError || '' },
+        w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error, receiptsError: S.w3b.receiptsError || '', tried: S.w3b.tried || {} },
         hist: S.hist,
         names: (id) => S.names[String(id)] || '',
         itemName,

@@ -16,7 +16,7 @@ import { buysFrom } from '../core/settings.js';
 import { hotSince } from '../core/verdict.js';
 import { stockAge } from '../core/stock.js';
 import { pointsLogTypes } from '../core/points.js';
-import { desiredList, listDiff, listMatches, putBody, receiptBody, readReceipt, receiptsByTrade } from '../core/tw3b-list.js';
+import { listDiff, listMatches, putBody, receiptBody, readReceipt, receiptOf, receiptsWith, claimReceipts, RECEIPT_FORMS, RECEIPT_OWED_MS } from '../core/tw3b-list.js';
 import { tradeNotice } from '../core/trades.js';
 import { rateKey, fixTable, safeTable } from '../core/sellrate.js';
 import { fetchItems, fetchItemMarket, fetchInventory, fetchPointsMarket, fetchMoney, fetchLogTypes } from '../api/torn.js';
@@ -31,7 +31,7 @@ const EG_DAY = 86400000;
 /** How often each thing is read. The pieces' prices follow the setting (1, 2, 5 or 10 minutes). */
 export const READ_EVERY = Object.freeze({
     self: 6 * EG_HOUR, items: EG_HOUR, types: 7 * EG_DAY, log: 2 * EG_MIN, finished: 5 * EG_MIN, inventory: 5 * EG_MIN,
-    money: EG_MIN, points: EG_MIN, trades: EG_MIN, thread: 10 * EG_MIN, ownList: 10 * EG_MIN, receipts: 30 * EG_MIN, bids: 6 * EG_HOUR,
+    money: EG_MIN, points: EG_MIN, trades: EG_MIN, thread: 10 * EG_MIN, ownList: 5 * EG_MIN, receipts: 30 * EG_MIN, bids: 6 * EG_HOUR,
 });
 // The inventory: everything else is worked out from it, so it is asked before anything that can wait ('high').
 // Torn counts it once an hour for each category and its answer says when it counted: it is asked again the moment
@@ -70,7 +70,7 @@ const EG_HISTORY_WAIT_MS = 3 * EG_MIN;
 const EG_LOG_PAGES = 5;
 const EG_TRADES_FULL = 8;
 /** A finished trade gets its receipt by itself this long after it ended (TornW3B lets a receipt be put right for 6 hours). */
-const EG_RECEIPT_WITHIN_MS = 6 * EG_HOUR;
+const EG_RECEIPT_WITHIN_MS = RECEIPT_OWED_MS;
 /** ... tried this many times at most, this far apart. */
 const EG_RECEIPT_TRIES = 3;
 const EG_RECEIPT_GAP_MS = 5 * EG_MIN;
@@ -90,6 +90,13 @@ const EG_TRADE_TRIES = 3;
 const EG_TRADES_BACK_S = 24 * 3600;
 const EG_LOOK_MS = 10 * EG_MIN;
 const EG_SYNC_GAP_MS = 2 * EG_MIN;
+/** After a write your list is read once more this much later: TornW3B may still answer the list as it was. */
+const EG_LIST_AGAIN_MS = EG_MIN;
+/**
+ * How the Archive writes your list. A list last written another way is written in full once, so every price on
+ * it is as this one says: 2 = with TornW3B's inflation protection on.
+ */
+const EG_LIST_FORM = 2;
 
 const egMsg = (error) => String((error && error.message) || error || '');
 const egLocal = (error) => !!(error && (error.local || error.takingTurns));
@@ -153,7 +160,12 @@ export function makeEngine(env) {
     // called wrong: the same one is not sent by itself again.
     let syncWhy = '';
     let listRefused = '';
-    const flags = { w3b: false, receipt: null };
+    // The write TornW3B took while its list still read differently after it: not sent by itself a second time.
+    let listStuck = '';
+    /** Your receipts were read from TornW3B since this tab began: none is made by itself before (it may be there). */
+    let receiptsSeen = false;
+    // `held`: why your list differs and is not being written by itself ('' while it is written, or matches).
+    const flags = { w3b: false, receipt: null, held: '' };
 
     const touch = (...parts) => { for (const p of parts) dirty.add(p); cache = null; };
     const settings = () => env.settings();
@@ -664,18 +676,29 @@ export function makeEngine(env) {
         const rows = await env.own.receipts();
         if (keyState.w3b.ok !== true || keyState.w3b.error) setKeyState('w3b', { ok: true, error: '' });
         if (S.w3b.receiptsError) S.w3b = { ...S.w3b, receiptsError: '' };
-        const known = new Set(S.w3b.receipts.map(([, r]) => String(r.id)));
+        // A receipt kept without its pieces (as until 1.3.2) is read once more: its pieces say whose trade it is.
+        const known = new Set(S.w3b.receipts.filter(([, r]) => Array.isArray(r.rows)).map(([, r]) => String(r.id)));
         let read = 0;
         for (const r of rows) {
             if (!r || r.id == null || known.has(String(r.id)) || read >= 5) continue;
             read += 1;
-            const one = await env.own.receipt(r.id);
-            for (const [tid, rec] of receiptsByTrade([one])) {
-                const at = Date.parse(rec.at) || Number(rec.at) * 1000 || env.now();
-                S.w3b = { ...S.w3b, receipts: [...S.w3b.receipts.filter(([id]) => id !== tid), [tid, { id: rec.id, total: rec.total, url: '', at }]].slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, at) };
-            }
+            const rec = receiptOf(await env.own.receipt(r.id), env.now());
+            if (!rec) continue;
+            S.w3b = { ...S.w3b, receipts: receiptsWith(S.w3b.receipts, rec).slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, rec.at) };
         }
+        claimOwn();
+        receiptsSeen = true;
         S.w3b = { ...S.w3b, receiptsAt: env.now() };
+        touch('w3b');
+    }
+
+    /** Receipts no finished trade holds yet go to the trade they are of (core/tw3b-list.js claimReceipts), said once each. */
+    function claimOwn() {
+        const next = claimReceipts(S.w3b.receipts, S.trades.finished, ALL_PIECE_IDS);
+        const moved = next.filter(([key], k) => key !== S.w3b.receipts[k][0]);
+        if (!moved.length) return;
+        for (const [key, r] of moved) env.say('note', 'A receipt on TornW3B is the one of a finished trade', 'trade ' + key + ' · receipt ' + r.id + (r.tid ? ' · made with the trade number ' + r.tid : ' · made with no trade number') + ' · the same pieces and counts');
+        S.w3b = { ...S.w3b, receipts: next };
         touch('w3b');
     }
 
@@ -736,12 +759,33 @@ export function makeEngine(env) {
     }
 
     /** The request a write of your list would send now, or why there is none. */
-    function listWrite() {
-        const v = view();
+    function listWrite(v = view()) {
         if (!v.ready || !S.w3b.list) return { why: 'your list on TornW3B has not been read yet', unread: true };
-        const diff = listDiff(new Map(S.w3b.list), desiredList(v.pieces, v.settings.open), ALL_PIECE_IDS);
+        // A list last written another way (EG_LIST_FORM) is written in full once: every price, also one that reads the same.
+        const all = !!v.settings.open && (S.w3b.form || 0) !== EG_LIST_FORM;
+        // What the list should say is the view's (`want`): your prices of this hour, without the pieces you hold too many of.
+        const diff = listDiff(new Map(S.w3b.list), v.prices.w3b.want, ALL_PIECE_IDS, { all });
         if (listMatches(diff)) return { why: v.settings.open ? 'it already matches your rate' : 'your shop is closed: no set piece of yours is on your TornW3B list' };
-        return { diff, body: putBody(diff), closed: !v.settings.open };
+        // `plain`: the same write without inflation protection, for a TornW3B that calls the first one wrong.
+        const inflation = !S.w3b.plain;
+        return { diff, body: putBody(diff, { inflation }), plain: inflation && diff.set.length ? putBody(diff, { inflation: false }) : null, closed: !v.settings.open, all };
+    }
+
+    /**
+     * The write itself. With inflation protection on it is a request TornW3B has not been seen to take (until
+     * 1.3.2 it was sent off): called wrong (400), it is sent once more without, and written without from then on.
+     */
+    async function putOwn(w, by) {
+        try {
+            return await env.own.putList(w.body);
+        } catch (error) {
+            if (!(error && error.http === 400) || !w.plain) throw error;
+            env.say('note', 'TornW3B refused the write of your list with inflation protection on', by + ' · ' + egMsg(error) + (error.said ? ' · it said: ' + error.said : '') + ' · sent once more without it');
+            const answer = await env.own.putList(w.plain);
+            S.w3b = { ...S.w3b, plain: true };
+            touch('w3b');
+            return answer;
+        }
     }
 
     /**
@@ -759,12 +803,13 @@ export function makeEngine(env) {
             return;
         }
         syncAt = env.now();
-        const sent = w.diff.set.length + ' set, ' + w.diff.remove.length + ' taken off' + (w.closed ? ' · your shop is closed: the set pieces come off your list' : '');
+        flags.held = '';
+        const sent = w.diff.set.length + ' set, ' + w.diff.remove.length + ' taken off' + (w.closed ? ' · your shop is closed: the set pieces come off your list' : '') + (w.all ? ' · every price, so each has inflation protection on' : '');
         // The prices this write carries: the hour's table as it stands now (rateKeep).
         const rev = S.rate.table ? S.rate.table.rev : 0;
         let answer;
         try {
-            answer = await env.own.putList(w.body);
+            answer = await putOwn(w, by);
         } catch (error) {
             if (egLocal(error)) env.say('note', 'Your list was not written to TornW3B', by + ' · ' + egMsg(error));
             else {
@@ -783,12 +828,25 @@ export function makeEngine(env) {
         if (rev && S.rate.table && S.rate.table.rev === rev && S.rate.sent !== rev) { S.rate = { ...S.rate, sent: rev }; touch('rate'); }
         env.say('note', 'Your list written to TornW3B', by + ' · ' + sent + ' · it answered: ' + (answer == null ? 'nothing that could be read' : JSON.stringify(answer).slice(0, 180)));
         setKeyState('w3b', { ok: true, error: '' });
+        if (w.all) S.w3b = { ...S.w3b, form: EG_LIST_FORM };
         foldOwnList(S, await env.own.readList(), env.now());
         touch('w3b');
+        // TornW3B may still answer the list as it was a moment ago: read once more soon. A list that reads
+        // differently after a write it took is said, with the pieces - and the same write is not sent by itself
+        // again (stepOwn), or one price TornW3B reads another way would be written every two minutes for good.
+        due.ownList = Math.min(due.ownList || Infinity, env.now() + EG_LIST_AGAIN_MS);
+        const left = listWrite();
+        listStuck = left.body ? JSON.stringify(left.body) : '';
+        if (left.body) {
+            const now = new Map(S.w3b.list);
+            const lines = egLines([...left.diff.set.map((x) => x.itemID + ' yours $' + x.price + ', reads ' + (now.has(String(x.itemID)) ? '$' + now.get(String(x.itemID)).value : 'no price')), ...left.diff.remove.map((x) => x.itemID + ' still on it')]);
+            lines.forEach((l, k) => env.say('note', 'TornW3B took the write and your list there still reads differently, ' + (k + 1) + ' of ' + lines.length, l));
+        }
     }
 
     /** "Keep it at my rate by itself" is on and nothing is sent: the reason, said once each time it changes. */
     function syncQuiet(why) {
+        flags.held = why;
         if (why === syncWhy) return;
         syncWhy = why;
         env.say('note', 'Keeping your TornW3B list at your rate: nothing sent', why);
@@ -811,28 +869,53 @@ export function makeEngine(env) {
         sayOnce('w3b-' + what + '-' + egMsg(error), what === 'receipts' ? 'TornW3B: your receipts' : 'TornW3B: your own list', egMsg(error) + (error && error.said ? ' · it said: ' + error.said : ''));
     }
 
-    /** A receipt for one finished trade, made on TornW3B from your list there. */
-    function makeReceipt(id) {
+    /**
+     * A receipt for one finished trade, made on TornW3B from your list there. Its link is kept with the trade:
+     * it is what you send the seller. The request goes in the form TornW3B last took, then in the others
+     * (core/tw3b-list.js RECEIPT_FORMS) while it calls each wrong (400) - every form's shape is in the log, names
+     * and kinds, no value. A press that made nothing says why on the trade's row (`tried[id].why`).
+     * @param by 'your press' | 'by itself'
+     */
+    function makeReceipt(id, by = 'your press') {
         const f = S.trades.finished.find((x) => x.id === id);
         if (!f || flags.receipt) return;
         flags.receipt = id;
-        const body = receiptBody(id, f.rows || [], f.whoId);
-        env.own.makeReceipt(body)
-            .then((json) => {
+        const tried = (patch) => { S.w3b = { ...S.w3b, tried: { ...(S.w3b.tried || {}), [id]: { n: 0, ...((S.w3b.tried || {})[id] || {}), at: env.now(), forms: RECEIPT_FORMS, ...patch } } }; touch('w3b'); };
+        const first = Number.isInteger(S.w3b.receiptForm) && S.w3b.receiptForm < RECEIPT_FORMS ? [S.w3b.receiptForm] : [];
+        const forms = [...new Set([...first, ...Array(RECEIPT_FORMS).keys()])];
+        (async () => {
+            let last = null;
+            for (const form of forms) {
+                const body = receiptBody(id, f.rows || [], f.whoId, form);
+                try {
+                    const json = await env.own.makeReceipt(body);
+                    if (S.w3b.receiptForm !== form) S.w3b = { ...S.w3b, receiptForm: form };
+                    return { json, form };
+                } catch (e) {
+                    last = e;
+                    if (!(e && e.http === 400)) break;
+                    env.say('note', 'TornW3B called a receipt request wrong', 'trade ' + id + ' · form ' + (form + 1) + ' of ' + RECEIPT_FORMS + ' · sent: ' + egShape(body) + (e.said ? ' · it said: ' + e.said : ''));
+                }
+            }
+            throw last;
+        })()
+            .then(({ json, form }) => {
                 const r = readReceipt(json, f.paid);
-                foldReceipt(S, id, r, env.now());
+                foldReceipt(S, id, { ...r, rows: f.rows || [] }, env.now());
+                const { [id]: done, ...rest } = S.w3b.tried || {};
+                S.w3b = { ...S.w3b, tried: rest };
                 touch('w3b');
+                env.say('note', 'Receipt made on TornW3B', by + ' · trade ' + id + ' · form ' + (form + 1) + ' · ' + (r.url || 'its answer named no link: ' + egShape(json)) + ' · its total ' + egMoney(r.total) + ', you paid ' + egMoney(f.paid));
                 if (!r.ok) env.say('note', "TornW3B's receipt differs from what you paid", 'trade ' + id + ': theirs ' + r.total + ', yours ' + f.paid + (r.missing.length ? ', not on your list: ' + r.missing.join(', ') : ''));
             })
             .catch((e) => {
-                w3bFailed(e, 'receipts');
-                // A request TornW3B calls wrong (400) is the same request the next time: not sent for this trade
-                // again, and its shape - names and kinds, no value - goes into the log so the cause can be found.
-                if (e && e.http === 400) {
-                    S.w3b = { ...S.w3b, tried: { ...(S.w3b.tried || {}), [id]: { n: EG_RECEIPT_TRIES, at: env.now() } } };
-                    touch('w3b');
-                    env.say('note', 'TornW3B called a receipt request wrong', 'trade ' + id + ' · sent: ' + egShape(body) + ' · it is not sent for this trade again');
-                }
+                if (egLocal(e)) { tried({ why: egMsg(e) }); return; }
+                const wrong = !!e && e.http === 400;
+                // Called wrong in every form: not sent by itself for this trade again. Anything else is a verdict
+                // on the key, or a failure that may pass (said with your receipts).
+                if (wrong) env.say('note', 'TornW3B called the receipt request wrong in every form', 'trade ' + id + ' · it is not sent by itself for this trade again - your own press still sends it');
+                else w3bFailed(e, 'receipts');
+                tried({ ...(wrong ? { n: EG_RECEIPT_TRIES } : {}), why: (wrong ? 'TornW3B does not take the request' : egMsg(e)) + (e && e.said ? ': ' + String(e.said).slice(0, 80) : '') });
             })
             .finally(() => { flags.receipt = null; flush(); env.changed(); });
     }
@@ -842,19 +925,22 @@ export function makeEngine(env) {
      * its pieces, since TornW3B makes the receipt from that list. Older trades keep their button.
      */
     function autoReceipt(now) {
-        if (flags.receipt || !S.w3b.list) return;
+        // Not before your receipts were read: one made on TornW3B's own page may be this trade's already.
+        if (flags.receipt || !S.w3b.list || !receiptsSeen) return;
+        claimOwn();
         const have = new Set(S.w3b.receipts.map(([id]) => id));
         const listed = new Map(S.w3b.list);
         const tried = S.w3b.tried || {};
         for (const f of S.trades.finished) {
             if (have.has(f.id) || !(now - f.t < EG_RECEIPT_WITHIN_MS)) continue;
-            const t = tried[f.id] || { n: 0, at: 0 };
+            // What was tried in the request's older forms does not count: the forms have changed since.
+            const t = tried[f.id] && tried[f.id].forms === RECEIPT_FORMS ? tried[f.id] : { n: 0, at: 0 };
             if (t.n >= EG_RECEIPT_TRIES || now - t.at < EG_RECEIPT_GAP_MS) continue;
             if (!(f.rows || []).length || !(f.rows || []).every((r) => listed.has(String(r.id)))) continue;
             const kept = Object.fromEntries(Object.entries(tried).filter(([, x]) => now - x.at < 2 * EG_RECEIPT_WITHIN_MS));
-            S.w3b = { ...S.w3b, tried: { ...kept, [f.id]: { n: t.n + 1, at: now } } };
+            S.w3b = { ...S.w3b, tried: { ...kept, [f.id]: { n: t.n + 1, at: now, forms: RECEIPT_FORMS } } };
             touch('w3b');
-            makeReceipt(f.id);
+            makeReceipt(f.id, 'by itself');
             return;
         }
     }
@@ -906,7 +992,7 @@ export function makeEngine(env) {
 
     function stepOwn(now) {
         const keep = !!settings().w3bSync;
-        if (!keep) syncWhy = '';
+        if (!keep) { syncWhy = ''; flags.held = ''; }
         if (!keyOk('w3b') || !S.self.id) {
             if (keep) syncQuiet(!S.self.id ? 'your Torn id is not known yet' : 'the key you registered on TornW3B is not set, or TornW3B refuses it (its box in Settings says which)');
             return;
@@ -919,22 +1005,24 @@ export function makeEngine(env) {
         if (flags.w3b || now - syncAt < EG_SYNC_GAP_MS) return;
         const v = calm();
         if (!v.ready) { syncQuiet('not everything is read yet'); return; }
-        const matches = !v.prices.w3b.diff || v.prices.w3b.matches;
-        if (!v.settings.open) {
-            // Closed: the set pieces come off your list, once. Nothing else is written while you are closed.
-            if (matches) { syncQuiet('your shop is closed: no set piece of yours is on your TornW3B list'); return; }
-        } else {
-            // Open: written once for each fixing of your prices (rateKeep) - at most once an hour, and at once
-            // when the safety brought them down. Your own press sends at any time.
+        // Open: your prices are fixed for an hour (rateKeep), and the list is written whenever it does not say
+        // them - each hour when they are fixed anew, at once when the safety brought them down, when a piece
+        // comes on or off (you hold too many), and when a price was changed on TornW3B's own page (the owner,
+        // 2026-10-12: "i accidentally changed it, and it didnt automatically send it"). Until 1.3.2 it was
+        // written once per fixing only: a list changed inside the hour waited for the next one.
+        // Closed: the set pieces come off your list, once.
+        if (v.settings.open && !S.rate.table) { syncQuiet('your prices are not fixed yet: the points price or a market value is not read'); return; }
+        const w = listWrite(v);
+        if (!w.body) {
+            listStuck = '';
             const t = S.rate.table;
-            if (!t) { syncQuiet('your prices are not fixed yet: the points price or a market value is not read'); return; }
-            if (S.rate.sent === t.rev) { syncQuiet(matches ? 'it already matches your rate' : 'it differs from your prices of this hour: written when they are next fixed, at ' + egClock(t.until) + (t.held ? ' or when the open trade has ended' : '') + ' - your own press sends it now'); return; }
-            if (matches) { S.rate = { ...S.rate, sent: t.rev }; touch('rate'); syncQuiet('it already matches your rate'); return; }
+            if (v.settings.open && t && S.rate.sent !== t.rev) { S.rate = { ...S.rate, sent: t.rev }; touch('rate'); }
+            syncQuiet(w.why);
+            return;
         }
-        if (listRefused) {
-            const w = listWrite();
-            if (w.body && JSON.stringify(w.body) === listRefused) { syncQuiet('TornW3B called this same request wrong: it is not sent again by itself until your prices change - your own press still sends it'); return; }
-        }
+        const sending = JSON.stringify(w.body);
+        if (sending === listRefused) { syncQuiet('TornW3B called this same request wrong: it is not sent again by itself until your prices change - your own press still sends it'); return; }
+        if (sending === listStuck) { syncQuiet('TornW3B took this same write and its list still reads differently: it is not sent again by itself until something changes - your own press still sends it'); return; }
         flags.w3b = true;
         sendList('by itself').catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
     }

@@ -2,7 +2,7 @@
 // Pure: the engine hands in settings, the stock count, prices, the points market, the books and the open trades;
 // out comes one plain object. No page, no storage, no clock of its own. The pages only format it.
 
-import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
+import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, thanksMessage, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
 import { setsCtx, buysFrom } from './settings.js';
 import { safeWorth, pieceBrings, tradeMargin, placeMargin } from './margin.js';
 import { fillPlan, fillList, stopsOf, runView, runOrder, onList, listAfterRun, cheapPieces, placeOf, addAll } from './shopping.js';
@@ -14,7 +14,10 @@ import { shortlists } from './shortlist.js';
 import { lotTable, sellPlan } from './lots.js';
 import { hotListings, shopVerdict, shareCovers } from './verdict.js';
 import { tradeTurn, agoWords } from './trades.js';
-import { listDiff, desiredList, listMatches, listedUntil } from './tw3b-list.js';
+import { listDiff, desiredList, owedPieces, listMatches, listedUntil } from './tw3b-list.js';
+
+/** Your thread on Torn's forums, when Torn said which forum it is in ('' else: no link is guessed). */
+const vwThreadUrl = (t) => (t && t.id != null && t.forum != null ? `https://www.torn.com/forums.php#/p=threads&f=${encodeURIComponent(t.forum)}&t=${encodeURIComponent(t.id)}` : '');
 
 const vwNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const vwWhole = (v) => Math.max(0, Math.floor(vwNum(v)));
@@ -342,6 +345,8 @@ export function archiveView(i) {
     const stockOf = (set) => { const s = sets.find((x) => x.key === set.key); return { pieces: s ? s.pieces : [] }; };
     const nameOf = (id) => { const p = pieceOf(id); if (p) return p.name; const set = SETS.find((s) => s.pieces.some((x) => String(x.id) === String(id))); return set ? set.pieces.find((x) => String(x.id) === String(id)).name : (i.itemName && i.itemName(id)) || 'Item ' + id; };
     const receipts = (i.w3b && i.w3b.receipts) || new Map();
+    const tried = (i.w3b && i.w3b.tried) || {};
+    const threadUrl = vwThreadUrl(i.thread);
     const open = (i.trades || []).map((t) => {
         const offer = tradeOffer(t.theirs.map((x) => ({ id: x.id, name: nameOf(x.id), qty: x.qty })), { settings: ctx, stockOf, mv, pct: settings.pct, pay: payOf });
         const margin = tradeMargin(offer, marginCtx);
@@ -370,7 +375,17 @@ export function archiveView(i) {
         // What they still wait for: money already in a trade is not asked for again.
         open, wait: mineTurn.length, waitMoney: vwSum(mineTurn, (t) => Math.max(0, t.total - vwWhole(t.myMoney))),
         // listed: your list on TornW3B has a price for each of its pieces - a receipt is made from that list.
-        finished: (i.finished || []).slice(0, 60).map((f) => ({ ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt: receipts.get(String(f.id)) || null, listed: !!(i.w3b && i.w3b.list) && (f.rows || []).length > 0 && (f.rows || []).every((r) => i.w3b.list.has(String(r.id))) })),
+        // receipt: the one TornW3B has for it, with its link. why: what a try at making it came to, when none
+        // was made. thanks: what to send the seller, the receipt's link last.
+        finished: (i.finished || []).slice(0, 60).map((f) => {
+            const receipt = receipts.get(String(f.id)) || null;
+            return {
+                ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt,
+                why: receipt ? '' : String((tried[f.id] && tried[f.id].why) || ''),
+                thanks: receipt && receipt.url ? thanksMessage({ receipt: receipt.url, thread: threadUrl }) : '',
+                listed: !!(i.w3b && i.w3b.list) && (f.rows || []).length > 0 && (f.rows || []).every((r) => i.w3b.list.has(String(r.id))),
+            };
+        }),
         receiptsError: (i.w3b && i.w3b.receiptsError) || '',
     };
 
@@ -405,10 +420,10 @@ export function archiveView(i) {
     };
 
     // ---- my prices ---------------------------------------------------------------------------------------------------
-    const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ pieces: s.pieces })), sets: on });
+    const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on });
     // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
     const paidRows = sets.map((s) => ({ label: s.label, pct: s.rate.pct }));
-    const thread = i.thread && i.thread.title ? { ...i.thread, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;
+    const thread = i.thread && i.thread.title ? { ...i.thread, url: threadUrl, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;
     const setCost = sets.length ? Math.max(...sets.map((s) => s.rate.cost)) : 0;
     const cover = cash == null ? null : shareCovers(share.total, share.inSets, settings.shareMax, setCost);
     const verdict = shopVerdict({
@@ -416,7 +431,12 @@ export function archiveView(i) {
         needUnits, coverSets: cover, now,
     });
     const w3bList = (i.w3b && i.w3b.list) || null;
-    const w3bDiff = w3bList ? listDiff(w3bList, desiredList(pieces, settings.open), ALL_PIECE_IDS) : null;
+    // What your list should say: your prices, without the pieces you hold too many of - but the pieces of a
+    // trade that just ended stay until its receipt is made (TornW3B makes it from this list).
+    const w3bOwed = owedPieces(i.finished, receipts, now);
+    const w3bWant = desiredList(pieces, settings.open, w3bOwed);
+    const w3bOver = settings.open ? pieces.filter((p) => p.pay > 0 && p.ahead > 0 && !w3bOwed.has(String(p.id))).map((p) => p.short || p.name) : [];
+    const w3bDiff = w3bList ? listDiff(w3bList, w3bWant, ALL_PIECE_IDS) : null;
     const rates = [];
     for (let r = 99; r <= 104.001; r += 0.5) rates.push(Math.round(r * 10) / 10);
     const bidOf = (id) => (pieceOf(id) || {}).other || null;
@@ -447,9 +467,9 @@ export function archiveView(i) {
         w3b: {
             known: !!w3bList, at: (i.w3b && i.w3b.listAt) || 0, error: (i.w3b && i.w3b.error) || '', sync: settings.w3bSync,
             diff: w3bDiff, matches: w3bDiff ? listMatches(w3bDiff) : null,
-            // Kept by itself, and this hour's prices were already brought to TornW3B: a list that differs now is
-            // written when they are next fixed (engine stepOwn). Your own press sends at any time.
-            waits: !!settings.w3bSync && !!fixedIn && fixed === fixedIn && i.rateSent === fixedIn.rev,
+            // want: what the list should say (the engine writes from it). on: how many pieces that is.
+            // over: the pieces left off because you hold too many, by name.
+            want: w3bWant, on: w3bWant.length, over: w3bOver,
             lastReceiptAt: (i.w3b && i.w3b.lastReceiptAt) || 0, listedUntil: listedUntil((i.w3b && i.w3b.lastReceiptAt) || 0),
         },
         chart: {

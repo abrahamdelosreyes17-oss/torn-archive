@@ -240,3 +240,22 @@ export function gmCopy(text) {
     }
     return false;
 }
+
+/**
+ * Text with its look (a struck-out word in your forum post): both forms go on the clipboard, and where you
+ * paste decides which it takes - Torn's forum box the one with the look, a plain box the plain one. A browser
+ * that cannot put both gets the plain text (gmCopy). Only ever on a press of yours.
+ */
+export function gmCopyRich(text, html) {
+    const plain = String(text ?? '');
+    try {
+        if (html && typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.write === 'function' && typeof ClipboardItem === 'function') {
+            const item = new ClipboardItem({ 'text/plain': new Blob([plain], { type: 'text/plain' }), 'text/html': new Blob([String(html)], { type: 'text/html' }) });
+            navigator.clipboard.write([item]).catch(() => { gmCopy(plain); });
+            return true;
+        }
+    } catch {
+        // The plain text then.
+    }
+    return gmCopy(plain);
+}

@@ -380,26 +380,67 @@ export function mostWanted(stocks, perSet = 3) {
     return stocks.map((st) => st.pieces.filter((p) => p.need > 0).sort((a, b) => a.rank - b.rank).slice(0, perSet).map((p) => shortName(p.name)).join(', ')).filter(Boolean).join(' · ');
 }
 
-/** Title and post for your buying thread. Written for you to copy: Torn Archive never posts. */
+/** A word struck out in plain text: a line through each letter, kept wherever it is pasted. */
+const SET_STRIKE = '̶';
+const setStruck = (word) => [...String(word)].map((c) => (c === ' ' ? c : c + SET_STRIKE)).join('');
+const setHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** The post says where a seller sees whether you are open (the owner, 2026-10-12: "say look at profile picture"). */
+const SET_PICTURE_LINE = 'Look at my profile picture: it says when I am open for trading.';
+
+/**
+ * Title and post for your buying thread. Written for you to copy: Torn Archive never posts.
+ * The post names every piece, each set on a line of its own, and strikes out the ones you hold too many of
+ * (`ahead`: over your target) - the owner, 2026-10-12: "list them all (so plushie and flower separate) BUT
+ * strikeout (so still written but striken out) the plushies/flower that is overstocked". These are the pieces
+ * your TornW3B list leaves out (core/tw3b-list.js desiredList).
+ * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
+ * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
+ *          `html` is the same post for a box that keeps the look (Torn's forum box): a struck piece is <s>
+ */
 export function forumText({ open, pct, stocks = [], sets = SETS }) {
     const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
     const every = sets.length === 1 ? (sets[0].key === 'plushie' ? 'plushie' : 'flower') : 'plushie and flower';
+    // A line is its parts: [{ t, s }], `s` = struck out.
+    const say = (t) => [{ t }];
+    const lines = [];
+    let title;
     if (!open) {
-        return {
-            title: `[CLOSED] Buying ${what} · back soon`,
-            post: `Closed for now: not buying until this thread says OPEN again.\nWhen I am open I pay ${setPctText(pct)}% of market value for every ${every}.`,
-        };
+        title = `[CLOSED] Buying ${what} · back soon`;
+        lines.push(say('Closed for now: not buying until this thread says OPEN again.'), say(`When I am open I pay ${setPctText(pct)}% of market value for every ${every}.`), say(SET_PICTURE_LINE));
+    } else {
+        title = `[OPEN] Buying ${what} · ${setPctText(pct)}% of market value`;
+        const lists = stocks.filter((st) => st && st.key && (st.pieces || []).length).map((st) => ({
+            label: st.key === 'plushie' ? 'Plushies' : 'Flowers',
+            pieces: [...st.pieces].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => ({ t: shortName(p.name), s: p.ahead > 0 })),
+        }));
+        const struck = lists.some((l) => l.pieces.some((p) => p.s));
+        const wanted = mostWanted(stocks);
+        lines.push(say(struck ? `Buying ${what.toLowerCase().replace('&', 'and')}, any amount - except the ones struck out: I have enough of those for now.` : `Buying every ${every}, any amount.`));
+        lines.push(say(`I pay ${setPctText(pct)}% of market value, paid in the trade.`));
+        for (const l of lists) lines.push([{ t: l.label + ': ' }, ...l.pieces.flatMap((p, k) => (k ? [{ t: ', ' }, p] : [p]))]);
+        if (wanted) lines.push(say(`Most wanted now: ${wanted}.`));
+        lines.push(say(SET_PICTURE_LINE), say('Start a trade with me and add your items. I answer with the total.'));
     }
-    const wanted = mostWanted(stocks);
     return {
-        title: `[OPEN] Buying ${what} · ${setPctText(pct)}% of market value`,
-        post: [
-            `Buying every ${every}, any amount.`,
-            `I pay ${setPctText(pct)}% of market value, paid in the trade.`,
-            wanted ? `Most wanted now: ${wanted}.` : '',
-            'Start a trade with me and add your items. I answer with the total.',
-        ].filter(Boolean).join('\n'),
+        title,
+        post: lines.map((l) => l.map((p) => (p.s ? setStruck(p.t) : p.t)).join('')).join('\n'),
+        // Both ways a box may keep a struck word: the tag, and the style.
+        html: lines.map((l) => l.map((p) => (p.s ? `<s><span style="text-decoration:line-through">${setHtml(p.t)}</span></s>` : setHtml(p.t))).join('')).join('<br>'),
     };
+}
+
+/**
+ * What to say to a seller after a trade, with the receipt's link last (the owner, 2026-10-12: "Thank you for
+ * trading! If you enjoyed this experience, please leave a like and comment on my forum ... then link the receipt").
+ * @param thread your buying thread's link, '' when it is not known: the sentence about it is then left out
+ */
+export function thanksMessage({ receipt = '', thread = '' } = {}) {
+    return [
+        'Thank you for trading!',
+        thread ? `If you enjoyed it, a like and a comment on my thread would help me a lot: ${thread}` : '',
+        thread ? 'It also says what I am buying now. Hope to trade again!' : 'Hope to trade again!',
+        receipt ? `Your receipt: ${receipt}` : '',
+    ].filter(Boolean).join(' ');
 }
 
 /** What a thread's title says: open or closed, and the rate, each null when the title does not say. */

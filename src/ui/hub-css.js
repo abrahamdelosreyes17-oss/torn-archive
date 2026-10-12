@@ -274,6 +274,12 @@ table.t { width: 100%; border-collapse: collapse; }
 .paused { position: absolute; inset: 52px 0 30px 0; z-index: 35; display: none; place-items: center; background: rgba(9,11,16,.82); backdrop-filter: blur(6px); }
 .paused.on { display: grid; animation: fade .3s ease both; }
 .paused .card { width: min(560px, 90%); padding: 22px 24px; border-radius: 16px; background: var(--panel); border: 1px solid rgba(245,165,36,.45); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+.pop { position: absolute; inset: 0; z-index: 34; display: none; place-items: center; background: rgba(9,11,16,.72); backdrop-filter: blur(5px); }
+.pop.on { display: grid; animation: fade .2s ease both; }
+.pop .card { width: min(620px, 92%); padding: 22px 24px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line2); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+.pop h2 { margin: 0 0 8px; font: 650 19px var(--disp); } .pop p { margin: 0 0 10px; color: var(--text2); }
+.pop-l { margin: 14px 0 6px; color: var(--muted); font-size: 12px; } .pop-m { overflow-wrap: anywhere; user-select: all; }
+.pop-b { display: flex; gap: 8px; margin-top: 10px; align-items: center; } .pop-b .sp { flex: 1; }
 .paused h2 { margin: 0 0 8px; font: 650 19px var(--disp); display: flex; align-items: center; gap: 10px; } .paused p { margin: 0 0 10px; color: var(--text2); }
 
 /* ---------- item pictures: Torn's own, as Torn Bids shows them ---------- */

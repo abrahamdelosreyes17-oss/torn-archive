@@ -141,7 +141,9 @@ test('R1. the view: with points low, every price of yours is at the set\'s ceili
     assert.notEqual(setOf(v, 'plushie').pct, setOf(v, 'flower').pct, 'plushies and flowers differ');
     // What is sent to TornW3B is what you pay.
     const sent = new Map(v.prices.w3b.diff.set.map((x) => [String(x.itemID), x.price]));
-    for (const p of v.pieces) assert.equal(sent.get(String(p.id)), p.pay);
+    // (1.3.3: a piece you hold too many of is left off the list.)
+    assert.ok(v.pieces.some((p) => !(p.ahead > 0)));
+    for (const p of v.pieces) assert.equal(sent.get(String(p.id)), p.ahead > 0 ? undefined : p.pay, p.name);
     // A trade is priced at it, and its message names the rate really paid - each set its own.
     const t = v.trades.open.find((x) => x.id === '9001');
     for (const r of t.rows.filter((x) => x.state !== 'other')) assert.equal(r.each, piece(v, r.id).pay, r.name);

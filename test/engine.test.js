@@ -1193,12 +1193,79 @@ test('B5. TornW3B calls a receipt request wrong (400): it is not sent for that t
         : real(url, init));
     r.fake.finishTrade(id, { pay: 2 * payOf(r.world, 384) });
     await r.go(40 * MIN);
-    assert.equal(sent, 1, 'the same request is not sent again');
+    // Each of the request's three forms once (1.3.3: which one TornW3B takes is not known), and then no more.
+    assert.equal(sent, 3, 'every form once, and the same requests are not sent again');
     const lines = r.said.filter((s) => s.what === 'TornW3B called a receipt request wrong');
-    assert.equal(lines.length, 1);
-    assert.match(lines[0].detail, new RegExp('^trade ' + id + ' · sent: \\{ .+ \\} · it is not sent for this trade again$'));
-    assert.doesNotMatch(lines[0].detail.replace('trade ' + id, ''), /\d{3,}/, 'kinds and names only: no id, no price');
+    assert.equal(lines.length, 3);
+    lines.forEach((l, k) => assert.match(l.detail, new RegExp('^trade ' + id + ' · form ' + (k + 1) + ' of 3 · sent: \\{ .+ \\} · it said: \\{"error":"Invalid request body"\\}$')));
+    assert.match(lines[0].detail, /tradeID: number, buyerPlayerId: number, includeMessage: boolean/);
+    assert.match(lines[1].detail, /tradeID: number \}/);
+    assert.match(lines[2].detail, /tradeID: string \}/);
+    for (const l of lines) assert.doesNotMatch(l.detail.replace('trade ' + id, '').replace(/it said: .*$/, ''), /\d{3,}/, 'kinds and names only: no id, no price');
+    assert.equal(r.said.filter((s) => s.what === 'TornW3B called the receipt request wrong in every form').length, 1);
     assert.equal(r.engine.keys().w3b.error || '', '', 'a wrong request is no verdict on the key');
+    // The trade's row says why nothing was made, and your own press still sends it.
+    const f = r.view().trades.finished.find((x) => x.id === id);
+    assert.equal(f.receipt, null);
+    assert.match(f.why, /^TornW3B does not take the request: \{"error":"Invalid request body"\}$/);
+    r.engine.act('receipt', id);
+    await r.go(MIN);
+    assert.equal(sent, 6);
+});
+
+test('1.3.3 a receipt: the form TornW3B takes is found, remembered, and the link is kept with the trade - with what to send the seller', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true } });
+    await r.ready();
+    // This TornW3B takes the request only with the items and the trade number as text (the third form).
+    r.world.options.receiptForm = 2;
+    const id = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 2 }] }));
+    await r.go(2 * MIN);
+    r.fake.finishTrade(id, { pay: 2 * payOf(r.world, 384) });
+    await r.go(12 * MIN);
+    assert.deepEqual(r.world.w3b.receiptAsks, [0, 1, 2], 'each form once, until one is taken');
+    assert.equal(r.engine.state.w3b.receiptForm, 2);
+    const f = r.view().trades.finished.find((x) => x.id === id);
+    assert.match(f.receipt.url, /^https:\/\/weav3r\.dev\/receipt\/fr\d+$/);
+    assert.equal(f.why, '');
+    assert.ok(f.thanks.startsWith('Thank you for trading!') && f.thanks.endsWith('Your receipt: ' + f.receipt.url), f.thanks);
+    assert.ok(r.said.some((s) => s.what === 'Receipt made on TornW3B' && s.detail.startsWith('by itself · trade ' + id + ' · form 3 · ' + f.receipt.url)));
+    // The next trade goes in the form that was taken, at once.
+    const next = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 1 }] }));
+    await r.go(2 * MIN);
+    r.fake.finishTrade(next, { pay: payOf(r.world, 384) });
+    await r.go(12 * MIN);
+    assert.deepEqual(r.world.w3b.receiptAsks, [0, 1, 2, 2]);
+    // The receipts read back from TornW3B (they carry no link) do not take the link away, and stay one a trade.
+    await r.go(40 * MIN);
+    const again = r.view().trades.finished.find((x) => x.id === id);
+    assert.equal(again.receipt.url, f.receipt.url);
+    assert.equal(r.engine.state.w3b.receipts.filter(([key]) => key === id || key === next).length, 2, 'one a trade');
+    // After a restart it is still there: the link is kept.
+    r.restart();
+    await r.go(2 * MIN);
+    assert.equal(r.view().trades.finished.find((x) => x.id === id).receipt.url, f.receipt.url);
+});
+
+test('1.3.3 a receipt made on the page of TornW3B, under the number the trade had while open: it is this trade, with its link, and no second one is made', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true } });
+    await r.ready();
+    const id = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 2 }, { id: 271, qty: 1 }] }));
+    await r.go(2 * MIN);
+    const made = () => r.w3b(/^\/api\/pricelist\/\d+$/, (c) => c.method === 'POST').length;
+    const had = made();
+    // The receipts cannot be made from here in this TornW3B; you make it on its own form.
+    r.world.options.receiptForm = 9;
+    r.fake.finishTrade(id, { pay: 2 * payOf(r.world, 384) + payOf(r.world, 271) });
+    await r.go(12 * MIN);
+    assert.equal(r.view().trades.finished.find((x) => x.id === id).receipt, null);
+    const asked = made() - had;
+    const when = new Date(Date.now()).toISOString();
+    r.world.w3b.receipts.push({ id: '3PMnLXoyyX', trade_id: 13521417, buyer_name: '', total_value: 777, item_count: 2, created_at: when, updated_at: when, items: [{ item_id: 271, item_name: '', quantity: 1 }, { item_id: 384, item_name: '', quantity: 2 }] });
+    await r.go(35 * MIN);
+    const f = r.view().trades.finished.find((x) => x.id === id);
+    assert.deepEqual([f.receipt.id, f.receipt.url, f.receipt.total], ['3PMnLXoyyX', 'https://weav3r.dev/receipt/3PMnLXoyyX', 777]);
+    assert.ok(r.said.some((s) => s.what === 'A receipt on TornW3B is the one of a finished trade' && s.detail.startsWith('trade ' + id + ' · receipt 3PMnLXoyyX · made with the trade number 13521417')));
+    assert.equal(made() - had, asked, 'nothing more is asked for a trade that has its receipt');
 });
 
 test('A3. the calm pace: the view that decides what to read is worked out at most every three seconds, however many answers come in', async (t) => {
@@ -1322,7 +1389,9 @@ test('the list write, kept by itself: what was sent and what TornW3B answered is
     assert.ok(puts >= 1, 'the list was written');
     const wrote = r.said.filter((s) => s.what === 'Your list written to TornW3B');
     assert.equal(wrote.length, puts, 'one line a write');
-    assert.match(wrote[0].detail, /^by itself · [1-9]\d* set, \d+ taken off · it answered: \{"success":true,"updated":\d+,"inserted":\d+,"deleted":\d+,"total":\d+\}$/);
+    // The first write of a list is every price, so each has inflation protection on (1.3.3).
+    assert.match(wrote[0].detail, /^by itself · [1-9]\d* set, \d+ taken off · every price, so each has inflation protection on · it answered: \{"success":true,"updated":\d+,"inserted":\d+,"deleted":\d+,"total":\d+\}$/);
+    assert.ok(r.world.w3b.priceList.filter((e) => e.itemID !== 206).every((e) => e.inflationProtectionEnabled === true));
     // After it the list matches: said once, not at every step of twenty minutes.
     const quiet = r.said.filter((s) => s.what === QUIET && s.detail === 'it already matches your rate');
     assert.ok(quiet.length >= 1 && quiet.length <= puts, quiet.length + ' lines for ' + puts + ' writes');
@@ -1339,10 +1408,12 @@ test('the list write refused (400): TornW3B\'s words, the request\'s shape and t
         : real(url, init));
     await r.ready();
     await r.go(30 * MIN);
-    assert.equal(sent, 1, 'sent once in half an hour, not every two minutes');
+    // Called wrong with inflation protection on, it is sent once more without (1.3.3) - and then no more.
+    assert.equal(sent, 2, 'sent once, and once without inflation protection, in half an hour - not every two minutes');
+    assert.equal(r.said.filter((s) => s.what === 'TornW3B refused the write of your list with inflation protection on').length, 1);
     const lines = r.said.filter((s) => /^TornW3B refused the write of your list/.test(s.what));
     const head = lines.find((s) => s.what === 'TornW3B refused the write of your list');
-    assert.match(head.detail, /^by itself · TornW3B answered 400\. · it said: \{"error":"Invalid request body"\} · sent: [1-9]\d* set, \d+ taken off$/);
+    assert.match(head.detail, /^by itself · TornW3B answered 400\. · it said: \{"error":"Invalid request body"\} · sent: [1-9]\d* set, \d+ taken off · every price, so each has inflation protection on$/);
     const shape = lines.find((s) => /its shape$/.test(s.what));
     assert.match(shape.detail, /^\{ items: \[\{ itemID: number, pricingType: string, pricingValue: number, inflationProtectionEnabled: boolean, roundToPlace: number, bulkType: string \}\] x \d+ \}/);
     // Every item that was sent, with its price, over as many lines as it takes - each one whole in the log (300).
@@ -1358,7 +1429,7 @@ test('the list write refused (400): TornW3B\'s words, the request\'s shape and t
     // Your own press sends it all the same, and is logged as yours.
     r.engine.act('w3b', 'send');
     await r.go(MIN);
-    assert.equal(sent, 2);
+    assert.equal(sent, 4);
     assert.ok(r.said.some((s) => s.what === 'TornW3B refused the write of your list' && /^your press · /.test(s.detail)));
 });
 
@@ -1416,10 +1487,11 @@ test('your prices are fixed once an hour, each set at the lower of your rate and
     assert.equal(first.until - first.at, HOUR);
     assert.equal(fixes(r), 1);
     assert.equal(listPuts(r).length, 1, 'written once, after the fix');
-    assert.equal(v.prices.w3b.waits, true, 'the page knows the prices of this hour were written: a list that differs now waits for the next fix');
+    assert.equal(v.prices.w3b.matches, true, 'the page knows the list says the prices of this hour');
     for (const set of w.sets) for (const id of set.pieces) {
         assert.equal(piece(v, id).pay, Math.round(mvOf(w, id) * want[set.key] / 100), 'you pay ' + want[set.key] + '% for ' + id);
-        assert.equal(onW3b(w, id), piece(v, id).pay, 'and TornW3B has it');
+        // A piece you hold too many of is not on the list (1.3.3).
+        assert.equal(onW3b(w, id), piece(v, id).ahead > 0 ? null : piece(v, id).pay, 'and TornW3B has it: ' + id);
     }
     assert.equal(onW3b(w, 206), 830000, 'what is no set piece is left as it was');
     // Points rise: for the rest of the hour nothing is fixed, nothing is written, and what you pay stands.
@@ -1510,7 +1582,9 @@ test('shop closed: nothing is fixed, the set pieces come off your TornW3B list o
     await r.go(3 * MIN);
     assert.equal(fixes(r), 1);
     assert.equal(listPuts(r).length, 2);
-    assert.equal(w.w3b.priceList.length, 25);
+    // Every piece you do not hold too many of, and the Xanax.
+    assert.equal(w.w3b.priceList.length, r.view().prices.w3b.want.length + 1);
+    assert.ok(r.view().prices.w3b.want.length > 0);
     assert.equal(onW3b(w, 258), payOf(w, 258));
     // You close: the table is let go and the pieces come off again.
     r.set({ open: false });
@@ -1573,7 +1647,7 @@ test('a reload keeps the hour, and your own change of rate fixes at once', async
     assert.equal(onW3b(r.world, 258), payOf(r.world, 258, 100.5));
 });
 
-test('the switch on in the middle of an hour: the list is written at once; a list that differs later in the hour waits for the next fix, and the log says so', async (t) => {
+test('the switch on in the middle of an hour: the list is written at once; a price changed on the page of TornW3B later in the hour is put back by itself (1.3.3)', async (t) => {
     const r = rig(t, { world: noTrades });
     await r.ready();
     assert.equal(listPuts(r).length, 0);
@@ -1581,14 +1655,60 @@ test('the switch on in the middle of an hour: the list is written at once; a lis
     r.set({ w3bSync: true });
     await r.go(3 * MIN);
     assert.equal(listPuts(r).length, 1);
-    // Someone (you, on TornW3B's page) changes a price there: read at the next look, not written over until the hour.
-    r.world.w3b.priceList.find((e) => e.itemID === 258).pricingValue = 1;
-    await r.go(15 * MIN);
-    assert.equal(listPuts(r).length, 1);
-    assert.ok(r.said.some((s) => s.what === QUIET && /^it differs from your prices of this hour: written when they are next fixed/.test(s.detail)), JSON.stringify(r.said.filter((s) => s.what === QUIET).map((s) => s.detail)));
-    // Your own press sends it now.
+    // Someone (you, on TornW3B's page) sets a piece to a share of the market there - the owner, 2026-10-12: "i
+    // accidentally changed it, and it didnt automatically send it". Until 1.3.2 it waited for the next hour's fix.
+    const fixed = r.engine.state.rate.table.at;
+    Object.assign(r.world.w3b.priceList.find((e) => e.itemID === 258), { pricingType: 'market_percentage', pricingValue: 95 });
+    await r.go(9 * MIN);
+    assert.equal(r.engine.state.rate.table.at, fixed, 'inside the same hour');
+    assert.equal(listPuts(r).length, 2, 'read at the next look (five minutes), and written back - once');
+    assert.match(r.said.filter((s) => s.what === 'Your list written to TornW3B')[1].detail, /^by itself · 1 set, 0 taken off · it answered: /, 'only the piece that differed');
+    const e = r.world.w3b.priceList.find((x) => x.itemID === 258);
+    assert.deepEqual([e.pricingType, e.pricingValue], ['fixed', payOf(r.world, 258)]);
+    await r.go(20 * MIN);
+    assert.equal(listPuts(r).length, 2, 'and nothing more while it matches');
+});
+
+test('1.3.3 a write TornW3B took while its list still reads differently: said with the pieces, and not sent by itself every two minutes', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true }, world: noTrades });
+    // This TornW3B reads one piece back a dollar under what was written, whatever is written.
+    const real = r.clients.own.send;
+    r.clients.own.send = async (url, init) => {
+        const res = await real(url, init);
+        if (!/\/api\/pricelist\/\d+$/.test(String(url)) || (init && init.method && init.method !== 'GET')) return res;
+        const rows = (await res.json()).map((x) => (x.itemId === 258 && x.buyPrice > 0 ? { ...x, buyPrice: x.buyPrice - 1 } : x));
+        return { ok: true, status: 200, json: async () => rows, text: async () => JSON.stringify(rows) };
+    };
+    await r.ready();
+    await r.go(40 * MIN);
+    assert.ok(listPuts(r).length <= 2, 'the first write, and one for the piece that read differently - not one every two minutes: ' + listPuts(r).length);
+    assert.ok(r.said.some((s) => /^TornW3B took the write and your list there still reads differently, 1 of 1$/.test(s.what) && /^258 yours \$\d+, reads \$\d+$/.test(s.detail)), JSON.stringify(r.said.filter((s) => /still reads/.test(s.what))));
+    assert.equal(r.said.filter((s) => s.what === QUIET && /^TornW3B took this same write/.test(s.detail)).length, 1);
+    assert.match(r.engine.busy().held, /^TornW3B took this same write/, 'the page says why it is not sending');
+    // Your own press still sends it.
+    const before = listPuts(r).length;
     r.engine.act('w3b', 'send');
     await r.go(MIN);
-    assert.equal(listPuts(r).length, 2);
-    assert.equal(onW3b(r.world, 258), payOf(r.world, 258));
+    assert.equal(listPuts(r).length, before + 1);
+});
+
+test('1.3.3 a piece you hold too many of comes off your TornW3B list, is named on the page, and comes back when you no longer do', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true, targetMode: 'number', target: 5 }, world: (w, fake) => { noTrades(w, fake); for (const set of w.sets) for (const id of set.pieces) w.held[id] = 5; w.held[258] = 40; } });
+    let v = await r.ready();
+    await r.go(3 * MIN);
+    v = r.view();
+    assert.equal(piece(v, 258).ahead, 35);
+    assert.equal(onW3b(r.world, 258), null, 'not on the list');
+    assert.equal(r.world.w3b.priceList.length, 24, '23 pieces and the Xanax');
+    assert.deepEqual(v.prices.w3b.over.length, 1);
+    assert.equal(v.prices.w3b.matches, true);
+    // The post names every piece and strikes that one out.
+    assert.ok(v.prices.forum.html.includes('<s>'), v.prices.forum.html);
+    assert.equal((v.prices.forum.html.match(/<s>/g) || []).length, 1);
+    // You no longer hold too many: it is back on the list by itself.
+    r.world.held[258] = 5;
+    await r.go(15 * MIN);
+    assert.equal(piece(r.view(), 258).ahead, 0);
+    assert.equal(onW3b(r.world, 258), piece(r.view(), 258).pay);
+    assert.ok(!r.view().prices.forum.html.includes('<s>'));
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.2
+// @version      1.3.3
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.2';
+    const TARC_BUILD_VERSION = '1.3.3';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -298,6 +298,25 @@
             // No clipboard: the caller says so.
         }
         return false;
+    }
+
+    /**
+     * Text with its look (a struck-out word in your forum post): both forms go on the clipboard, and where you
+     * paste decides which it takes - Torn's forum box the one with the look, a plain box the plain one. A browser
+     * that cannot put both gets the plain text (gmCopy). Only ever on a press of yours.
+     */
+    function gmCopyRich(text, html) {
+        const plain = String(text ?? '');
+        try {
+            if (html && typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.write === 'function' && typeof ClipboardItem === 'function') {
+                const item = new ClipboardItem({ 'text/plain': new Blob([plain], { type: 'text/plain' }), 'text/html': new Blob([String(html)], { type: 'text/html' }) });
+                navigator.clipboard.write([item]).catch(() => { gmCopy(plain); });
+                return true;
+            }
+        } catch {
+            // The plain text then.
+        }
+        return gmCopy(plain);
     }
 
     /* ===== src/platform/tab-window.js ===== */
@@ -4406,26 +4425,67 @@
         return stocks.map((st) => st.pieces.filter((p) => p.need > 0).sort((a, b) => a.rank - b.rank).slice(0, perSet).map((p) => shortName(p.name)).join(', ')).filter(Boolean).join(' · ');
     }
 
-    /** Title and post for your buying thread. Written for you to copy: Torn Archive never posts. */
+    /** A word struck out in plain text: a line through each letter, kept wherever it is pasted. */
+    const SET_STRIKE = '̶';
+    const setStruck = (word) => [...String(word)].map((c) => (c === ' ' ? c : c + SET_STRIKE)).join('');
+    const setHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    /** The post says where a seller sees whether you are open (the owner, 2026-10-12: "say look at profile picture"). */
+    const SET_PICTURE_LINE = 'Look at my profile picture: it says when I am open for trading.';
+
+    /**
+     * Title and post for your buying thread. Written for you to copy: Torn Archive never posts.
+     * The post names every piece, each set on a line of its own, and strikes out the ones you hold too many of
+     * (`ahead`: over your target) - the owner, 2026-10-12: "list them all (so plushie and flower separate) BUT
+     * strikeout (so still written but striken out) the plushies/flower that is overstocked". These are the pieces
+     * your TornW3B list leaves out (core/tw3b-list.js desiredList).
+     * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
+     * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
+     *          `html` is the same post for a box that keeps the look (Torn's forum box): a struck piece is <s>
+     */
     function forumText({ open, pct, stocks = [], sets = SETS }) {
         const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
         const every = sets.length === 1 ? (sets[0].key === 'plushie' ? 'plushie' : 'flower') : 'plushie and flower';
+        // A line is its parts: [{ t, s }], `s` = struck out.
+        const say = (t) => [{ t }];
+        const lines = [];
+        let title;
         if (!open) {
-            return {
-                title: `[CLOSED] Buying ${what} · back soon`,
-                post: `Closed for now: not buying until this thread says OPEN again.\nWhen I am open I pay ${setPctText(pct)}% of market value for every ${every}.`,
-            };
+            title = `[CLOSED] Buying ${what} · back soon`;
+            lines.push(say('Closed for now: not buying until this thread says OPEN again.'), say(`When I am open I pay ${setPctText(pct)}% of market value for every ${every}.`), say(SET_PICTURE_LINE));
+        } else {
+            title = `[OPEN] Buying ${what} · ${setPctText(pct)}% of market value`;
+            const lists = stocks.filter((st) => st && st.key && (st.pieces || []).length).map((st) => ({
+                label: st.key === 'plushie' ? 'Plushies' : 'Flowers',
+                pieces: [...st.pieces].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => ({ t: shortName(p.name), s: p.ahead > 0 })),
+            }));
+            const struck = lists.some((l) => l.pieces.some((p) => p.s));
+            const wanted = mostWanted(stocks);
+            lines.push(say(struck ? `Buying ${what.toLowerCase().replace('&', 'and')}, any amount - except the ones struck out: I have enough of those for now.` : `Buying every ${every}, any amount.`));
+            lines.push(say(`I pay ${setPctText(pct)}% of market value, paid in the trade.`));
+            for (const l of lists) lines.push([{ t: l.label + ': ' }, ...l.pieces.flatMap((p, k) => (k ? [{ t: ', ' }, p] : [p]))]);
+            if (wanted) lines.push(say(`Most wanted now: ${wanted}.`));
+            lines.push(say(SET_PICTURE_LINE), say('Start a trade with me and add your items. I answer with the total.'));
         }
-        const wanted = mostWanted(stocks);
         return {
-            title: `[OPEN] Buying ${what} · ${setPctText(pct)}% of market value`,
-            post: [
-                `Buying every ${every}, any amount.`,
-                `I pay ${setPctText(pct)}% of market value, paid in the trade.`,
-                wanted ? `Most wanted now: ${wanted}.` : '',
-                'Start a trade with me and add your items. I answer with the total.',
-            ].filter(Boolean).join('\n'),
+            title,
+            post: lines.map((l) => l.map((p) => (p.s ? setStruck(p.t) : p.t)).join('')).join('\n'),
+            // Both ways a box may keep a struck word: the tag, and the style.
+            html: lines.map((l) => l.map((p) => (p.s ? `<s><span style="text-decoration:line-through">${setHtml(p.t)}</span></s>` : setHtml(p.t))).join('')).join('<br>'),
         };
+    }
+
+    /**
+     * What to say to a seller after a trade, with the receipt's link last (the owner, 2026-10-12: "Thank you for
+     * trading! If you enjoyed this experience, please leave a like and comment on my forum ... then link the receipt").
+     * @param thread your buying thread's link, '' when it is not known: the sentence about it is then left out
+     */
+    function thanksMessage({ receipt = '', thread = '' } = {}) {
+        return [
+            'Thank you for trading!',
+            thread ? `If you enjoyed it, a like and a comment on my thread would help me a lot: ${thread}` : '',
+            thread ? 'It also says what I am buying now. Hope to trade again!' : 'Hope to trade again!',
+            receipt ? `Your receipt: ${receipt}` : '',
+        ].filter(Boolean).join(' ');
     }
 
     /** What a thread's title says: open or closed, and the rate, each null when the title does not say. */
@@ -6109,15 +6169,40 @@
     const twNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
     const twWhole = (v) => Math.max(0, Math.floor(twNum(v)));
 
-    /** What your list should say: every piece of the sets you trade at a fixed price, or nothing when closed. */
-    function desiredList(pieces, open) {
+    /** A finished trade is owed its receipt this long (TornW3B lets a receipt be put right for 6 hours). */
+    const RECEIPT_OWED_MS = 6 * 3600000;
+
+    /**
+     * What your list should say: every piece of the sets you trade at a fixed price, or nothing when closed.
+     * A piece you hold more of than your sets need (`ahead`: over your target) is not on it - the owner, 2026-10-12:
+     * "i have something overstocked, when i send my pricelist over to tornw3b, it shouldnt include ones that are
+     * overstocked". It comes back by itself when your stock no longer has too many.
+     * @param keep ids that stay on whatever you hold: the pieces of a trade that just ended and has no receipt yet
+     *             (TornW3B makes a receipt from this list - the trade itself is what made you hold too many)
+     */
+    function desiredList(pieces, open, keep = null) {
         if (!open) return [];
-        return (pieces || []).filter((p) => p.pay > 0).map((p) => ({ itemID: Number(p.id), price: twWhole(p.pay) }));
+        return (pieces || []).filter((p) => p.pay > 0 && (!(p.ahead > 0) || (keep && keep.has(String(p.id))))).map((p) => ({ itemID: Number(p.id), price: twWhole(p.pay) }));
+    }
+
+    /** The pieces of finished trades still owed a receipt: [{ id, t, rows }] and the receipts kept (a Map by trade id). */
+    function owedPieces(finished, receipts, now) {
+        const out = new Set();
+        for (const f of finished || []) {
+            if (!(now - f.t < RECEIPT_OWED_MS) || (receipts && receipts.has(String(f.id)))) continue;
+            for (const r of f.rows || []) out.add(String(r.id));
+        }
+        return out;
     }
 
     /**
-     * Your list as TornW3B has it: itemId -> { type, value }. Read loosely: the shape of the answer was never seen
-     * from a script, only its documentation.
+     * Your list as TornW3B has it: itemId -> { type, value }.
+     * `GET /api/pricelist/{userID}` answers a row per item, `{ itemId, name, buyPrice, bulkThreshold, bulkBuyPrice }`:
+     * `buyPrice` is what the row pays in dollars now, however it is priced there (fixed, or a share of the market),
+     * and 0 on an item with no price. Such a row is read as type 'pays'. (Until 1.3.2 only the documentation's
+     * `pricingValue` was looked for, so a list with 24 prices on it read as empty: "24 prices differ" for good, no
+     * receipt by itself, and a price changed on TornW3B's own page never noticed.) Rows with an id under 1 are
+     * TornW3B's own whole sets: not pieces, left alone.
      */
     function parseOwnList(json) {
         const raw = json && (json.items || json.pricelist || json.priceList || json.data || json);
@@ -6126,8 +6211,14 @@
         for (const r of rows) {
             if (!r || typeof r !== 'object') continue;
             const id = twWhole(r.itemID ?? r.itemId ?? r.item_id ?? r.id);
+            if (!id) continue;
+            const pays = r.buyPrice ?? r.buy_price;
+            if (pays != null && pays !== '') {
+                if (twNum(pays) > 0) out.set(String(id), { type: 'pays', value: twNum(pays) });
+                continue;
+            }
             const value = r.pricingValue ?? r.pricing_value ?? r.price ?? r.value;
-            if (!id || value == null || value === '') continue;
+            if (value == null || value === '') continue;
             out.set(String(id), { type: String(r.pricingType ?? r.pricing_type ?? 'fixed'), value: twNum(value) });
         }
         return out;
@@ -6139,9 +6230,11 @@
      * @param current parseOwnList()
      * @param desired desiredList()
      * @param ids     every piece id the Archive may put on or take off
+     * @param all     every price of yours is set again, also one that already reads the same (a write that turns
+     *                something on for the whole list)
      * @returns { set: [{ itemID, price, was }], remove: [{ itemID, was }], same }
      */
-    function listDiff(current, desired, ids) {
+    function listDiff(current, desired, ids, { all = false } = {}) {
         const want = new Map((desired || []).map((d) => [String(d.itemID), d.price]));
         const set = [];
         const remove = [];
@@ -6150,7 +6243,9 @@
             const cur = current && current.get(id);
             const price = want.get(id);
             if (price == null) { if (cur) remove.push({ itemID: Number(id), was: cur.value }); continue; }
-            if (cur && cur.type === 'fixed' && cur.value === price) same += 1;
+            // 'pays': the dollars the row pays now. A row priced as a share of the market that pays the same today
+            // reads the same - and differs, and is set fixed again, as soon as the market moves.
+            if (!all && cur && (cur.type === 'fixed' || cur.type === 'pays') && cur.value === price) same += 1;
             else set.push({ itemID: Number(id), price, was: cur ? cur.value : null });
         }
         return { set, remove, same };
@@ -6158,30 +6253,67 @@
 
     const listMatches = (diff) => !diff.set.length && !diff.remove.length;
 
-    /** The body of `PUT /api/pricelist/{userID}`. An item sent with no price is taken off the list. */
-    function putBody(diff) {
+    /**
+     * The body of `PUT /api/pricelist/{userID}`. An item sent with no price is taken off the list.
+     * @param inflation TornW3B's inflation protection on each price set (the owner, 2026-10-12: "also enable market
+     *                  inflation in tornw3b")
+     */
+    function putBody(diff, { inflation = true } = {}) {
         return {
             items: [
-                ...diff.set.map((s) => ({ itemID: s.itemID, pricingType: 'fixed', pricingValue: s.price, inflationProtectionEnabled: false, roundToPlace: 0, bulkType: 'none' })),
+                ...diff.set.map((s) => ({ itemID: s.itemID, pricingType: 'fixed', pricingValue: s.price, inflationProtectionEnabled: !!inflation, roundToPlace: 0, bulkType: 'none' })),
                 ...diff.remove.map((r) => ({ itemID: r.itemID })),
             ],
         };
     }
 
+    /** Units by piece, in the order first met: [[id, qty]]. `ids`: only these count. */
+    function twUnits(rows, ids = null) {
+        const only = ids ? new Set([...ids].map(Number)) : null;
+        const by = new Map();
+        for (const r of rows || []) {
+            const id = Number(r.id);
+            if (twWhole(r.qty) && (!only || only.has(id))) by.set(id, (by.get(id) || 0) + twWhole(r.qty));
+        }
+        return [...by];
+    }
+
+    /**
+     * The receipt request is known from TornW3B's documentation only, and on 2026-10-12 TornW3B called the one sent
+     * until 1.3.2 wrong (400 "Invalid request body": the trade's number as text, the seller's as a number). Which
+     * part it minds is not known, so the request has three forms, tried in this order until one is taken; the one
+     * taken is remembered (engine makeReceipt) and goes first from then on.
+     *   0  every number as a number
+     *   1  the items and the trade's number only
+     *   2  as 1, the trade's number as text
+     */
+    const RECEIPT_FORMS = 3;
+
     /**
      * The body of `POST /api/pricelist/{userID}`: a receipt for one trade, from your list.
      * @param rows [{ id, qty }] the set pieces of the trade
+     * @param form which of RECEIPT_FORMS
      */
-    function receiptBody(tradeId, rows, sellerId) {
-        const by = new Map();
-        for (const r of rows || []) if (twWhole(r.qty)) by.set(Number(r.id), (by.get(Number(r.id)) || 0) + twWhole(r.qty));
-        return {
-            items: [...by].map(([itemID, quantity]) => ({ itemID, quantity })),
-            tradeID: String(tradeId),
-            ...(sellerId ? { buyerPlayerId: Number(sellerId) } : {}),
-            includeMessage: true,
-        };
+    function receiptBody(tradeId, rows, sellerId, form = 0) {
+        const items = twUnits(rows).map(([itemID, quantity]) => ({ itemID, quantity }));
+        const digits = String(tradeId).split('').every((c) => c >= '0' && c <= '9') && String(tradeId) !== '';
+        const num = digits ? Number(tradeId) : String(tradeId);
+        if (form === 2) return { items, tradeID: String(tradeId) };
+        if (form === 1) return { items, tradeID: num };
+        return { items, tradeID: num, ...(sellerId ? { buyerPlayerId: Number(sellerId) } : {}), includeMessage: true };
     }
+
+    const TW_RECEIPT_AT = 'https://weav3r.dev/receipt/';
+    /** The page of one receipt on TornW3B: the link you send the seller. */
+    const receiptLink = (id) => (id == null || id === '' ? '' : TW_RECEIPT_AT + encodeURIComponent(String(id)));
+    /** The receipt's id, out of its link. */
+    function receiptIdOf(url) {
+        const at = String(url || '').indexOf('/receipt/');
+        if (at < 0) return null;
+        const id = String(url).slice(at + 9).split('/')[0].split('?')[0].split('#')[0];
+        return id ? decodeURIComponent(id) : null;
+    }
+    const twUrl = (json) => (json && (json.receiptURL || json.receiptUrl || json.receipt_url)) || '';
 
     /**
      * TornW3B's receipt set against the Archive's own sum for the same trade.
@@ -6197,23 +6329,66 @@
         return {
             ok: theirs > 0 && theirs === twWhole(total) && !missing.length,
             total: theirs,
-            url: (json && (json.receiptURL || json.receiptUrl)) || '',
+            url: twUrl(json) || receiptLink(rec.id),
             message: (json && json.message) || '',
             missing,
             differs: theirs - twWhole(total),
-            id: rec.id ?? null,
+            id: rec.id ?? receiptIdOf(twUrl(json)),
         };
     }
 
-    /** TornW3B's receipts (`GET /api/trades/{userID}/{receiptId}`) by Torn's trade id: tradeId -> { id, total, at }. */
-    function receiptsByTrade(list) {
-        const out = new Map();
-        for (const r of list || []) {
-            const tid = r && (r.trade_id ?? r.tradeId ?? r.tradeID);
-            if (tid == null) continue;
-            out.set(String(tid), { id: r.id, total: twNum(r.total_value ?? r.value), at: r.created_at ?? null });
-        }
-        return out;
+    /**
+     * One receipt as TornW3B has it (`GET /api/trades/{userID}/{receiptId}`).
+     * @returns { id, tid, total, at, rows: [{ id, qty }], url } - `tid`: the trade number it was made with ('' when
+     *          it was made with none: TornW3B's own form does not ask for one); null when it has no id
+     */
+    function receiptOf(r, now = 0) {
+        if (!r || r.id == null) return null;
+        const tid = r.trade_id ?? r.tradeId ?? r.tradeID;
+        const made = r.created_at ?? r.createdAt;
+        const secs = twNum(made);
+        const at = (typeof made === 'string' && Date.parse(made)) || (secs > 0 ? (secs < 1e11 ? secs * 1000 : secs) : 0) || now;
+        const rows = (Array.isArray(r.items) ? r.items : []).map((x) => ({ id: twWhole(x && (x.item_id ?? x.itemId ?? x.itemID ?? x.id)), qty: twWhole(x && x.quantity) })).filter((x) => x.id && x.qty);
+        return { id: r.id, tid: tid == null || tid === '' || tid === 0 || tid === '0' ? '' : String(tid), total: twNum(r.total_value ?? r.totalValue ?? r.value), at, rows, url: twUrl(r) || receiptLink(r.id) };
+    }
+
+    /**
+     * The receipts kept ([[key, receipt]]: the key is the finished trade's id once a trade holds it) with one read
+     * from TornW3B put in. The same receipt is one entry: by its id, or - made here, when TornW3B's answer named no
+     * id - by the trade it was made for. A link kept is never lost to a read that has none.
+     */
+    function receiptsWith(list, rec) {
+        const old = (list || []).find(([key, x]) => (x.id != null && String(x.id) === String(rec.id)) || (x.id == null && !!rec.tid && key === rec.tid));
+        const key = old ? old[0] : rec.tid || 'r:' + rec.id;
+        const next = { ...(old ? old[1] : {}), ...rec, url: (old && old[1].url) || rec.url || receiptLink(rec.id) };
+        return [...(list || []).filter((e) => e[0] !== key && e !== old), [key, next]];
+    }
+
+    /** How far a receipt may be from its trade's end and still be taken as that trade's. */
+    const RECEIPT_CLAIM_MS = 24 * 3600000;
+
+    /**
+     * A receipt no finished trade holds goes to the trade it is of. Torn numbers a trade one way while it is open
+     * (the number on its page) and another once it has ended, and TornW3B's own form asks for no number at all: so a
+     * receipt made on TornW3B's page carries a number no finished trade has. It is the trade's when its set pieces
+     * and their counts are the same, the trade has no receipt yet, and they are within a day: the nearest in time.
+     * @param finished [{ id, t, rows: [{ id, qty }] }]
+     * @param ids      the set pieces: anything else on a receipt is not looked at
+     */
+    function claimReceipts(list, finished, ids) {
+        const mine = new Set((finished || []).map((f) => String(f.id)));
+        const held = new Set((list || []).filter(([key]) => mine.has(key)).map(([key]) => key));
+        const sig = (rows) => JSON.stringify(twUnits(rows, ids).sort((a, b) => a[0] - b[0]));
+        return (list || []).map(([key, r]) => {
+            if (mine.has(key) || !(r.rows || []).length) return [key, r];
+            const want = sig(r.rows);
+            const fit = (finished || [])
+                .filter((f) => !held.has(String(f.id)) && (f.rows || []).length && sig(f.rows) === want && Math.abs(f.t - r.at) < RECEIPT_CLAIM_MS)
+                .sort((a, b) => Math.abs(a.t - r.at) - Math.abs(b.t - r.at))[0];
+            if (!fit) return [key, r];
+            held.add(String(fit.id));
+            return [String(fit.id), r];
+        });
     }
 
     /** The newest receipt is how long TornW3B keeps listing you as a buyer: 7 days from it. */
@@ -7321,7 +7496,8 @@
 
     function foldReceipt(S, tradeId, receipt, now) {
         const rest = S.w3b.receipts.filter(([id]) => id !== String(tradeId));
-        S.w3b = { ...S.w3b, receipts: [...rest, [String(tradeId), { id: receipt.id ?? null, total: enWhole(receipt.total), url: receipt.url || '', at: now }]].slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, now) };
+        // `rows`: the pieces it was made for; `tid`: the trade number TornW3B has it under (the one it was made with).
+        S.w3b = { ...S.w3b, receipts: [...rest, [String(tradeId), { id: receipt.id ?? null, tid: String(tradeId), total: enWhole(receipt.total), url: receipt.url || '', at: now, rows: receipt.rows || [] }]].slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, now) };
     }
 
     // ---- What is kept by day -------------------------------------------------------------------------------------------
@@ -7372,7 +7548,7 @@
             pricesAt: Math.max(S.summary.at || 0, ...Object.values(S.offers).map((o) => Math.max(o.bazAt || 0, o.imAt || 0)), 0),
             topBid: (id) => { const b = S.bids[String(id)]; const v = mv(id); return b && b.price > 0 && v > 0 ? { pct: Math.round(b.price / v * 1000) / 10, name: b.name, price: b.price, at: b.at } : null; },
             // What you pay your sellers, fixed for the hour (core/sellrate.js): null while nothing is fixed.
-            rate: (S.rate && S.rate.table) || null, rateSent: (S.rate && S.rate.sent) || 0,
+            rate: (S.rate && S.rate.table) || null,
             listings: S.points.listings, pointsAt: S.points.at, days: S.points.days, wallDays: S.points.wallDays,
             lots: S.points.lots, mineLots: [],
             pool: S.stock.pool, book: S.book,
@@ -7388,7 +7564,7 @@
             cart: S.cart, run: S.run, hotSince: S.hot,
             kept: settings.targetMode !== 'number' && S.cart.length && S.plan && S.plan.targets ? S.plan.targets : null,
             thread: S.thread,
-            w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error, receiptsError: S.w3b.receiptsError || '' },
+            w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error, receiptsError: S.w3b.receiptsError || '', tried: S.w3b.tried || {} },
             hist: S.hist,
             names: (id) => S.names[String(id)] || '',
             itemName,
@@ -8127,6 +8303,9 @@
 
 
 
+    /** Your thread on Torn's forums, when Torn said which forum it is in ('' else: no link is guessed). */
+    const vwThreadUrl = (t) => (t && t.id != null && t.forum != null ? `https://www.torn.com/forums.php#/p=threads&f=${encodeURIComponent(t.forum)}&t=${encodeURIComponent(t.id)}` : '');
+
     const vwNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
     const vwWhole = (v) => Math.max(0, Math.floor(vwNum(v)));
     const vwSum = (xs, f) => (xs || []).reduce((a, x) => a + f(x), 0);
@@ -8453,6 +8632,8 @@
         const stockOf = (set) => { const s = sets.find((x) => x.key === set.key); return { pieces: s ? s.pieces : [] }; };
         const nameOf = (id) => { const p = pieceOf(id); if (p) return p.name; const set = SETS.find((s) => s.pieces.some((x) => String(x.id) === String(id))); return set ? set.pieces.find((x) => String(x.id) === String(id)).name : (i.itemName && i.itemName(id)) || 'Item ' + id; };
         const receipts = (i.w3b && i.w3b.receipts) || new Map();
+        const tried = (i.w3b && i.w3b.tried) || {};
+        const threadUrl = vwThreadUrl(i.thread);
         const open = (i.trades || []).map((t) => {
             const offer = tradeOffer(t.theirs.map((x) => ({ id: x.id, name: nameOf(x.id), qty: x.qty })), { settings: ctx, stockOf, mv, pct: settings.pct, pay: payOf });
             const margin = tradeMargin(offer, marginCtx);
@@ -8481,7 +8662,17 @@
             // What they still wait for: money already in a trade is not asked for again.
             open, wait: mineTurn.length, waitMoney: vwSum(mineTurn, (t) => Math.max(0, t.total - vwWhole(t.myMoney))),
             // listed: your list on TornW3B has a price for each of its pieces - a receipt is made from that list.
-            finished: (i.finished || []).slice(0, 60).map((f) => ({ ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt: receipts.get(String(f.id)) || null, listed: !!(i.w3b && i.w3b.list) && (f.rows || []).length > 0 && (f.rows || []).every((r) => i.w3b.list.has(String(r.id))) })),
+            // receipt: the one TornW3B has for it, with its link. why: what a try at making it came to, when none
+            // was made. thanks: what to send the seller, the receipt's link last.
+            finished: (i.finished || []).slice(0, 60).map((f) => {
+                const receipt = receipts.get(String(f.id)) || null;
+                return {
+                    ...f, ago: agoWords(f.t, now), rate: f.mv > 0 ? f.paid / f.mv * 100 : 0, receipt,
+                    why: receipt ? '' : String((tried[f.id] && tried[f.id].why) || ''),
+                    thanks: receipt && receipt.url ? thanksMessage({ receipt: receipt.url, thread: threadUrl }) : '',
+                    listed: !!(i.w3b && i.w3b.list) && (f.rows || []).length > 0 && (f.rows || []).every((r) => i.w3b.list.has(String(r.id))),
+                };
+            }),
             receiptsError: (i.w3b && i.w3b.receiptsError) || '',
         };
 
@@ -8516,10 +8707,10 @@
         };
 
         // ---- my prices ---------------------------------------------------------------------------------------------------
-        const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ pieces: s.pieces })), sets: on });
+        const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on });
         // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
         const paidRows = sets.map((s) => ({ label: s.label, pct: s.rate.pct }));
-        const thread = i.thread && i.thread.title ? { ...i.thread, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;
+        const thread = i.thread && i.thread.title ? { ...i.thread, url: threadUrl, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;
         const setCost = sets.length ? Math.max(...sets.map((s) => s.rate.cost)) : 0;
         const cover = cash == null ? null : shareCovers(share.total, share.inSets, settings.shareMax, setCost);
         const verdict = shopVerdict({
@@ -8527,7 +8718,12 @@
             needUnits, coverSets: cover, now,
         });
         const w3bList = (i.w3b && i.w3b.list) || null;
-        const w3bDiff = w3bList ? listDiff(w3bList, desiredList(pieces, settings.open), ALL_PIECE_IDS) : null;
+        // What your list should say: your prices, without the pieces you hold too many of - but the pieces of a
+        // trade that just ended stay until its receipt is made (TornW3B makes it from this list).
+        const w3bOwed = owedPieces(i.finished, receipts, now);
+        const w3bWant = desiredList(pieces, settings.open, w3bOwed);
+        const w3bOver = settings.open ? pieces.filter((p) => p.pay > 0 && p.ahead > 0 && !w3bOwed.has(String(p.id))).map((p) => p.short || p.name) : [];
+        const w3bDiff = w3bList ? listDiff(w3bList, w3bWant, ALL_PIECE_IDS) : null;
         const rates = [];
         for (let r = 99; r <= 104.001; r += 0.5) rates.push(Math.round(r * 10) / 10);
         const bidOf = (id) => (pieceOf(id) || {}).other || null;
@@ -8558,9 +8754,9 @@
             w3b: {
                 known: !!w3bList, at: (i.w3b && i.w3b.listAt) || 0, error: (i.w3b && i.w3b.error) || '', sync: settings.w3bSync,
                 diff: w3bDiff, matches: w3bDiff ? listMatches(w3bDiff) : null,
-                // Kept by itself, and this hour's prices were already brought to TornW3B: a list that differs now is
-                // written when they are next fixed (engine stepOwn). Your own press sends at any time.
-                waits: !!settings.w3bSync && !!fixedIn && fixed === fixedIn && i.rateSent === fixedIn.rev,
+                // want: what the list should say (the engine writes from it). on: how many pieces that is.
+                // over: the pieces left off because you hold too many, by name.
+                want: w3bWant, on: w3bWant.length, over: w3bOver,
                 lastReceiptAt: (i.w3b && i.w3b.lastReceiptAt) || 0, listedUntil: listedUntil((i.w3b && i.w3b.lastReceiptAt) || 0),
             },
             chart: {
@@ -9197,7 +9393,7 @@
     /** How often each thing is read. The pieces' prices follow the setting (1, 2, 5 or 10 minutes). */
     const READ_EVERY = Object.freeze({
         self: 6 * EG_HOUR, items: EG_HOUR, types: 7 * EG_DAY, log: 2 * EG_MIN, finished: 5 * EG_MIN, inventory: 5 * EG_MIN,
-        money: EG_MIN, points: EG_MIN, trades: EG_MIN, thread: 10 * EG_MIN, ownList: 10 * EG_MIN, receipts: 30 * EG_MIN, bids: 6 * EG_HOUR,
+        money: EG_MIN, points: EG_MIN, trades: EG_MIN, thread: 10 * EG_MIN, ownList: 5 * EG_MIN, receipts: 30 * EG_MIN, bids: 6 * EG_HOUR,
     });
     // The inventory: everything else is worked out from it, so it is asked before anything that can wait ('high').
     // Torn counts it once an hour for each category and its answer says when it counted: it is asked again the moment
@@ -9236,7 +9432,7 @@
     const EG_LOG_PAGES = 5;
     const EG_TRADES_FULL = 8;
     /** A finished trade gets its receipt by itself this long after it ended (TornW3B lets a receipt be put right for 6 hours). */
-    const EG_RECEIPT_WITHIN_MS = 6 * EG_HOUR;
+    const EG_RECEIPT_WITHIN_MS = RECEIPT_OWED_MS;
     /** ... tried this many times at most, this far apart. */
     const EG_RECEIPT_TRIES = 3;
     const EG_RECEIPT_GAP_MS = 5 * EG_MIN;
@@ -9256,6 +9452,13 @@
     const EG_TRADES_BACK_S = 24 * 3600;
     const EG_LOOK_MS = 10 * EG_MIN;
     const EG_SYNC_GAP_MS = 2 * EG_MIN;
+    /** After a write your list is read once more this much later: TornW3B may still answer the list as it was. */
+    const EG_LIST_AGAIN_MS = EG_MIN;
+    /**
+     * How the Archive writes your list. A list last written another way is written in full once, so every price on
+     * it is as this one says: 2 = with TornW3B's inflation protection on.
+     */
+    const EG_LIST_FORM = 2;
 
     const egMsg = (error) => String((error && error.message) || error || '');
     const egLocal = (error) => !!(error && (error.local || error.takingTurns));
@@ -9319,7 +9522,12 @@
         // called wrong: the same one is not sent by itself again.
         let syncWhy = '';
         let listRefused = '';
-        const flags = { w3b: false, receipt: null };
+        // The write TornW3B took while its list still read differently after it: not sent by itself a second time.
+        let listStuck = '';
+        /** Your receipts were read from TornW3B since this tab began: none is made by itself before (it may be there). */
+        let receiptsSeen = false;
+        // `held`: why your list differs and is not being written by itself ('' while it is written, or matches).
+        const flags = { w3b: false, receipt: null, held: '' };
 
         const touch = (...parts) => { for (const p of parts) dirty.add(p); cache = null; };
         const settings = () => env.settings();
@@ -9830,18 +10038,29 @@
             const rows = await env.own.receipts();
             if (keyState.w3b.ok !== true || keyState.w3b.error) setKeyState('w3b', { ok: true, error: '' });
             if (S.w3b.receiptsError) S.w3b = { ...S.w3b, receiptsError: '' };
-            const known = new Set(S.w3b.receipts.map(([, r]) => String(r.id)));
+            // A receipt kept without its pieces (as until 1.3.2) is read once more: its pieces say whose trade it is.
+            const known = new Set(S.w3b.receipts.filter(([, r]) => Array.isArray(r.rows)).map(([, r]) => String(r.id)));
             let read = 0;
             for (const r of rows) {
                 if (!r || r.id == null || known.has(String(r.id)) || read >= 5) continue;
                 read += 1;
-                const one = await env.own.receipt(r.id);
-                for (const [tid, rec] of receiptsByTrade([one])) {
-                    const at = Date.parse(rec.at) || Number(rec.at) * 1000 || env.now();
-                    S.w3b = { ...S.w3b, receipts: [...S.w3b.receipts.filter(([id]) => id !== tid), [tid, { id: rec.id, total: rec.total, url: '', at }]].slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, at) };
-                }
+                const rec = receiptOf(await env.own.receipt(r.id), env.now());
+                if (!rec) continue;
+                S.w3b = { ...S.w3b, receipts: receiptsWith(S.w3b.receipts, rec).slice(-300), lastReceiptAt: Math.max(S.w3b.lastReceiptAt, rec.at) };
             }
+            claimOwn();
+            receiptsSeen = true;
             S.w3b = { ...S.w3b, receiptsAt: env.now() };
+            touch('w3b');
+        }
+
+        /** Receipts no finished trade holds yet go to the trade they are of (core/tw3b-list.js claimReceipts), said once each. */
+        function claimOwn() {
+            const next = claimReceipts(S.w3b.receipts, S.trades.finished, ALL_PIECE_IDS);
+            const moved = next.filter(([key], k) => key !== S.w3b.receipts[k][0]);
+            if (!moved.length) return;
+            for (const [key, r] of moved) env.say('note', 'A receipt on TornW3B is the one of a finished trade', 'trade ' + key + ' · receipt ' + r.id + (r.tid ? ' · made with the trade number ' + r.tid : ' · made with no trade number') + ' · the same pieces and counts');
+            S.w3b = { ...S.w3b, receipts: next };
             touch('w3b');
         }
 
@@ -9902,12 +10121,33 @@
         }
 
         /** The request a write of your list would send now, or why there is none. */
-        function listWrite() {
-            const v = view();
+        function listWrite(v = view()) {
             if (!v.ready || !S.w3b.list) return { why: 'your list on TornW3B has not been read yet', unread: true };
-            const diff = listDiff(new Map(S.w3b.list), desiredList(v.pieces, v.settings.open), ALL_PIECE_IDS);
+            // A list last written another way (EG_LIST_FORM) is written in full once: every price, also one that reads the same.
+            const all = !!v.settings.open && (S.w3b.form || 0) !== EG_LIST_FORM;
+            // What the list should say is the view's (`want`): your prices of this hour, without the pieces you hold too many of.
+            const diff = listDiff(new Map(S.w3b.list), v.prices.w3b.want, ALL_PIECE_IDS, { all });
             if (listMatches(diff)) return { why: v.settings.open ? 'it already matches your rate' : 'your shop is closed: no set piece of yours is on your TornW3B list' };
-            return { diff, body: putBody(diff), closed: !v.settings.open };
+            // `plain`: the same write without inflation protection, for a TornW3B that calls the first one wrong.
+            const inflation = !S.w3b.plain;
+            return { diff, body: putBody(diff, { inflation }), plain: inflation && diff.set.length ? putBody(diff, { inflation: false }) : null, closed: !v.settings.open, all };
+        }
+
+        /**
+         * The write itself. With inflation protection on it is a request TornW3B has not been seen to take (until
+         * 1.3.2 it was sent off): called wrong (400), it is sent once more without, and written without from then on.
+         */
+        async function putOwn(w, by) {
+            try {
+                return await env.own.putList(w.body);
+            } catch (error) {
+                if (!(error && error.http === 400) || !w.plain) throw error;
+                env.say('note', 'TornW3B refused the write of your list with inflation protection on', by + ' · ' + egMsg(error) + (error.said ? ' · it said: ' + error.said : '') + ' · sent once more without it');
+                const answer = await env.own.putList(w.plain);
+                S.w3b = { ...S.w3b, plain: true };
+                touch('w3b');
+                return answer;
+            }
         }
 
         /**
@@ -9925,12 +10165,13 @@
                 return;
             }
             syncAt = env.now();
-            const sent = w.diff.set.length + ' set, ' + w.diff.remove.length + ' taken off' + (w.closed ? ' · your shop is closed: the set pieces come off your list' : '');
+            flags.held = '';
+            const sent = w.diff.set.length + ' set, ' + w.diff.remove.length + ' taken off' + (w.closed ? ' · your shop is closed: the set pieces come off your list' : '') + (w.all ? ' · every price, so each has inflation protection on' : '');
             // The prices this write carries: the hour's table as it stands now (rateKeep).
             const rev = S.rate.table ? S.rate.table.rev : 0;
             let answer;
             try {
-                answer = await env.own.putList(w.body);
+                answer = await putOwn(w, by);
             } catch (error) {
                 if (egLocal(error)) env.say('note', 'Your list was not written to TornW3B', by + ' · ' + egMsg(error));
                 else {
@@ -9949,12 +10190,25 @@
             if (rev && S.rate.table && S.rate.table.rev === rev && S.rate.sent !== rev) { S.rate = { ...S.rate, sent: rev }; touch('rate'); }
             env.say('note', 'Your list written to TornW3B', by + ' · ' + sent + ' · it answered: ' + (answer == null ? 'nothing that could be read' : JSON.stringify(answer).slice(0, 180)));
             setKeyState('w3b', { ok: true, error: '' });
+            if (w.all) S.w3b = { ...S.w3b, form: EG_LIST_FORM };
             foldOwnList(S, await env.own.readList(), env.now());
             touch('w3b');
+            // TornW3B may still answer the list as it was a moment ago: read once more soon. A list that reads
+            // differently after a write it took is said, with the pieces - and the same write is not sent by itself
+            // again (stepOwn), or one price TornW3B reads another way would be written every two minutes for good.
+            due.ownList = Math.min(due.ownList || Infinity, env.now() + EG_LIST_AGAIN_MS);
+            const left = listWrite();
+            listStuck = left.body ? JSON.stringify(left.body) : '';
+            if (left.body) {
+                const now = new Map(S.w3b.list);
+                const lines = egLines([...left.diff.set.map((x) => x.itemID + ' yours $' + x.price + ', reads ' + (now.has(String(x.itemID)) ? '$' + now.get(String(x.itemID)).value : 'no price')), ...left.diff.remove.map((x) => x.itemID + ' still on it')]);
+                lines.forEach((l, k) => env.say('note', 'TornW3B took the write and your list there still reads differently, ' + (k + 1) + ' of ' + lines.length, l));
+            }
         }
 
         /** "Keep it at my rate by itself" is on and nothing is sent: the reason, said once each time it changes. */
         function syncQuiet(why) {
+            flags.held = why;
             if (why === syncWhy) return;
             syncWhy = why;
             env.say('note', 'Keeping your TornW3B list at your rate: nothing sent', why);
@@ -9977,28 +10231,53 @@
             sayOnce('w3b-' + what + '-' + egMsg(error), what === 'receipts' ? 'TornW3B: your receipts' : 'TornW3B: your own list', egMsg(error) + (error && error.said ? ' · it said: ' + error.said : ''));
         }
 
-        /** A receipt for one finished trade, made on TornW3B from your list there. */
-        function makeReceipt(id) {
+        /**
+         * A receipt for one finished trade, made on TornW3B from your list there. Its link is kept with the trade:
+         * it is what you send the seller. The request goes in the form TornW3B last took, then in the others
+         * (core/tw3b-list.js RECEIPT_FORMS) while it calls each wrong (400) - every form's shape is in the log, names
+         * and kinds, no value. A press that made nothing says why on the trade's row (`tried[id].why`).
+         * @param by 'your press' | 'by itself'
+         */
+        function makeReceipt(id, by = 'your press') {
             const f = S.trades.finished.find((x) => x.id === id);
             if (!f || flags.receipt) return;
             flags.receipt = id;
-            const body = receiptBody(id, f.rows || [], f.whoId);
-            env.own.makeReceipt(body)
-                .then((json) => {
+            const tried = (patch) => { S.w3b = { ...S.w3b, tried: { ...(S.w3b.tried || {}), [id]: { n: 0, ...((S.w3b.tried || {})[id] || {}), at: env.now(), forms: RECEIPT_FORMS, ...patch } } }; touch('w3b'); };
+            const first = Number.isInteger(S.w3b.receiptForm) && S.w3b.receiptForm < RECEIPT_FORMS ? [S.w3b.receiptForm] : [];
+            const forms = [...new Set([...first, ...Array(RECEIPT_FORMS).keys()])];
+            (async () => {
+                let last = null;
+                for (const form of forms) {
+                    const body = receiptBody(id, f.rows || [], f.whoId, form);
+                    try {
+                        const json = await env.own.makeReceipt(body);
+                        if (S.w3b.receiptForm !== form) S.w3b = { ...S.w3b, receiptForm: form };
+                        return { json, form };
+                    } catch (e) {
+                        last = e;
+                        if (!(e && e.http === 400)) break;
+                        env.say('note', 'TornW3B called a receipt request wrong', 'trade ' + id + ' · form ' + (form + 1) + ' of ' + RECEIPT_FORMS + ' · sent: ' + egShape(body) + (e.said ? ' · it said: ' + e.said : ''));
+                    }
+                }
+                throw last;
+            })()
+                .then(({ json, form }) => {
                     const r = readReceipt(json, f.paid);
-                    foldReceipt(S, id, r, env.now());
+                    foldReceipt(S, id, { ...r, rows: f.rows || [] }, env.now());
+                    const { [id]: done, ...rest } = S.w3b.tried || {};
+                    S.w3b = { ...S.w3b, tried: rest };
                     touch('w3b');
+                    env.say('note', 'Receipt made on TornW3B', by + ' · trade ' + id + ' · form ' + (form + 1) + ' · ' + (r.url || 'its answer named no link: ' + egShape(json)) + ' · its total ' + egMoney(r.total) + ', you paid ' + egMoney(f.paid));
                     if (!r.ok) env.say('note', "TornW3B's receipt differs from what you paid", 'trade ' + id + ': theirs ' + r.total + ', yours ' + f.paid + (r.missing.length ? ', not on your list: ' + r.missing.join(', ') : ''));
                 })
                 .catch((e) => {
-                    w3bFailed(e, 'receipts');
-                    // A request TornW3B calls wrong (400) is the same request the next time: not sent for this trade
-                    // again, and its shape - names and kinds, no value - goes into the log so the cause can be found.
-                    if (e && e.http === 400) {
-                        S.w3b = { ...S.w3b, tried: { ...(S.w3b.tried || {}), [id]: { n: EG_RECEIPT_TRIES, at: env.now() } } };
-                        touch('w3b');
-                        env.say('note', 'TornW3B called a receipt request wrong', 'trade ' + id + ' · sent: ' + egShape(body) + ' · it is not sent for this trade again');
-                    }
+                    if (egLocal(e)) { tried({ why: egMsg(e) }); return; }
+                    const wrong = !!e && e.http === 400;
+                    // Called wrong in every form: not sent by itself for this trade again. Anything else is a verdict
+                    // on the key, or a failure that may pass (said with your receipts).
+                    if (wrong) env.say('note', 'TornW3B called the receipt request wrong in every form', 'trade ' + id + ' · it is not sent by itself for this trade again - your own press still sends it');
+                    else w3bFailed(e, 'receipts');
+                    tried({ ...(wrong ? { n: EG_RECEIPT_TRIES } : {}), why: (wrong ? 'TornW3B does not take the request' : egMsg(e)) + (e && e.said ? ': ' + String(e.said).slice(0, 80) : '') });
                 })
                 .finally(() => { flags.receipt = null; flush(); env.changed(); });
         }
@@ -10008,19 +10287,22 @@
          * its pieces, since TornW3B makes the receipt from that list. Older trades keep their button.
          */
         function autoReceipt(now) {
-            if (flags.receipt || !S.w3b.list) return;
+            // Not before your receipts were read: one made on TornW3B's own page may be this trade's already.
+            if (flags.receipt || !S.w3b.list || !receiptsSeen) return;
+            claimOwn();
             const have = new Set(S.w3b.receipts.map(([id]) => id));
             const listed = new Map(S.w3b.list);
             const tried = S.w3b.tried || {};
             for (const f of S.trades.finished) {
                 if (have.has(f.id) || !(now - f.t < EG_RECEIPT_WITHIN_MS)) continue;
-                const t = tried[f.id] || { n: 0, at: 0 };
+                // What was tried in the request's older forms does not count: the forms have changed since.
+                const t = tried[f.id] && tried[f.id].forms === RECEIPT_FORMS ? tried[f.id] : { n: 0, at: 0 };
                 if (t.n >= EG_RECEIPT_TRIES || now - t.at < EG_RECEIPT_GAP_MS) continue;
                 if (!(f.rows || []).length || !(f.rows || []).every((r) => listed.has(String(r.id)))) continue;
                 const kept = Object.fromEntries(Object.entries(tried).filter(([, x]) => now - x.at < 2 * EG_RECEIPT_WITHIN_MS));
-                S.w3b = { ...S.w3b, tried: { ...kept, [f.id]: { n: t.n + 1, at: now } } };
+                S.w3b = { ...S.w3b, tried: { ...kept, [f.id]: { n: t.n + 1, at: now, forms: RECEIPT_FORMS } } };
                 touch('w3b');
-                makeReceipt(f.id);
+                makeReceipt(f.id, 'by itself');
                 return;
             }
         }
@@ -10072,7 +10354,7 @@
 
         function stepOwn(now) {
             const keep = !!settings().w3bSync;
-            if (!keep) syncWhy = '';
+            if (!keep) { syncWhy = ''; flags.held = ''; }
             if (!keyOk('w3b') || !S.self.id) {
                 if (keep) syncQuiet(!S.self.id ? 'your Torn id is not known yet' : 'the key you registered on TornW3B is not set, or TornW3B refuses it (its box in Settings says which)');
                 return;
@@ -10085,22 +10367,24 @@
             if (flags.w3b || now - syncAt < EG_SYNC_GAP_MS) return;
             const v = calm();
             if (!v.ready) { syncQuiet('not everything is read yet'); return; }
-            const matches = !v.prices.w3b.diff || v.prices.w3b.matches;
-            if (!v.settings.open) {
-                // Closed: the set pieces come off your list, once. Nothing else is written while you are closed.
-                if (matches) { syncQuiet('your shop is closed: no set piece of yours is on your TornW3B list'); return; }
-            } else {
-                // Open: written once for each fixing of your prices (rateKeep) - at most once an hour, and at once
-                // when the safety brought them down. Your own press sends at any time.
+            // Open: your prices are fixed for an hour (rateKeep), and the list is written whenever it does not say
+            // them - each hour when they are fixed anew, at once when the safety brought them down, when a piece
+            // comes on or off (you hold too many), and when a price was changed on TornW3B's own page (the owner,
+            // 2026-10-12: "i accidentally changed it, and it didnt automatically send it"). Until 1.3.2 it was
+            // written once per fixing only: a list changed inside the hour waited for the next one.
+            // Closed: the set pieces come off your list, once.
+            if (v.settings.open && !S.rate.table) { syncQuiet('your prices are not fixed yet: the points price or a market value is not read'); return; }
+            const w = listWrite(v);
+            if (!w.body) {
+                listStuck = '';
                 const t = S.rate.table;
-                if (!t) { syncQuiet('your prices are not fixed yet: the points price or a market value is not read'); return; }
-                if (S.rate.sent === t.rev) { syncQuiet(matches ? 'it already matches your rate' : 'it differs from your prices of this hour: written when they are next fixed, at ' + egClock(t.until) + (t.held ? ' or when the open trade has ended' : '') + ' - your own press sends it now'); return; }
-                if (matches) { S.rate = { ...S.rate, sent: t.rev }; touch('rate'); syncQuiet('it already matches your rate'); return; }
+                if (v.settings.open && t && S.rate.sent !== t.rev) { S.rate = { ...S.rate, sent: t.rev }; touch('rate'); }
+                syncQuiet(w.why);
+                return;
             }
-            if (listRefused) {
-                const w = listWrite();
-                if (w.body && JSON.stringify(w.body) === listRefused) { syncQuiet('TornW3B called this same request wrong: it is not sent again by itself until your prices change - your own press still sends it'); return; }
-            }
+            const sending = JSON.stringify(w.body);
+            if (sending === listRefused) { syncQuiet('TornW3B called this same request wrong: it is not sent again by itself until your prices change - your own press still sends it'); return; }
+            if (sending === listStuck) { syncQuiet('TornW3B took this same write and its list still reads differently: it is not sent again by itself until something changes - your own press still sends it'); return; }
             flags.w3b = true;
             sendList('by itself').catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
         }
@@ -11379,6 +11663,12 @@
     .paused { position: absolute; inset: 52px 0 30px 0; z-index: 35; display: none; place-items: center; background: rgba(9,11,16,.82); backdrop-filter: blur(6px); }
     .paused.on { display: grid; animation: fade .3s ease both; }
     .paused .card { width: min(560px, 90%); padding: 22px 24px; border-radius: 16px; background: var(--panel); border: 1px solid rgba(245,165,36,.45); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+    .pop { position: absolute; inset: 0; z-index: 34; display: none; place-items: center; background: rgba(9,11,16,.72); backdrop-filter: blur(5px); }
+    .pop.on { display: grid; animation: fade .2s ease both; }
+    .pop .card { width: min(620px, 92%); padding: 22px 24px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line2); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+    .pop h2 { margin: 0 0 8px; font: 650 19px var(--disp); } .pop p { margin: 0 0 10px; color: var(--text2); }
+    .pop-l { margin: 14px 0 6px; color: var(--muted); font-size: 12px; } .pop-m { overflow-wrap: anywhere; user-select: all; }
+    .pop-b { display: flex; gap: 8px; margin-top: 10px; align-items: center; } .pop-b .sp { flex: 1; }
     .paused h2 { margin: 0 0 8px; font: 650 19px var(--disp); display: flex; align-items: center; gap: 10px; } .paused p { margin: 0 0 10px; color: var(--text2); }
 
     /* ---------- item pictures: Torn's own, as Torn Bids shows them ---------- */
@@ -12235,6 +12525,41 @@
             <div class="pb flush"><div class="after">${after}<div class="af" style="grid-template-columns:minmax(0,1fr);color:var(--text2)"><span>${sets}</span></div></div></div></div>`;
     }
 
+    /**
+     * A finished trade's receipt: "View receipt" once TornW3B has one for it (its link and what to send the seller
+     * are in the box that opens), else the button that makes it - and, where there is room for words, why a try
+     * made none. The owner, 2026-10-12: "i need that link, saved somewhere as well like a view button, then popup
+     * copy receipt link".
+     */
+    function pgReceipt(d, f, words = true) {
+        if (!(d.keys && d.keys.w3b && d.keys.w3b.set)) return '';
+        if (f.receipt) return `<button class="btn sm" data-act="pop" data-v="receipt" data-id="${hEsc(f.id)}">View receipt</button>`;
+        const busy = !!d.busy && d.busy.receipt === f.id;
+        const why = f.why ? `<span class="t-bad" style="margin-right:8px">${hEsc(f.why)}</span>` : f.listed ? '' : '<span class="t-muted" style="margin-right:8px">not priced on your TornW3B list</span>';
+        return `${words ? why : ''}<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${f.why && !words ? ` title="${hEsc(f.why)}"` : ''}${busy ? ' disabled' : ''}>${busy ? 'Making it' : 'Generate receipt'}</button>`;
+    }
+
+    /**
+     * The box over the page (hub.js draws it while `ui.pop` is set): a trade's receipt - its link to copy, and
+     * what to send the seller with it. '' when there is nothing to show (the trade is gone): the box closes.
+     */
+    function hubPop(d, ui) {
+        const pop = ui.pop;
+        if (!pop || pop.kind !== 'receipt') return '';
+        const f = d.view.trades.finished.find((x) => String(x.id) === String(pop.id));
+        if (!f || !f.receipt) return '';
+        const r = f.receipt;
+        const differs = r.total > 0 && r.total !== f.paid;
+        return `<h2>Receipt · ${hEsc(f.who)}</h2>
+        <p>${hPlural(f.units, 'piece')} · ${hWhen(f.t)} · you paid <b class="num">${hMoney(f.paid)}</b>${r.total > 0 ? ` · the receipt says <b class="num${differs ? ' t-warn' : ''}">${hMoney(r.total)}</b>` : ''}</p>
+        ${differs ? '<p class="t-muted">TornW3B makes a receipt from your list as it stands when the receipt is made, so its total can differ from what you paid.</p>' : ''}
+        ${r.url ? `<div class="pop-l">The receipt's link</div><div class="msg pop-m">${hEsc(r.url)}</div>
+        <div class="pop-b"><button class="btn go" data-act="copy" data-v="${hEsc(r.url)}">Copy receipt link</button>${hOut(r.url, 'Open it', 'btn out')}</div>
+        <div class="pop-l">To send the seller</div><div class="msg pop-m">${hEsc(f.thanks)}</div>
+        <div class="pop-b"><button class="btn go" data-act="copy" data-v="${hEsc(f.thanks)}">Copy the message</button><span class="sp"></span><button class="btn" data-act="pop-close">Close</button></div>`
+            : `<p>TornW3B made it and has not said its link yet: it comes with the next read of your receipts.</p><div class="pop-b"><span class="sp"></span><button class="btn" data-act="pop-close">Close</button></div>`}`;
+    }
+
     function pgTrades(d, ui) {
         const v = d.view;
         const open = v.trades.open;
@@ -12243,7 +12568,7 @@
         return `<section class="page g2r on">
         <div class="col">
           <div class="panel" data-k="open"><div class="ph"><h2>Open with you</h2><span class="sp"></span>${open.length ? `<span class="badge ${wait ? 'ahead' : ''}">${wait} ${wait === 1 ? 'waits' : 'wait'} for you</span>` : ''}</div><div class="pb flush">${open.length ? open.map((t) => `<div class="li ${sel && t.id === sel.id ? 'sel' : ''}" data-act="trade" data-id="${hEsc(t.id)}" style="cursor:pointer"><span class="av ${t.state === 'new' ? 'new' : ''}">${hEsc(String(t.who || '?')[0])}</span><span class="li-m"><b>${hEsc(t.who)}</b><span>${hPlural(t.items, 'item')} · ${t.ago}</span></span><span class="amt"><b class="num">${hMoney(t.total)}</b><span class="st ${t.state}">${TURN_WORDS[t.state]}</span></span></div>`).join('') : pgNone('No trade is open with you.')}</div></div>
-          <div class="panel grow" data-k="fin"><div class="ph"><h2>Finished</h2><span class="sp"></span><button class="btn sm" data-go="ledger" data-pane="3">Receipts</button></div><div class="pb flush">${v.trades.finished.length ? v.trades.finished.slice(0, 12).map((f) => `<div class="li"><span class="av">${hEsc(String(f.who || '?')[0])}</span><span class="li-m"><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b><span>${hPlural(f.units, 'piece')} · ${hWhen(f.t)}</span></span><b class="num">${hMoney(f.paid)}</b></div>`).join('') : pgNone('None yet.')}</div></div>
+          <div class="panel grow" data-k="fin"><div class="ph"><h2>Finished</h2><span class="sp"></span><button class="btn sm" data-go="ledger" data-pane="3">Receipts</button></div><div class="pb flush">${v.trades.finished.length ? v.trades.finished.slice(0, 12).map((f) => `<div class="li"><span class="av">${hEsc(String(f.who || '?')[0])}</span><span class="li-m"><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b><span>${hPlural(f.units, 'piece')} · ${hWhen(f.t)}${f.why ? ' · <span class="t-bad">receipt not made</span>' : ''}</span></span><b class="num">${hMoney(f.paid)}</b>${pgReceipt(d, f, false)}</div>`).join('') : pgNone('None yet.')}</div></div>
         </div>
         <div class="col">${pgTrade(v, sel)}</div>
       </section>`;
@@ -12358,11 +12683,16 @@
         if (!key.set) body = '<div class="row"><span class="grow1">Paste the key you registered on TornW3B to keep your price list there at your rate, and to make a receipt for a trade.</span><button class="btn sm" data-go="settings">Settings</button></div>';
         else if (w.error) { badge = '<span class="badge bad">not read</span>'; body = `<div class="row"><span class="grow1 t-bad">${hEsc(w.error)}</span><button class="btn sm" data-act="w3b" data-v="read">Read again</button></div>`; }
         else if (!w.known) { badge = '<span class="badge">reading</span>'; body = '<div class="row"><span class="grow1 t-muted">Your list on TornW3B has not been read yet.</span></div>'; }
-        else if (w.matches) { badge = '<span class="badge ok">matches your prices</span>'; body = `<div class="row"><span class="grow1">${d.view.prices.open ? `Every piece is on it at ${d.view.prices.paid || hRate(d.view.prices.pct) + '%'}.` : 'No set piece is on it: your shop is closed.'}</span></div>`; }
+        else if (w.matches) { badge = '<span class="badge ok">matches your prices</span>'; body = `<div class="row"><span class="grow1">${d.view.prices.open ? `${w.over.length ? hPlural(w.on, 'piece') + ' are' : 'Every piece is'} on it at ${d.view.prices.paid || hRate(d.view.prices.pct) + '%'}.` : 'No set piece is on it: your shop is closed.'}</span></div>`; }
         else {
+            // Kept by itself, a list that differs is written within two minutes - unless something holds the write
+            // (`held`: the engine's own words for it). Then the reason is said and the button is yours.
+            const held = w.sync ? String((d.busy && d.busy.held) || '') : '';
             badge = `<span class="badge ahead">${hPlural(w.diff.set.length + w.diff.remove.length, 'price')} differ</span>`;
-            body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${w.waits ? ' <span class="t-muted">Written by itself when your prices are next fixed.</span>' : ''}</span>${w.sync && !w.waits ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
+            body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
         }
+        // The pieces you hold too many of are not on your list, and come back by themselves.
+        if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
         const listed = !key.set ? '' : w.listedUntil > d.view.at ? `Buyers see your list until ${hDay(w.listedUntil)}: TornW3B shows it for 7 days after a receipt.` : 'Buyers do not see your list: TornW3B shows it for 7 days after a receipt.';
         return `<div class="panel" data-k="w3b"><div class="ph"><h2>Your price list on TornW3B</h2><span class="sp"></span>${badge}</div><div class="pb"><div class="rows">${body}
             ${key.set ? `<div class="field"><span class="f-l">Keep it at my rate by itself<span>${listed}</span></span>${pgSeg('w3bSync', d.view.settings.w3bSync ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>` : ''}
@@ -12427,8 +12757,8 @@
           <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
           ${pgW3b(d)}
           <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-            <div class="msg"><b>${hEsc(pr.forum.title)}</b><br>${hEsc(pr.forum.post).replace(/\n/g, '<br>')}</div>
-            <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
+            <div class="msg"><b>${hEsc(pr.forum.title)}</b><br>${pr.forum.html}</div>
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
           </div></div>
           <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
         </div>
@@ -12475,9 +12805,8 @@
             <div class="pb" style="display:flex;flex-direction:column"><div class="legend" style="margin-bottom:4px">${pgKey('Bazaars', 'var(--s-gold)', 1)}${pgKey('Item Market', 'var(--s-violet)', 1)}${pgKey('Trades with you', 'var(--s-aqua)', 1)}</div><div style="flex:1;position:relative;min-height:0"><div class="chart" data-chart="bought" style="inset:0"></div></div></div></div>`);
         }
         if (ui.pane === 3) {
-            const hasKey = d.keys && d.keys.w3b && d.keys.w3b.set;
-            const rows = v.trades.finished.map((f) => `<tr><td>${hWhen(f.t)}</td><td><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b></td><td class="n">${hNum(f.units)}</td><td class="n"><b>${hMoney(f.paid)}</b></td><td class="n"><span class="t-muted">${f.rate ? hPct(f.rate) : ''}</span></td><td class="n">${f.receipt && f.receipt.url ? hOut(f.receipt.url, 'Receipt', 'btn sm out') : f.receipt ? '<span class="t-muted">made</span>' : hasKey ? `${f.listed ? '' : '<span class="t-muted" style="margin-right:8px">not priced on your TornW3B list</span>'}<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${d.busy && d.busy.receipt === f.id ? ' disabled' : ''}>Make the receipt</button>` : ''}</td></tr>`).join('');
-            return one('rec', 'Receipts', v.trades.receiptsError ? 'TornW3B does not give your receipts: ' + hEsc(v.trades.receiptsError) : 'one per trade · made on TornW3B by itself, from your list there, when a trade ends', rows && `<table class="t"><thead><tr><th>When</th><th>Seller</th><th class="n">Pieces</th><th class="n">You paid</th><th class="n">Rate</th><th></th></tr></thead><tbody>${rows}</tbody></table>`, 'No finished trade yet.');
+            const rows = v.trades.finished.map((f) => `<tr><td>${hWhen(f.t)}</td><td><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b></td><td class="n">${hNum(f.units)}</td><td class="n"><b>${hMoney(f.paid)}</b></td><td class="n"><span class="t-muted">${f.rate ? hPct(f.rate) : ''}</span></td><td class="n">${pgReceipt(d, f)}</td></tr>`).join('');
+            return one('rec', 'Receipts', v.trades.receiptsError ? 'TornW3B does not give your receipts: ' + hEsc(v.trades.receiptsError) : 'one per trade · made on TornW3B from your list there, by itself when a trade ends · View receipt has its link', rows && `<table class="t"><thead><tr><th>When</th><th>Seller</th><th class="n">Pieces</th><th class="n">You paid</th><th class="n">Rate</th><th></th></tr></thead><tbody>${rows}</tbody></table>`, 'No finished trade yet.');
         }
         if (ui.pane === 4) {
             const rows = lg.sellers.map((s) => `<tr><td><b>${hOut(hProfileUrl(s.whoId), hEsc(s.who || 'Seller ' + s.whoId))}</b></td><td class="n">${hNum(s.trades)}</td><td class="n">${hNum(s.units)}</td><td class="n"><b>${hMoney(s.paid)}</b></td><td>${hEsc(s.brings)}</td><td>${s.came}</td></tr>`).join('');
@@ -12755,6 +13084,7 @@
       <div class="view" id="view"></div>
       <footer class="tape"><div class="tape-l">Cheapest now</div><div class="tape-m"><div class="tape-t" id="tape"></div></div></footer>
       <div class="toast" id="toast"><span class="nx-i" style="--c:#c9bfff;--c-bg:var(--brand-bg)">${hIcon('trades')}</span><div><b id="toast-t"></b><span class="s" id="toast-s"></span></div><button class="btn sm go" id="toast-go">See it</button><button class="x" id="toast-x" title="Close">×</button></div>
+      <div class="pop" id="pop"><div class="card" id="pop-card"></div></div>
       <div class="paused" id="paused"><div class="card" id="paused-card"></div></div>
     </div>
     </div>`;
@@ -12914,6 +13244,15 @@
             if (card._src !== html) { card.innerHTML = html; card._src = html; }
         }
 
+        /** The box over the page: a trade's receipt (ui.pop). It closes by itself when what it showed is gone. */
+        function drawPop() {
+            const html = ui.pop ? hubPop(desk, ui) : '';
+            if (ui.pop && !html) ui.pop = null;
+            $('#pop').classList.toggle('on', !!html);
+            const card = $('#pop-card');
+            if (card._src !== html) { card.innerHTML = html; card._src = html; }
+        }
+
         function fitTop() {
             const t = $('#top');
             t.classList.remove('tight', 'tighter');
@@ -12924,6 +13263,7 @@
         function draw(fresh) {
             if (!desk) return;
             drawShell();
+            drawPop();
             const html = hubPage(desk, ui);
             // The piece whose sellers are on the screen: its bazaars are checked with Torn itself. Told when the piece
             // changes and once a minute while it stays - never on every draw: until 1.3.0 the telling asked for a draw,
@@ -12999,13 +13339,15 @@
             else if (a === 'run') { ui.imKey = ''; act('run', v); }
             // The Item Market stop: the link opened the next piece's page; the run stays on the stop.
             else if (a === 'im-walk') { ui.imKey = v; draw(false); }
-            else if (a === 'copy') { act('copy', v); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
+            else if (a === 'copy') { act('copy', v, el.dataset.html || ''); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
             else if (a === 'key-save') { const box = $(`input[data-key="${v}"]`); const key = box ? box.value.trim() : ''; if (key) { box.value = ''; act('keySave', v, key); } }
             else if (a === 'key-forget') act('keyForget', v);
             else if (a === 'key-show') act('keyShow', v);
             else if (a === 'server-save') { const at = $('input[data-server="address"]'); const pw = $('input[data-server="pass"]'); act('serverSave', at ? at.value.trim() : '', pw ? pw.value.trim() : ''); if (pw) pw.value = ''; }
             else if (a === 'server-forget') act('serverForget');
             else if (a === 'receipt') act('receipt', id);
+            else if (a === 'pop') { ui.pop = { kind: v, id }; drawPop(); }
+            else if (a === 'pop-close') { ui.pop = null; drawPop(); }
             else if (a === 'w3b') act('w3b', v);
             else if (a === 'zip') act('zip');
             else if (a === 'usage-export') act('usageExport');
@@ -13018,6 +13360,8 @@
 
         doc.addEventListener('click', (e) => {
             const t = e.target;
+            // A press beside the box closes it.
+            if (t.id === 'pop') { ui.pop = null; drawPop(); return; }
             const tab = t.closest('[data-tab]');
             if (tab) { ui.pane = Number(tab.dataset.tab); remember(false); draw(true); return; }
             const a = t.closest('[data-act]');
@@ -13030,6 +13374,7 @@
             if (el.dataset && el.dataset.set) act('set', { [el.dataset.set]: setValue(el.dataset.set, el.value) });
         });
         doc.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && ui.pop) { ui.pop = null; drawPop(); return; }
             const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
             if (typing && e.key === 'Enter') { e.target.blur(); const k = e.target.dataset.key; if (k) { const b = $(`[data-act="key-save"][data-v="${k}"]`); if (b) b.click(); } if (e.target.dataset.server) { const b = $('[data-act="server-save"]'); if (b) b.click(); } return; }
             if (typing || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== 'n' || ui.page !== 'buy') return;
@@ -18377,7 +18722,7 @@
             read: () => { logLine('note', 'Torn Archive', 'Pressed: Read now', null); engine.readNow(); step(); },
             // "Read my stock": your items and your log, ahead of the rest, and nothing else.
             readStock: () => { engine.act('readStock'); },
-            copy: (text) => gmCopy(text),
+            copy: (text, html) => (html ? gmCopyRich(text, html) : gmCopy(text)),
             keySave(kind, value) {
                 if (!KEY_KINDS.includes(kind) || !value) return;
                 gmSet('key.' + kind, String(value).trim());

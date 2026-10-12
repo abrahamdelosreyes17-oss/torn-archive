@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
     SETS, setByKey, setOfItem, isSetItem, shortName, setsOn, keptForSets, setStock, autoTarget, autoTargets, fillCost, setMarketValue, setValue, pieceWorths,
-    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, tradeMessage, mostWanted, forumText, readThreadTitle,
+    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, tradeMessage, mostWanted, forumText, thanksMessage, readThreadTitle,
     isBuyingTitle, threadCheck, moneyShare,
 } from '../src/core/sets.js';
 
@@ -254,10 +254,27 @@ test('your forum thread: the title and post to copy, open and closed (mockup Z3)
     assert.match(mostWanted(stocks), /^Panda, Nessie, Jaguar · /);
     const open = forumText({ open: true, pct: 101, stocks });
     assert.equal(open.title, '[OPEN] Buying Plushies & Flowers · 101% of market value');
-    assert.match(open.post, /^Buying every plushie and flower, any amount\.\nI pay 101% of market value, paid in the trade\.\nMost wanted now: Panda, Nessie, Jaguar · /);
-    assert.match(open.post, /Start a trade with me and add your items\. I answer with the total\.$/);
+    // 1.3.3: every piece is named, each set on its own line, and where a seller sees whether you are open.
+    assert.match(open.post, /^Buying plushies and flowers, any amount - except the ones struck out: I have enough of those for now\.\nI pay 101% of market value, paid in the trade\.\nPlushies: Camel, Chamois, Jaguar, [^\n]+\nFlowers: African Violet, [^\n]+\nMost wanted now: Panda, Nessie, Jaguar · /);
+    assert.match(open.post, /\nLook at my profile picture: it says when I am open for trading\.\nStart a trade with me and add your items\. I answer with the total\.$/);
+    // Nothing held over the target: nothing struck, and the same words with or without the look.
+    const even = forumText({ open: true, pct: 101, stocks: [setStock(PLUSHIE, {}, 40)], sets: [PLUSHIE] });
+    assert.match(even.post, /^Buying every plushie, any amount\.\n/);
+    assert.equal(even.html, even.post.replace(/\n/g, '<br>'));
     const closed = forumText({ open: false, pct: 101, stocks });
     assert.equal(closed.title, '[CLOSED] Buying Plushies & Flowers · back soon');
+    assert.match(closed.post, /\nLook at my profile picture: it says when I am open for trading\.$/);
+    // A piece you hold too many of is still written, struck out: a line through each letter in plain text, <s> where the look is kept.
+    const over = [setStock(PLUSHIE, { ...held, [ID.Lion]: 90 }, 40)];
+    const struck = forumText({ open: true, pct: 101, stocks: over, sets: [PLUSHIE] });
+    assert.match(struck.post, /^Buying plushies, any amount - except the ones struck out: I have enough of those for now\.\n/);
+    assert.ok(struck.post.includes(', L̶i̶o̶n̶, '), struck.post);
+    assert.ok(struck.html.includes(', <s><span style="text-decoration:line-through">Lion</span></s>, '), struck.html);
+    assert.equal((struck.html.match(/<s>/g) || []).length, over[0].pieces.filter((p) => p.ahead > 0).length, 'each piece held over the target, and no other');
+    assert.equal(struck.post.split('\n').find((l) => l.startsWith('Plushies: ')).split(', ').length, PLUSHIE.pieces.length, 'every piece is still written');
+    // What to send the seller after a trade: the thread when it is known, the receipt's link last.
+    assert.equal(thanksMessage({ receipt: 'https://weav3r.dev/receipt/abc' }), 'Thank you for trading! Hope to trade again! Your receipt: https://weav3r.dev/receipt/abc');
+    assert.match(thanksMessage({ receipt: 'R', thread: 'T' }), /^Thank you for trading! If you enjoyed it, a like and a comment on my thread would help me a lot: T It also says what I am buying now\. Hope to trade again! Your receipt: R$/);
     assert.equal(forumText({ open: true, pct: 99.4, stocks: [], sets: [PLUSHIE] }).title, '[OPEN] Buying Plushies · 99.4% of market value');
 });
 

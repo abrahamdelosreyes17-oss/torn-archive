@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import { LOTS_EMPTY, lotsRead, lotTable, sellPlan, lotsWords, waitWords, lotLabel, lotBucket, LOT_BUCKETS } from '../src/core/lots.js';
 import { hotListings, hotSince, shopVerdict, shareCovers, HOT_SIT_MS, VERDICT_WORDS } from '../src/core/verdict.js';
-import { desiredList, parseOwnList, listDiff, listMatches, putBody, receiptBody, readReceipt, receiptsByTrade, listedUntil } from '../src/core/tw3b-list.js';
+import { desiredList, owedPieces, parseOwnList, listDiff, listMatches, putBody, receiptBody, readReceipt, receiptOf, receiptsWith, claimReceipts, receiptLink, receiptIdOf, listedUntil, RECEIPT_FORMS, RECEIPT_OWED_MS } from '../src/core/tw3b-list.js';
 import { parseTradeList, parseTrade, tradeTurn, tradesSeen, tradesClosed, agoWords, tradeNotice } from '../src/core/trades.js';
 
 const MIN = 60000;
@@ -154,8 +154,36 @@ test('your list on TornW3B: only your own pieces are set or taken off', () => {
     assert.deepEqual(diff.remove, []);
     assert.equal(listMatches(diff), false);
     const body = putBody(diff);
-    assert.deepEqual(body.items[0], { itemID: 263, pricingType: 'fixed', pricingValue: 14544, inflationProtectionEnabled: false, roundToPlace: 0, bulkType: 'none' });
+    // Inflation protection is on (the owner, 2026-10-12); the same write without it is for a TornW3B that minds.
+    assert.deepEqual(body.items[0], { itemID: 263, pricingType: 'fixed', pricingValue: 14544, inflationProtectionEnabled: true, roundToPlace: 0, bulkType: 'none' });
+    assert.equal(putBody(diff, { inflation: false }).items[0].inflationProtectionEnabled, false);
     assert.ok(!JSON.stringify(body).includes('206'), 'Xanax is not ours to touch');
+    // Every price again, also the one that reads the same: a write that turns something on for the whole list.
+    assert.deepEqual(listDiff(current, want, [274, 263, 215, 186], { all: true }).set.map((x) => x.itemID), [274, 263, 215]);
+});
+
+test('your list as TornW3B really answers it: a row per item with what it pays now (the zip of 2026-10-12)', () => {
+    // 24 prices were written and taken, and the list read back empty: only the documentation's shape was read.
+    const real = parseOwnList([
+        { itemId: -1, name: 'Plushie Set', buyPrice: 282000, bulkThreshold: null, bulkBuyPrice: null },
+        { itemId: 274, name: 'Panda Plushie', buyPrice: 34946, bulkThreshold: null, bulkBuyPrice: null },
+        { itemId: 263, name: 'Crocus', buyPrice: 13800, bulkThreshold: null, bulkBuyPrice: null },
+        { itemId: 206, name: 'Xanax', buyPrice: 0, bulkThreshold: null, bulkBuyPrice: null },
+    ]);
+    assert.deepEqual([...real], [['274', { type: 'pays', value: 34946 }], ['263', { type: 'pays', value: 13800 }]], 'no price is not on the list; a whole set is not a piece');
+    const diff = listDiff(real, desiredList(pieces, true), [274, 263, 215]);
+    assert.equal(diff.same, 1, 'the same dollars read the same');
+    assert.deepEqual(diff.set, [{ itemID: 263, price: 14544, was: 13800 }, { itemID: 215, price: 919, was: null }], 'a price changed on the page of TornW3B is seen');
+});
+
+test('a piece you hold too many of is not on your list - unless a trade that just ended still needs it for its receipt', () => {
+    const stock = [{ id: 274, pay: 34946, ahead: 0 }, { id: 263, pay: 14544, ahead: 12 }, { id: 215, pay: 919, ahead: 3 }];
+    assert.deepEqual(desiredList(stock, true).map((x) => x.itemID), [274]);
+    assert.deepEqual(desiredList(stock, true, new Set(['215'])).map((x) => x.itemID), [274, 215]);
+    assert.deepEqual(desiredList(stock, false, new Set(['215'])), []);
+    // On your list from before: it comes off.
+    const diff = listDiff(parseOwnList([{ itemId: 274, buyPrice: 34946 }, { itemId: 263, buyPrice: 14544 }]), desiredList(stock, true), [274, 263, 215]);
+    assert.deepEqual([diff.same, diff.set, diff.remove], [1, [], [{ itemID: 263, was: 14544 }]]);
 });
 
 test('closing takes your pieces off the list and leaves the rest', () => {
@@ -166,22 +194,72 @@ test('closing takes your pieces off the list and leaves the rest', () => {
     assert.equal(listMatches(listDiff(parseOwnList([]), [], [274])), true);
 });
 
-test('a receipt: one line per piece, checked against the Archive\'s own sum', () => {
-    const body = receiptBody(98765, [{ id: 274, qty: 5 }, { id: 274, qty: 2 }, { id: 263, qty: 3 }, { id: 215, qty: 0 }], 4242);
-    assert.deepEqual(body, { items: [{ itemID: 274, quantity: 7 }, { itemID: 263, quantity: 3 }], tradeID: '98765', buyerPlayerId: 4242, includeMessage: true });
+test('a receipt: one line per piece, checked against the sum the Archive worked out', () => {
+    const rows = [{ id: 274, qty: 5 }, { id: 274, qty: 2 }, { id: 263, qty: 3 }, { id: 215, qty: 0 }];
+    const items = [{ itemID: 274, quantity: 7 }, { itemID: 263, quantity: 3 }];
+    // The three forms the request is tried in (1.3.3): which TornW3B takes is not known.
+    assert.equal(RECEIPT_FORMS, 3);
+    assert.deepEqual(receiptBody('98765', rows, '4242'), { items, tradeID: 98765, buyerPlayerId: 4242, includeMessage: true });
+    assert.deepEqual(receiptBody('98765', rows, '4242', 1), { items, tradeID: 98765 });
+    assert.deepEqual(receiptBody('98765', rows, '4242', 2), { items, tradeID: '98765' });
     const ok = readReceipt({ receipt: { total_value: 288254, items: [] }, receiptURL: 'https://weav3r.dev/receipt/abc', message: 'hi' }, 288254);
-    assert.deepEqual([ok.ok, ok.url, ok.differs], [true, 'https://weav3r.dev/receipt/abc', 0]);
+    assert.deepEqual([ok.ok, ok.url, ok.differs, ok.id], [true, 'https://weav3r.dev/receipt/abc', 0, 'abc']);
     const off = readReceipt({ receipt: { total_value: 280000 }, warnings: { notPriced: ['Crocus'] } }, 288254);
-    assert.deepEqual([off.ok, off.differs, off.missing], [false, -8254, ['Crocus']]);
+    assert.deepEqual([off.ok, off.differs, off.missing, off.url, off.id], [false, -8254, ['Crocus'], '', null]);
     assert.equal(readReceipt(null, 5).ok, false);
+    assert.equal(receiptLink('3PMnLXoyyX'), 'https://weav3r.dev/receipt/3PMnLXoyyX');
+    assert.equal(receiptIdOf('https://weav3r.dev/receipt/3PMnLXoyyX?x=1'), '3PMnLXoyyX');
+    assert.equal(receiptLink(null), '');
 });
 
-test('receipts by Torn trade, and how long TornW3B keeps listing you', () => {
-    const by = receiptsByTrade([{ id: 'r1', trade_id: 98765, total_value: 5 }, { id: 'r2' }]);
-    assert.deepEqual(by.get('98765'), { id: 'r1', total: 5, at: null });
-    assert.equal(by.size, 1);
+test('a receipt read from TornW3B: its pieces, its link, and how long TornW3B keeps listing you', () => {
+    const one = receiptOf({ id: 'r1', trade_id: 98765, total_value: 5, created_at: '2026-10-12T05:14:36.000Z', items: [{ item_id: 384, quantity: 1241 }, { item_id: 271, quantity: 20 }] });
+    assert.deepEqual(one, { id: 'r1', tid: '98765', total: 5, at: Date.UTC(2026, 9, 12, 5, 14, 36), rows: [{ id: 384, qty: 1241 }, { id: 271, qty: 20 }], url: 'https://weav3r.dev/receipt/r1' });
+    // Made on the form of TornW3B, which asks for no trade number.
+    assert.equal(receiptOf({ id: 'r2', total_value: 5 }, T0).tid, '');
+    assert.equal(receiptOf({ id: 'r2', total_value: 5 }, T0).at, T0);
+    assert.equal(receiptOf({ total_value: 5 }), null);
     assert.equal(listedUntil(T0), T0 + 7 * 86400000);
     assert.equal(listedUntil(0), 0);
+});
+
+test('receipts kept: the same receipt is one entry, and a link kept is never lost to a read without one', () => {
+    // Made here: the answer named a link and no id of its own.
+    let list = [['7001', { id: null, tid: '7001', total: 500, url: 'https://weav3r.dev/receipt/kept', at: T0, rows: [{ id: 274, qty: 2 }] }]];
+    list = receiptsWith(list, receiptOf({ id: 'abc', trade_id: 7001, total_value: 500, items: [{ item_id: 274, quantity: 2 }] }, T0 + MIN));
+    assert.equal(list.length, 1);
+    assert.deepEqual([list[0][0], list[0][1].id, list[0][1].url], ['7001', 'abc', 'https://weav3r.dev/receipt/kept']);
+    // Read again: still one.
+    list = receiptsWith(list, receiptOf({ id: 'abc', trade_id: 7001, total_value: 500, items: [{ item_id: 274, quantity: 2 }] }, T0 + 2 * MIN));
+    assert.equal(list.length, 1);
+    // One made with no trade number is kept under its own id until a trade takes it.
+    list = receiptsWith(list, receiptOf({ id: 'zz9', total_value: 9, items: [] }, T0));
+    assert.deepEqual(list.map(([k]) => k), ['7001', 'r:zz9']);
+});
+
+test('a receipt made on the page of TornW3B goes to the finished trade with the same pieces (2026-10-12)', () => {
+    // Torn numbered the trade 13521417 while it was open and 7579996 once it had ended.
+    const finished = [
+        { id: '7580112', t: T0 + 90 * MIN, rows: [{ id: 384, qty: 60 }, { id: 264, qty: 15 }, { id: 385, qty: 15 }] },
+        { id: '7579996', t: T0, rows: [{ id: 384, qty: 1241 }, { id: 271, qty: 20 }, { id: 269, qty: 35 }] },
+        { id: '7576951', t: T0 - 600 * MIN, rows: [{ id: 384, qty: 340 }, { id: 274, qty: 38 }] },
+    ];
+    const ids = [384, 264, 385, 271, 269, 274];
+    const made = { id: '3PMnLXoyyX', tid: '13521417', total: 84214845, at: T0 + 23 * MIN, url: 'https://weav3r.dev/receipt/3PMnLXoyyX', rows: [{ id: 269, qty: 35 }, { id: 384, qty: 1241 }, { id: 271, qty: 20 }, { id: 206, qty: 3 }] };
+    const out = claimReceipts([['13521417', made]], finished, ids);
+    assert.deepEqual(out.map(([k]) => k), ['7579996'], 'the pieces and counts are the same: Xanax on the receipt is not looked at');
+    assert.equal(out[0][1].url, 'https://weav3r.dev/receipt/3PMnLXoyyX');
+    // A trade that has its receipt takes no second one; other counts are another trade; a day apart is too far.
+    assert.deepEqual(claimReceipts([['7579996', made], ['x', { ...made, id: 'other' }]], finished, ids).map(([k]) => k), ['7579996', 'x']);
+    assert.deepEqual(claimReceipts([['x', { ...made, rows: [{ id: 384, qty: 1240 }] }]], finished, ids).map(([k]) => k), ['x']);
+    assert.deepEqual(claimReceipts([['x', { ...made, at: T0 + 25 * 60 * MIN }]], finished, ids).map(([k]) => k), ['x']);
+    // One kept without its pieces (as until 1.3.2) is no trade's until it is read again.
+    assert.deepEqual(claimReceipts([['13521417', { id: '3PMnLXoyyX', total: 1, url: '', at: T0 }]], finished, ids).map(([k]) => k), ['13521417']);
+});
+
+test('the pieces of a trade that just ended stay on your list until its receipt is made', () => {
+    const finished = [{ id: '1', t: T0, rows: [{ id: 274, qty: 3 }] }, { id: '2', t: T0, rows: [{ id: 263, qty: 1 }] }, { id: '3', t: T0 - RECEIPT_OWED_MS, rows: [{ id: 215, qty: 1 }] }];
+    assert.deepEqual([...owedPieces(finished, new Map([['2', {}]]), T0 + MIN)], ['274']);
 });
 
 // ---- trades ----------------------------------------------------------------------------------------------------------

@@ -452,6 +452,41 @@ function pgTrade(v, t) {
         <div class="pb flush"><div class="after">${after}<div class="af" style="grid-template-columns:minmax(0,1fr);color:var(--text2)"><span>${sets}</span></div></div></div></div>`;
 }
 
+/**
+ * A finished trade's receipt: "View receipt" once TornW3B has one for it (its link and what to send the seller
+ * are in the box that opens), else the button that makes it - and, where there is room for words, why a try
+ * made none. The owner, 2026-10-12: "i need that link, saved somewhere as well like a view button, then popup
+ * copy receipt link".
+ */
+function pgReceipt(d, f, words = true) {
+    if (!(d.keys && d.keys.w3b && d.keys.w3b.set)) return '';
+    if (f.receipt) return `<button class="btn sm" data-act="pop" data-v="receipt" data-id="${hEsc(f.id)}">View receipt</button>`;
+    const busy = !!d.busy && d.busy.receipt === f.id;
+    const why = f.why ? `<span class="t-bad" style="margin-right:8px">${hEsc(f.why)}</span>` : f.listed ? '' : '<span class="t-muted" style="margin-right:8px">not priced on your TornW3B list</span>';
+    return `${words ? why : ''}<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${f.why && !words ? ` title="${hEsc(f.why)}"` : ''}${busy ? ' disabled' : ''}>${busy ? 'Making it' : 'Generate receipt'}</button>`;
+}
+
+/**
+ * The box over the page (hub.js draws it while `ui.pop` is set): a trade's receipt - its link to copy, and
+ * what to send the seller with it. '' when there is nothing to show (the trade is gone): the box closes.
+ */
+export function hubPop(d, ui) {
+    const pop = ui.pop;
+    if (!pop || pop.kind !== 'receipt') return '';
+    const f = d.view.trades.finished.find((x) => String(x.id) === String(pop.id));
+    if (!f || !f.receipt) return '';
+    const r = f.receipt;
+    const differs = r.total > 0 && r.total !== f.paid;
+    return `<h2>Receipt · ${hEsc(f.who)}</h2>
+    <p>${hPlural(f.units, 'piece')} · ${hWhen(f.t)} · you paid <b class="num">${hMoney(f.paid)}</b>${r.total > 0 ? ` · the receipt says <b class="num${differs ? ' t-warn' : ''}">${hMoney(r.total)}</b>` : ''}</p>
+    ${differs ? '<p class="t-muted">TornW3B makes a receipt from your list as it stands when the receipt is made, so its total can differ from what you paid.</p>' : ''}
+    ${r.url ? `<div class="pop-l">The receipt's link</div><div class="msg pop-m">${hEsc(r.url)}</div>
+    <div class="pop-b"><button class="btn go" data-act="copy" data-v="${hEsc(r.url)}">Copy receipt link</button>${hOut(r.url, 'Open it', 'btn out')}</div>
+    <div class="pop-l">To send the seller</div><div class="msg pop-m">${hEsc(f.thanks)}</div>
+    <div class="pop-b"><button class="btn go" data-act="copy" data-v="${hEsc(f.thanks)}">Copy the message</button><span class="sp"></span><button class="btn" data-act="pop-close">Close</button></div>`
+        : `<p>TornW3B made it and has not said its link yet: it comes with the next read of your receipts.</p><div class="pop-b"><span class="sp"></span><button class="btn" data-act="pop-close">Close</button></div>`}`;
+}
+
 function pgTrades(d, ui) {
     const v = d.view;
     const open = v.trades.open;
@@ -460,7 +495,7 @@ function pgTrades(d, ui) {
     return `<section class="page g2r on">
     <div class="col">
       <div class="panel" data-k="open"><div class="ph"><h2>Open with you</h2><span class="sp"></span>${open.length ? `<span class="badge ${wait ? 'ahead' : ''}">${wait} ${wait === 1 ? 'waits' : 'wait'} for you</span>` : ''}</div><div class="pb flush">${open.length ? open.map((t) => `<div class="li ${sel && t.id === sel.id ? 'sel' : ''}" data-act="trade" data-id="${hEsc(t.id)}" style="cursor:pointer"><span class="av ${t.state === 'new' ? 'new' : ''}">${hEsc(String(t.who || '?')[0])}</span><span class="li-m"><b>${hEsc(t.who)}</b><span>${hPlural(t.items, 'item')} · ${t.ago}</span></span><span class="amt"><b class="num">${hMoney(t.total)}</b><span class="st ${t.state}">${TURN_WORDS[t.state]}</span></span></div>`).join('') : pgNone('No trade is open with you.')}</div></div>
-      <div class="panel grow" data-k="fin"><div class="ph"><h2>Finished</h2><span class="sp"></span><button class="btn sm" data-go="ledger" data-pane="3">Receipts</button></div><div class="pb flush">${v.trades.finished.length ? v.trades.finished.slice(0, 12).map((f) => `<div class="li"><span class="av">${hEsc(String(f.who || '?')[0])}</span><span class="li-m"><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b><span>${hPlural(f.units, 'piece')} · ${hWhen(f.t)}</span></span><b class="num">${hMoney(f.paid)}</b></div>`).join('') : pgNone('None yet.')}</div></div>
+      <div class="panel grow" data-k="fin"><div class="ph"><h2>Finished</h2><span class="sp"></span><button class="btn sm" data-go="ledger" data-pane="3">Receipts</button></div><div class="pb flush">${v.trades.finished.length ? v.trades.finished.slice(0, 12).map((f) => `<div class="li"><span class="av">${hEsc(String(f.who || '?')[0])}</span><span class="li-m"><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b><span>${hPlural(f.units, 'piece')} · ${hWhen(f.t)}${f.why ? ' · <span class="t-bad">receipt not made</span>' : ''}</span></span><b class="num">${hMoney(f.paid)}</b>${pgReceipt(d, f, false)}</div>`).join('') : pgNone('None yet.')}</div></div>
     </div>
     <div class="col">${pgTrade(v, sel)}</div>
   </section>`;
@@ -575,11 +610,16 @@ function pgW3b(d) {
     if (!key.set) body = '<div class="row"><span class="grow1">Paste the key you registered on TornW3B to keep your price list there at your rate, and to make a receipt for a trade.</span><button class="btn sm" data-go="settings">Settings</button></div>';
     else if (w.error) { badge = '<span class="badge bad">not read</span>'; body = `<div class="row"><span class="grow1 t-bad">${hEsc(w.error)}</span><button class="btn sm" data-act="w3b" data-v="read">Read again</button></div>`; }
     else if (!w.known) { badge = '<span class="badge">reading</span>'; body = '<div class="row"><span class="grow1 t-muted">Your list on TornW3B has not been read yet.</span></div>'; }
-    else if (w.matches) { badge = '<span class="badge ok">matches your prices</span>'; body = `<div class="row"><span class="grow1">${d.view.prices.open ? `Every piece is on it at ${d.view.prices.paid || hRate(d.view.prices.pct) + '%'}.` : 'No set piece is on it: your shop is closed.'}</span></div>`; }
+    else if (w.matches) { badge = '<span class="badge ok">matches your prices</span>'; body = `<div class="row"><span class="grow1">${d.view.prices.open ? `${w.over.length ? hPlural(w.on, 'piece') + ' are' : 'Every piece is'} on it at ${d.view.prices.paid || hRate(d.view.prices.pct) + '%'}.` : 'No set piece is on it: your shop is closed.'}</span></div>`; }
     else {
+        // Kept by itself, a list that differs is written within two minutes - unless something holds the write
+        // (`held`: the engine's own words for it). Then the reason is said and the button is yours.
+        const held = w.sync ? String((d.busy && d.busy.held) || '') : '';
         badge = `<span class="badge ahead">${hPlural(w.diff.set.length + w.diff.remove.length, 'price')} differ</span>`;
-        body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${w.waits ? ' <span class="t-muted">Written by itself when your prices are next fixed.</span>' : ''}</span>${w.sync && !w.waits ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
+        body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
     }
+    // The pieces you hold too many of are not on your list, and come back by themselves.
+    if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
     const listed = !key.set ? '' : w.listedUntil > d.view.at ? `Buyers see your list until ${hDay(w.listedUntil)}: TornW3B shows it for 7 days after a receipt.` : 'Buyers do not see your list: TornW3B shows it for 7 days after a receipt.';
     return `<div class="panel" data-k="w3b"><div class="ph"><h2>Your price list on TornW3B</h2><span class="sp"></span>${badge}</div><div class="pb"><div class="rows">${body}
         ${key.set ? `<div class="field"><span class="f-l">Keep it at my rate by itself<span>${listed}</span></span>${pgSeg('w3bSync', d.view.settings.w3bSync ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>` : ''}
@@ -644,8 +684,8 @@ function pgPrices(d) {
       <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
       ${pgW3b(d)}
       <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-        <div class="msg"><b>${hEsc(pr.forum.title)}</b><br>${hEsc(pr.forum.post).replace(/\n/g, '<br>')}</div>
-        <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
+        <div class="msg"><b>${hEsc(pr.forum.title)}</b><br>${pr.forum.html}</div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
       </div></div>
       <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
     </div>
@@ -692,9 +732,8 @@ function pgLedger(d, ui) {
         <div class="pb" style="display:flex;flex-direction:column"><div class="legend" style="margin-bottom:4px">${pgKey('Bazaars', 'var(--s-gold)', 1)}${pgKey('Item Market', 'var(--s-violet)', 1)}${pgKey('Trades with you', 'var(--s-aqua)', 1)}</div><div style="flex:1;position:relative;min-height:0"><div class="chart" data-chart="bought" style="inset:0"></div></div></div></div>`);
     }
     if (ui.pane === 3) {
-        const hasKey = d.keys && d.keys.w3b && d.keys.w3b.set;
-        const rows = v.trades.finished.map((f) => `<tr><td>${hWhen(f.t)}</td><td><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b></td><td class="n">${hNum(f.units)}</td><td class="n"><b>${hMoney(f.paid)}</b></td><td class="n"><span class="t-muted">${f.rate ? hPct(f.rate) : ''}</span></td><td class="n">${f.receipt && f.receipt.url ? hOut(f.receipt.url, 'Receipt', 'btn sm out') : f.receipt ? '<span class="t-muted">made</span>' : hasKey ? `${f.listed ? '' : '<span class="t-muted" style="margin-right:8px">not priced on your TornW3B list</span>'}<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${d.busy && d.busy.receipt === f.id ? ' disabled' : ''}>Make the receipt</button>` : ''}</td></tr>`).join('');
-        return one('rec', 'Receipts', v.trades.receiptsError ? 'TornW3B does not give your receipts: ' + hEsc(v.trades.receiptsError) : 'one per trade · made on TornW3B by itself, from your list there, when a trade ends', rows && `<table class="t"><thead><tr><th>When</th><th>Seller</th><th class="n">Pieces</th><th class="n">You paid</th><th class="n">Rate</th><th></th></tr></thead><tbody>${rows}</tbody></table>`, 'No finished trade yet.');
+        const rows = v.trades.finished.map((f) => `<tr><td>${hWhen(f.t)}</td><td><b>${hOut(hProfileUrl(f.whoId), hEsc(f.who))}</b></td><td class="n">${hNum(f.units)}</td><td class="n"><b>${hMoney(f.paid)}</b></td><td class="n"><span class="t-muted">${f.rate ? hPct(f.rate) : ''}</span></td><td class="n">${pgReceipt(d, f)}</td></tr>`).join('');
+        return one('rec', 'Receipts', v.trades.receiptsError ? 'TornW3B does not give your receipts: ' + hEsc(v.trades.receiptsError) : 'one per trade · made on TornW3B from your list there, by itself when a trade ends · View receipt has its link', rows && `<table class="t"><thead><tr><th>When</th><th>Seller</th><th class="n">Pieces</th><th class="n">You paid</th><th class="n">Rate</th><th></th></tr></thead><tbody>${rows}</tbody></table>`, 'No finished trade yet.');
     }
     if (ui.pane === 4) {
         const rows = lg.sellers.map((s) => `<tr><td><b>${hOut(hProfileUrl(s.whoId), hEsc(s.who || 'Seller ' + s.whoId))}</b></td><td class="n">${hNum(s.trades)}</td><td class="n">${hNum(s.units)}</td><td class="n"><b>${hMoney(s.paid)}</b></td><td>${hEsc(s.brings)}</td><td>${s.came}</td></tr>`).join('');

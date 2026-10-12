@@ -11,6 +11,9 @@
     ?todo=hot | hot,sell | trades | swap | sell   only these things under "Do now"
     ?list=1    the shopping list made at once      ?run=1  and its run started (Start is a link to Torn: not pressed here)
     ?w3bkey=refused   TornW3B refuses the key      ?back=1 a buy that Torn's log did not have, taken back
+    ?receipt=fail     "Generate receipt" makes none, and the row says why (else it makes one, with its link)
+    ?over=1           you hold too many of two pieces: off your TornW3B list, struck out in the forum post
+    ?held=1           with ?w3b=differ: the list is not written by itself, and the panel says why
   Measured, not looked at: test/harness/measure.js (measureHub walks every page and tab at the window's size).
 -->
 <script type="module">
@@ -18,7 +21,7 @@ import { mountHub } from '../../src/ui/hub.js';
 import { archiveView, viewPiece } from '../../src/core/view.js';
 import { archiveSettings, buysFrom } from '../../src/core/settings.js';
 import { fillList, cheapPieces, toggleLine, dropLine, stopsOf, runStart, runNext, runTook, runAt, RUN_IDLE, placeOf, listAfterRun, addAll, dropPiece, dropPlaces } from '../../src/core/shopping.js';
-import { desiredList, parseOwnList } from '../../src/core/tw3b-list.js';
+import { parseOwnList } from '../../src/core/tw3b-list.js';
 import { tradeNotice } from '../../src/core/trades.js';
 import { fixtureInput } from '../fixture-view.js';
 import { serverLines } from '../../src/core/server.js';
@@ -45,7 +48,8 @@ const rnd = (() => { let s = 7; return () => (s = (s * 1664525 + 1013904223) >>>
 const usage = { torn: Array.from({ length: 60 }, (_, i) => Math.round(28 + 18 * Math.sin(i / 7) + rnd() * 14)), w3b: Array.from({ length: 60 }, (_, i) => Math.round(8 + 5 * Math.cos(i / 9) + rnd() * 6)), refused: 0 };
 usage.nowTorn = usage.torn[59];
 usage.nowW3b = usage.w3b[59];
-const busy = { w3b: false, receipt: null };
+const busy = { w3b: false, receipt: null, held: q.has('held') ? 'TornW3B took this same write and its list still reads differently: it is not sent again by itself until something changes - your own press still sends it' : '' };
+if (q.has('over')) { const all = input.held; input.held = (id) => all(id) + (Number(id) === 215 || Number(id) === 263 ? 400 : 0); }
 // ?server=ok | old | update | password | down | saved (anything else: off)
 // ?server=ours | alone | asking: the server built into the copy - connected, a PC it does not serve, Torn has not said who you are
 const SERVER_STATES = {
@@ -71,7 +75,7 @@ const only = (view) => { if (q.has('todo')) { const keep = q.get('todo').split('
 function desk() {
     const view = only(archiveView(input));
     if (q.get('w3b') && input.w3b) {
-        const want = desiredList(view.pieces, view.settings.open);
+        const want = view.prices.w3b.want;
         const list = q.get('w3b') === 'match' && !input.w3bSent ? want : input.w3bSent || [...want.slice(3)].map((x, i) => (i < 2 ? { ...x, price: x.price - 100 } : x));
         input.w3b = { ...input.w3b, list: q.get('w3b') === 'error' ? null : parseOwnList({ items: list.map((x) => ({ itemID: x.itemID, pricingType: 'fixed', pricingValue: x.price })) }), listAt: now, error: q.get('w3b') === 'error' ? 'TornW3B did not answer (timed out). Tried again in a minute.' : '' };
         return { view: only(archiveView(input)), keys, usage, turns: q.has('behind') ? { mode: 'behind', why: 'trading-in-view', torn: 12, w3b: 8 } : { mode: 'alone', why: '', torn: 85, w3b: 80 }, busy, notice, server: serverOf(), version: 'harness' };
@@ -124,13 +128,18 @@ const hub = mountHub(document, {
         show();
     },
     read() { input.pricesAt = Date.now(); input.pointsAt = Date.now(); show(); },
-    copy(text) { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}); },
+    copy(text, html) { window.copied = { text, html: html || '' }; navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}); },
     keySave(kind) { keys[kind] = { set: true, ok: true }; show(); },
     keyForget(kind) { keys[kind] = { set: false }; show(); },
     keyShow(kind) { keys[kind] = { ...keys[kind], shown: keys[kind].shown ? '' : 'made-up-key-0000' }; show(); },
     zip() { console.log('zip'); },
-    w3b(op) { if (op === 'send') { const v = archiveView(input); input.w3bSent = desiredList(v.pieces, v.settings.open); } show(); },
-    receipt(id) { input.w3b.receipts.set(String(id), { id: 'r' + id, total: 0, url: '' }); show(); },
+    w3b(op) { if (op === 'send') { input.w3bSent = archiveView(input).prices.w3b.want; } show(); },
+    receipt(id) {
+        const f = input.finished.find((x) => String(x.id) === String(id));
+        if (q.get('receipt') === 'fail') input.w3b = { ...input.w3b, tried: { ...(input.w3b.tried || {}), [id]: { n: 3, at: Date.now(), why: 'TornW3B does not take the request: {"error":"Invalid request body"}' } } };
+        else input.w3b.receipts.set(String(id), { id: 'r' + id, total: f ? f.paid : 0, url: 'https://weav3r.dev/receipt/r' + id, at: Date.now(), rows: f ? f.rows : [] });
+        show();
+    },
     usageExport() { console.log('export'); },
     notifyTest() { const t = desk().view.trades.open[2]; if (t) { notice = tradeNotice(t, t.items, t.total); hub.toast({ ...notice, tradeId: t.id }); show(); } },
 });

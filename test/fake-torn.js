@@ -161,12 +161,22 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
              */
             inventoryHourly: false,
             /**
-             * What GET /api/pricelist/{you} answers. UNSURE.
-             *   'config' = { items: [{ itemID, pricingType, pricingValue }] }: what core/tw3b-list.js parseOwnList reads.
-             *   'public' = [{ itemId, name, buyPrice }]: what the same route answered for other traders' lists in
-             *              Torn Bids (api/w3b.js fetchW3bPriceList, core/traders.js parseW3bPriceList).
+             * What GET /api/pricelist/{you} answers.
+             *   'public' = [{ itemId, name, buyPrice, bulkThreshold, bulkBuyPrice }], a row for every item, 0 where
+             *              it has no price, and TornW3B's own whole sets under ids below 1. SEEN: it is what the route
+             *              answers for every trader's list in Torn Bids (core/traders.js parseW3bPriceList), and
+             *              the owner's zip of 2026-10-12 05:11 showed the other shape is never what comes back
+             *              (24 prices written and taken, the list read back empty).
+             *   'config' = { items: [{ itemID, pricingType, pricingValue }] }: the documentation's, as written.
              */
-            ownListShape: 'config',
+            ownListShape: 'public',
+            /**
+             * Which form of the receipt request TornW3B takes (core/tw3b-list.js RECEIPT_FORMS); the others get
+             * 400 "Invalid request body", as the owner's did on 2026-10-12. null: any. UNSURE which it is.
+             */
+            receiptForm: null,
+            /** The receipt's answer names its link. Off: only the receipt, as a TornW3B that says less would. */
+            receiptLink: true,
             /** Whether a finished trade also writes a "Trade money outgoing" row to your log. UNSURE (state.js outLogTypes looks for one). */
             logTradeMoney: false,
             /** What `from` on /v2/user/trades goes by: when the trade 'completed', or when it was 'created'. UNSURE. */
@@ -657,7 +667,9 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             if (method === 'GET') {
                 if (!mine) return answer(404, { error: 'Pricelist not found for this user' });
                 if (world.options.ownListShape === 'public') {
-                    return answer(200, world.w3b.priceList.map((e) => ({ itemId: e.itemID, name: (world.items[e.itemID] || {}).name || '', buyPrice: priceOnList(e), marketPrice: (world.items[e.itemID] || {}).mv || 0 })));
+                    const on = new Map(world.w3b.priceList.map((e) => [e.itemID, e]));
+                    const row = (id, name, pays) => ({ itemId: id, name, buyPrice: pays, bulkThreshold: null, bulkBuyPrice: null });
+                    return answer(200, [row(-1, 'Plushie Set', 0), row(-2, 'Flower Set', 0), ...Object.values(world.items).map((it) => row(it.id, it.name, on.has(it.id) ? priceOnList(on.get(it.id)) : 0))]);
                 }
                 return answer(200, { items: ftCopy(world.w3b.priceList) });
             }
@@ -680,6 +692,9 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
                 // A receipt for one trade, priced from this player's list. No key in TornW3B's spec.
                 if (!mine) return answer(404, { error: 'Pricelist not found for this user' });
                 if (!body || body.tradeID == null || !Array.isArray(body.items)) return answer(400, { error: 'tradeID and items are required' });
+                const form = typeof body.tradeID === 'number' ? ('includeMessage' in body ? 0 : 1) : 2;
+                world.w3b.receiptAsks = [...(world.w3b.receiptAsks || []), form];
+                if (world.options.receiptForm != null && world.options.receiptForm !== form) return answer(400, { error: 'Invalid request body' });
                 const lines = [];
                 const warnings = { notFound: [], notPriced: [] };
                 for (const it of body.items) {
@@ -699,7 +714,7 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
                     created_at: whenIso, updated_at: whenIso,
                     items: lines.map((l) => ({ item_id: l.id, item_name: l.name, quantity: l.quantity, price_used: l.priceUsed, total_value: l.totalValue, market_price_at_time: (world.items[l.id] || {}).mv || 0 })),
                 });
-                return answer(200, { receipt: { items: lines, total_value: total }, receiptURL: 'https://weav3r.dev/receipt/' + rid, warnings, ...(body.includeMessage ? { message: 'Thank you for the trade.' } : {}) });
+                return answer(200, { receipt: { items: lines, total_value: total }, ...(world.options.receiptLink ? { receiptURL: 'https://weav3r.dev/receipt/' + rid } : {}), warnings, ...(body.includeMessage ? { message: 'Thank you for the trade.' } : {}) });
             }
         }
 

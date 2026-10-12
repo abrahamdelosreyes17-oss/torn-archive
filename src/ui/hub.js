@@ -5,7 +5,7 @@
 import { HUB_CSS } from './hub-css.js';
 import { hEsc, hMoney, hShort, hRate, hAge, hIcon, hPic } from './fmt.js';
 import { lineChart, colChart } from './charts.js';
-import { HUB_PAGES, hubTabs, hubPage, hubChart } from './hub-pages.js';
+import { HUB_PAGES, hubTabs, hubPage, hubChart, hubPop } from './hub-pages.js';
 import { SET_LOOK } from '../core/view.js';
 
 // What the drawing's stylesheet has no word for: real boxes to type in, links that look like buttons, an empty graph.
@@ -55,6 +55,7 @@ function hubShell() {
   <div class="view" id="view"></div>
   <footer class="tape"><div class="tape-l">Cheapest now</div><div class="tape-m"><div class="tape-t" id="tape"></div></div></footer>
   <div class="toast" id="toast"><span class="nx-i" style="--c:#c9bfff;--c-bg:var(--brand-bg)">${hIcon('trades')}</span><div><b id="toast-t"></b><span class="s" id="toast-s"></span></div><button class="btn sm go" id="toast-go">See it</button><button class="x" id="toast-x" title="Close">×</button></div>
+  <div class="pop" id="pop"><div class="card" id="pop-card"></div></div>
   <div class="paused" id="paused"><div class="card" id="paused-card"></div></div>
 </div>
 </div>`;
@@ -214,6 +215,15 @@ export function mountHub(doc, actions) {
         if (card._src !== html) { card.innerHTML = html; card._src = html; }
     }
 
+    /** The box over the page: a trade's receipt (ui.pop). It closes by itself when what it showed is gone. */
+    function drawPop() {
+        const html = ui.pop ? hubPop(desk, ui) : '';
+        if (ui.pop && !html) ui.pop = null;
+        $('#pop').classList.toggle('on', !!html);
+        const card = $('#pop-card');
+        if (card._src !== html) { card.innerHTML = html; card._src = html; }
+    }
+
     function fitTop() {
         const t = $('#top');
         t.classList.remove('tight', 'tighter');
@@ -224,6 +234,7 @@ export function mountHub(doc, actions) {
     function draw(fresh) {
         if (!desk) return;
         drawShell();
+        drawPop();
         const html = hubPage(desk, ui);
         // The piece whose sellers are on the screen: its bazaars are checked with Torn itself. Told when the piece
         // changes and once a minute while it stays - never on every draw: until 1.3.0 the telling asked for a draw,
@@ -299,13 +310,15 @@ export function mountHub(doc, actions) {
         else if (a === 'run') { ui.imKey = ''; act('run', v); }
         // The Item Market stop: the link opened the next piece's page; the run stays on the stop.
         else if (a === 'im-walk') { ui.imKey = v; draw(false); }
-        else if (a === 'copy') { act('copy', v); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
+        else if (a === 'copy') { act('copy', v, el.dataset.html || ''); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
         else if (a === 'key-save') { const box = $(`input[data-key="${v}"]`); const key = box ? box.value.trim() : ''; if (key) { box.value = ''; act('keySave', v, key); } }
         else if (a === 'key-forget') act('keyForget', v);
         else if (a === 'key-show') act('keyShow', v);
         else if (a === 'server-save') { const at = $('input[data-server="address"]'); const pw = $('input[data-server="pass"]'); act('serverSave', at ? at.value.trim() : '', pw ? pw.value.trim() : ''); if (pw) pw.value = ''; }
         else if (a === 'server-forget') act('serverForget');
         else if (a === 'receipt') act('receipt', id);
+        else if (a === 'pop') { ui.pop = { kind: v, id }; drawPop(); }
+        else if (a === 'pop-close') { ui.pop = null; drawPop(); }
         else if (a === 'w3b') act('w3b', v);
         else if (a === 'zip') act('zip');
         else if (a === 'usage-export') act('usageExport');
@@ -318,6 +331,8 @@ export function mountHub(doc, actions) {
 
     doc.addEventListener('click', (e) => {
         const t = e.target;
+        // A press beside the box closes it.
+        if (t.id === 'pop') { ui.pop = null; drawPop(); return; }
         const tab = t.closest('[data-tab]');
         if (tab) { ui.pane = Number(tab.dataset.tab); remember(false); draw(true); return; }
         const a = t.closest('[data-act]');
@@ -330,6 +345,7 @@ export function mountHub(doc, actions) {
         if (el.dataset && el.dataset.set) act('set', { [el.dataset.set]: setValue(el.dataset.set, el.value) });
     });
     doc.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && ui.pop) { ui.pop = null; drawPop(); return; }
         const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
         if (typing && e.key === 'Enter') { e.target.blur(); const k = e.target.dataset.key; if (k) { const b = $(`[data-act="key-save"][data-v="${k}"]`); if (b) b.click(); } if (e.target.dataset.server) { const b = $('[data-act="server-save"]'); if (b) b.click(); } return; }
         if (typing || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== 'n' || ui.page !== 'buy') return;

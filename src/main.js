@@ -10,7 +10,7 @@
 // receipts. The shared server, once you save its address and your password for it, is told bazaar and item numbers,
 // prices and counts - never a key, never your stock or your money. Nothing presses a button of Torn's.
 
-import { gmGet, gmSet, gmDel, gmMenu, gmOpenTab, gmOnChange, gmCopy, gmSend } from './platform/gm.js';
+import { gmGet, gmSet, gmDel, gmMenu, gmOpenTab, gmOnChange, gmCopy, gmCopyRich, gmSend } from './platform/gm.js';
 import { tabWindow } from './platform/tab-window.js';
 import { perfStart, perfTimed, perfRecord, perfMachine } from './platform/perf.js';
 import { TornApiClient } from './api/client.js';
@@ -537,7 +537,7 @@ function bootHub(tabId) {
         read: () => { logLine('note', 'Torn Archive', 'Pressed: Read now', null); engine.readNow(); step(); },
         // "Read my stock": your items and your log, ahead of the rest, and nothing else.
         readStock: () => { engine.act('readStock'); },
-        copy: (text) => gmCopy(text),
+        copy: (text, html) => (html ? gmCopyRich(text, html) : gmCopy(text)),
         keySave(kind, value) {
             if (!KEY_KINDS.includes(kind) || !value) return;
             gmSet('key.' + kind, String(value).trim());
