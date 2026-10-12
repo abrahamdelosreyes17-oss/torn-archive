@@ -256,8 +256,8 @@ function bootHub(tabId) {
         const hidden = document.visibilityState !== 'visible';
         if (s.notify === 'browser' && hidden && typeof Notification === 'function' && Notification.permission === 'granted') {
             try {
-                const note = new Notification(n.title, { body: n.body, tag: 'tarc-trade-' + (n.tradeId || '') });
-                note.onclick = () => { window.focus(); if (hub && n.tradeId) hub.go('trades', 0); note.close(); };
+                const note = new Notification(n.title, { body: n.body, tag: n.post ? 'tarc-post' : 'tarc-trade-' + (n.tradeId || '') });
+                note.onclick = () => { window.focus(); if (hub && n.tradeId) hub.go('trades', 0); else if (hub && n.post) hub.post(); note.close(); };
             } catch { /* the toast below still says it */ }
         }
         if (hub) hub.toast(n);
@@ -336,7 +336,7 @@ function bootHub(tabId) {
 
     function serverDesk() {
         const st = link.status();
-        return { ...serverLines(st, now()), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
+        return { ...serverLines(st, now()), ownAt: link.ownSaidAt(), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
     }
 
     // ---- what Torn's tabs told us ------------------------------------------------------------------------------
@@ -540,7 +540,8 @@ function bootHub(tabId) {
         readStock: () => { engine.act('readStock'); },
         copy: (text, html) => (html ? gmCopyRich(text, html) : gmCopy(text)),
         // "Copy the post": the engine keeps what that post says, to tell you when your thread is behind it.
-        posted: () => engine.act('posted'),
+        posted: (which) => engine.act('posted', which),
+        postedTop: (which) => engine.act('postedTop', which),
         keySave(kind, value) {
             if (!KEY_KINDS.includes(kind) || !value) return;
             gmSet('key.' + kind, String(value).trim());
@@ -563,7 +564,8 @@ function bootHub(tabId) {
             if (shown[kind]) setTimeout(schedule, REVEAL_MS + 100);
         },
         zip,
-        w3b: (op) => engine.act('w3b', op),
+        // "Update now": the server is told your price list again with an exchange that comes soon.
+        w3b: (op) => { if (op === 'update' && link) link.sayOwn(); engine.act('w3b', op); },
         receipt: (id) => engine.act('receipt', id),
         usageExport() { flushUsage(); download('torn-archive-usage-' + stamp() + '.csv', usageCsv(gmGet('usage', null), { by: 'minute' }), 'text/csv'); },
         notifyTest() {

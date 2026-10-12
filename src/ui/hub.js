@@ -5,7 +5,8 @@
 import { HUB_CSS } from './hub-css.js';
 import { hEsc, hMoney, hShort, hRate, hAge, hIcon, hPic } from './fmt.js';
 import { lineChart, colChart } from './charts.js';
-import { HUB_PAGES, hubTabs, hubPage, hubChart, hubPop } from './hub-pages.js';
+import { HUB_PAGES, hubTabs, hubPage, hubChart, hubPop, hubPostOf } from './hub-pages.js';
+import { setStruck, SET_RULE } from '../core/sets.js';
 import { SET_LOOK } from '../core/view.js';
 
 // What the drawing's stylesheet has no word for: real boxes to type in, links that look like buttons, an empty graph.
@@ -49,6 +50,7 @@ function hubShell() {
     <span class="pill" id="pill-pts"></span>
     <span class="pill opt" id="pill-hand"></span>
     <span class="pill opt" id="pill-vault"></span>
+    <button class="pill post" id="pill-post" data-act="pop" data-v="post" hidden></button>
     <span class="pill" id="pill-age"></span>
     <button class="btn" data-act="read">Read now</button>
   </header>
@@ -83,6 +85,13 @@ export function mountHub(doc, actions) {
     let shown = '';
     let tabsShown = '';
     let toastTrade = null;
+    let toastPost = false;
+    // Your own changes to a forum post, per post ('open' | 'closed'): { src, html, title } - `src` is the Archive's
+    // post they were made on. Kept in this browser until you take the Archive's post back.
+    const POST_EDIT_KEY = 'tarc-post-edit';
+    let postEdit = {};
+    try { const kept = JSON.parse(win.localStorage.getItem(POST_EDIT_KEY) || '{}'); if (kept && typeof kept === 'object') postEdit = kept; } catch { postEdit = {}; }
+    const keepPostEdit = () => { try { win.localStorage.setItem(POST_EDIT_KEY, JSON.stringify(postEdit)); } catch { /* kept for this page only */ } };
     let toastT = 0;
     let looked = { id: '', at: 0 };
     const view = $('#view');
@@ -182,6 +191,11 @@ export function mountHub(doc, actions) {
             if (flash) { pts.classList.remove('flash'); void pts.offsetWidth; pts.classList.add('flash'); }
         }
         const pill = (id, label, n) => { const el = $(id); el.hidden = n == null; if (n != null) el.innerHTML = `${label} <b class="num">${n >= 1e7 ? hShort(n) : hMoney(n)}</b>`; };
+        // Your forum post is behind your stock or your shop: on every page, and a press opens the post.
+        const behind = v.prices && v.prices.forum ? v.prices.forum.behind : null;
+        const pp = $('#pill-post');
+        pp.hidden = !behind;
+        if (behind) { pp.dataset.id = v.prices.open ? 'open' : 'closed'; pp.title = behind.words.join(' '); const html = `<b>Forum post behind</b>${behind.strike.length ? ` · ${behind.strike.length} full now` : ''}`; if (pp._src !== html) { pp.innerHTML = html; pp._src = html; } }
         pill('#pill-hand', 'On hand', v.top.onHand);
         pill('#pill-vault', 'Vault', v.top.vault);
         drawAge();
@@ -221,7 +235,43 @@ export function mountHub(doc, actions) {
         if (ui.pop && !html) ui.pop = null;
         $('#pop').classList.toggle('on', !!html);
         const card = $('#pop-card');
-        if (card._src !== html) { card.innerHTML = html; card._src = html; }
+        if (card._src !== html) { card.innerHTML = html; card._src = html; fillPost(); }
+    }
+
+    /** The post in the box: your own changes put over the Archive's, and what goes with them shown. */
+    function fillPost() {
+        const box = $('#pop-post');
+        if (!box) return;
+        const which = box.dataset.which;
+        const f = hubPostOf(desk, which);
+        const mine = postEdit[which];
+        if (mine && typeof mine.html === 'string') { box.innerHTML = mine.html; if (typeof mine.title === 'string') $('#pop-title').value = mine.title; }
+        $('#pop-back').hidden = !mine;
+        $('#pop-moved').hidden = !(mine && f && mine.src !== f.html);
+    }
+
+    /** Typed in the box: kept at once, and nothing is drawn again for it. */
+    function postTyped() {
+        const box = $('#pop-post');
+        if (!box) return;
+        const which = box.dataset.which;
+        const f = hubPostOf(desk, which);
+        const had = postEdit[which];
+        postEdit[which] = { src: had ? had.src : f ? f.html : '', html: box.innerHTML, title: $('#pop-title').value };
+        keepPostEdit();
+        $('#pop-back').hidden = false;
+    }
+
+    /** The post as plain text, from the box as it stands: a struck word with a line through each letter. */
+    function postPlain(box) {
+        const text = (n) => (n.nodeType === 3 ? n.nodeValue : n.nodeType !== 1 || n.tagName === 'BR' ? '' : /^(S|STRIKE|DEL)$/.test(n.tagName) ? setStruck(n.textContent) : [...n.childNodes].map(text).join(''));
+        return [...box.childNodes].map((n) => (n.nodeType === 1 && n.tagName === 'HR' ? SET_RULE : text(n))).join('\n');
+    }
+
+    function openPost(which) {
+        const open = desk && desk.view && desk.view.prices ? desk.view.prices.open : true;
+        ui.pop = { kind: 'post', id: which || (open ? 'open' : 'closed') };
+        drawPop();
     }
 
     function fitTop() {
@@ -318,6 +368,20 @@ export function mountHub(doc, actions) {
         else if (a === 'server-forget') act('serverForget');
         else if (a === 'receipt') act('receipt', id);
         else if (a === 'pop') { ui.pop = { kind: v, id }; drawPop(); }
+        // The forum post's box: what is copied is what the box shows, your changes with it.
+        else if (a === 'post-copy' || a === 'post-top' || a === 'post-title') {
+            const box = $('#pop-post');
+            if (!box) return;
+            const which = box.dataset.which;
+            const top = box.firstElementChild;
+            if (a === 'post-title') act('copy', $('#pop-title').value, '');
+            else if (a === 'post-top') { if (!top) return; act('copy', top.textContent.trim(), top.outerHTML); }
+            else act('copy', postPlain(box), box.innerHTML);
+            const was = el.textContent;
+            el.textContent = 'Copied ✓';
+            win.setTimeout(() => { if (el.isConnected) el.textContent = was; if (a === 'post-copy') act('posted', which); else if (a === 'post-top') act('postedTop', which); }, 1400);
+        }
+        else if (a === 'post-reset') { const box = $('#pop-post'); if (box) { delete postEdit[box.dataset.which]; keepPostEdit(); $('#pop-card')._src = ''; drawPop(); } }
         else if (a === 'pop-close') { ui.pop = null; drawPop(); }
         else if (a === 'w3b') act('w3b', v);
         else if (a === 'zip') act('zip');
@@ -340,12 +404,22 @@ export function mountHub(doc, actions) {
         const g = t.closest('[data-go]');
         if (g) go(g.dataset.go, g.dataset.pane);
     });
+    // The forum post's box: every change of yours is kept; a paste comes in as plain words (nothing foreign).
+    doc.addEventListener('input', (e) => { const t = e.target; if (t && (t.id === 'pop-post' || t.id === 'pop-title')) postTyped(); });
+    doc.addEventListener('paste', (e) => {
+        const t = e.target && e.target.closest ? e.target.closest('#pop-post') : null;
+        if (!t) return;
+        e.preventDefault();
+        doc.execCommand('insertText', false, (e.clipboardData && e.clipboardData.getData('text/plain')) || '');
+    });
     doc.addEventListener('change', (e) => {
         const el = e.target;
         if (el.dataset && el.dataset.set) act('set', { [el.dataset.set]: setValue(el.dataset.set, el.value) });
     });
     doc.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && ui.pop) { ui.pop = null; drawPop(); return; }
+        // In the forum post's box every key is yours: no shortcut, and Enter is a new line.
+        if (e.target.isContentEditable) return;
         const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
         if (typing && e.key === 'Enter') { e.target.blur(); const k = e.target.dataset.key; if (k) { const b = $(`[data-act="key-save"][data-v="${k}"]`); if (b) b.click(); } if (e.target.dataset.server) { const b = $('[data-act="server-save"]'); if (b) b.click(); } return; }
         if (typing || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== 'n' || ui.page !== 'buy') return;
@@ -373,11 +447,12 @@ export function mountHub(doc, actions) {
 
     const toastOn = (on) => $('#toast').classList.toggle('on', on);
     $('#toast-x').onclick = () => toastOn(false);
-    $('#toast-go').onclick = () => { if (toastTrade) ui.trade = toastTrade; toastOn(false); go('trades'); };
-    function toast({ title, body, tradeId }) {
+    $('#toast-go').onclick = () => { toastOn(false); if (toastPost) { openPost(); return; } if (toastTrade) ui.trade = toastTrade; go('trades'); };
+    function toast({ title, body, tradeId, post }) {
         $('#toast-t').textContent = title || '';
         $('#toast-s').textContent = body || '';
         toastTrade = tradeId || null;
+        toastPost = !!post;
         toastOn(true);
         win.clearTimeout(toastT);
         toastT = win.setTimeout(() => toastOn(false), 9000);
@@ -404,6 +479,8 @@ export function mountHub(doc, actions) {
         },
         toast,
         go,
+        /** The forum post's box, on the post for the shop as it stands. */
+        post: () => openPost(),
     };
 }
 

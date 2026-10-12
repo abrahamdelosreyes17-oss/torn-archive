@@ -299,7 +299,14 @@ test('your forum thread: the title and post to copy, open and closed (mockup Z3)
     const struck = forumText({ open: true, pct: 101, stocks: over, sets: [PLUSHIE] });
     assert.ok(struck.post.includes(' · L̶i̶o̶n̶ · '), struck.post);
     assert.ok(struck.post.includes("\n\nCrossed out = I'm swimming in those. Try me again later.\n"), struck.post);
-    assert.ok(struck.html.includes(' · <s>Lion</s> · '), struck.html);
+    // 1.3.6: struck in red, word and line - the colour outside the <s>.
+    assert.ok(struck.html.includes(' · <font color="#f85149"><s>Lion</s></font> · '), struck.html);
+    // 1.3.6: the top line by itself, to paste over the one on the thread.
+    assert.equal(struck.top.text, 'OPEN FOR TRADES');
+    assert.equal(struck.top.html, '<div data-mce-style="text-align: center;" style="text-align: center;"><font size="5" color="#3fb950"><b>OPEN FOR TRADES</b></font></div>');
+    assert.ok(struck.html.startsWith(struck.top.html));
+    assert.equal(closed.top.text, 'CLOSED FOR NOW');
+    assert.ok(closed.top.html.includes('color="#f85149"'));
     assert.equal((struck.html.match(/<s>/g) || []).length, over[0].pieces.filter((p) => p.ahead > 0).length, 'each piece held over the target, and no other');
     // What to send the seller after a trade, in his order: enjoyed it, the forum, hope to trade again, the receipt last.
     assert.equal(thanksMessage({ receipt: 'https://weav3r.dev/receipt/abc' }), 'Thanks for the trade! Hope to trade again! Your receipt: https://weav3r.dev/receipt/abc');

@@ -97,7 +97,7 @@ function pgTodo(v, t) {
     if (t.kind === 'trades') return row(tone.warn, ic('trades'), `<b>${hPlural(t.n, 'trade')} open with you.</b> ${t.wait ? `${t.wait} ${t.wait === 1 ? 'waits' : 'wait'} for your money: ${hMoney(t.money)}.` : 'None waits for you.'}`, '<button class="btn sm go" data-go="trades">See them</button>');
     if (t.kind === 'hot') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Cheaper than from your sellers, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list" data-v="hot">The list</button>');
     if (t.kind === 'buy') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Under their worth, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
-    if (t.kind === 'post') return row(tone.warn, ic('tag'), `<b>Update your forum post.</b> ${hEsc(t.words[0])}${t.words.length > 1 ? ` And ${hPlural(t.words.length - 1, 'more thing')}.` : ''}`, '<button class="btn sm" data-go="prices">The post</button>');
+    if (t.kind === 'post') return row(tone.warn, ic('tag'), `<b>Update your forum post.</b> ${hEsc(t.words[0])}${t.words.length > 1 ? ` And ${hPlural(t.words.length - 1, 'more thing')}.` : ''}`, `<button class="btn sm go" data-act="pop" data-v="post" data-id="${t.open ? 'open' : 'closed'}">The post</button>`);
     if (t.kind === 'swap') return row(tone.brand, ic('brand'), `<b>Swap ${hPlural(t.n, 'set')}.</b> ${hNum(t.points)} points.`, hOut(MUSEUM_URL, 'Museum', 'btn sm out'));
     if (t.kind === 'hold') return row(tone.warn, ic('points'), `<b>Hold your points.</b> Under the usual ${hMoney(t.usual)}.`, '<button class="btn sm" data-go="points">Points</button>');
     if (t.loss) return row(tone.warn, ic('points'), `<b>Your ${hNum(t.n)} points would sell at a loss.</b> They cost you ${hMoney(t.each)} each, the market pays ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
@@ -467,12 +467,47 @@ function pgReceipt(d, f, words = true) {
     return `${words ? why : ''}<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${f.why && !words ? ` title="${hEsc(f.why)}"` : ''}${busy ? ' disabled' : ''}>${busy ? 'Making it' : 'Generate receipt'}</button>`;
 }
 
+/** One of your two forum posts: 'open' | 'closed' - the one for the shop as it stands, or the other. */
+export const hubPostOf = (d, which) => {
+    const pr = d && d.view && d.view.prices;
+    if (!pr || !pr.forum) return null;
+    return which === (pr.open ? 'open' : 'closed') ? pr.forum : pr.forum.other || null;
+};
+
+/**
+ * Your forum post in the box over the page - the owner, 2026-10-12: "can i open it like a popup that i can edit so
+ * i can open and close it by copy paste? i dont like how its giving me the info". Both posts are there whatever
+ * the shop says: the open one and the closed one. The title and the post can be changed before they are copied;
+ * what you changed is kept (hub.js, per post) until you take the Archive's post back. Only the top line can be
+ * copied by itself: OPEN FOR TRADES or CLOSED FOR NOW, to paste over the one on your thread.
+ * Nothing here depends on your changes: hub.js puts them in after the box is drawn, so typing never redraws it.
+ */
+function popPost(d, pop) {
+    const pr = d.view.prices;
+    const which = pop.id === 'closed' ? 'closed' : 'open';
+    const f = hubPostOf(d, which);
+    if (!f) return '';
+    const now = which === (pr.open ? 'open' : 'closed');
+    const th = pr.thread;
+    const tab = (k, label) => `<button data-act="pop" data-v="post" data-id="${k}"${k === which ? ' class="on"' : ''}>${label}</button>`;
+    const shop = `Your shop is <b>${pr.open ? 'open' : 'closed'}</b>`;
+    return `<h2>Your forum post</h2>
+    <div class="pop-b" style="margin:0 0 10px"><span class="seg">${tab('open', 'Open')}${tab('closed', 'Closed')}</span><span class="t-muted">${now ? `${shop}: this is the post for now.` : `${shop}: this is the post for when you ${pr.open ? 'close' : 'open'}.`}</span></div>
+    ${now && pr.forum.behind ? `<div class="ta-hold" data-k="post-behind"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')}</div>` : ''}
+    <div class="ta-hold" id="pop-moved" hidden><b>The Archive's post has changed since you changed yours.</b> A piece became full or wanted again, or your rate moved. <button class="btn sm" data-act="post-reset" style="margin-left:6px">Take the new post</button></div>
+    <div class="pop-l">The title</div><input class="inp post-title" id="pop-title" value="${hEsc(f.title)}" autocomplete="off" spellcheck="false">
+    <div class="pop-l">The post · click in it to change a word</div>
+    <div class="msg post-view post-edit" id="pop-post" contenteditable="true" spellcheck="false" data-which="${which}">${f.html}</div>
+    <div class="pop-b"><button class="btn go" data-act="post-copy">Copy the post</button><button class="btn" data-act="post-top">Copy only the top line</button><button class="btn" data-act="post-title">Copy the title</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><button class="btn" id="pop-back" data-act="post-reset" hidden>Undo my changes</button><button class="btn" data-act="pop-close">Close</button></div>`;
+}
+
 /**
  * The box over the page (hub.js draws it while `ui.pop` is set): a trade's receipt - its link to copy, and
  * what to send the seller with it. '' when there is nothing to show (the trade is gone): the box closes.
  */
 export function hubPop(d, ui) {
     const pop = ui.pop;
+    if (pop && pop.kind === 'post') return popPost(d, pop);
     if (!pop || pop.kind !== 'receipt') return '';
     const f = d.view.trades.finished.find((x) => String(x.id) === String(pop.id));
     if (!f || !f.receipt) return '';
@@ -603,6 +638,16 @@ const PG_THREAD = {
     closed: ['ahead', 'the title on Torn still says open'],
 };
 
+/** What the post for the shop as it stands says, in a line, and which post you copied last. */
+function pgPostSays(pr) {
+    const s = pr.forum.says;
+    const says = s.open
+        ? `The open post names <b>${hEsc(s.pct)}%</b> and ${s.struck.length ? `strikes out <b>${hPlural(s.struck.length, 'piece')}</b>: ${hEsc(s.struck.join(', '))}` : 'strikes out no piece'}.`
+        : 'The closed post says <b>CLOSED FOR NOW</b> and names no piece.';
+    const p = pr.forum.posted;
+    return `${says} <span class="t-muted">${p ? `You last copied the ${p.open ? 'open' : 'closed'} one on ${hWhen(p.at)} TCT.` : 'You have not copied a post from here yet.'}</span>`;
+}
+
 function pgW3b(d) {
     const w = d.view.prices.w3b;
     const key = (d.keys && d.keys.w3b) || {};
@@ -619,14 +664,25 @@ function pgW3b(d) {
         badge = `<span class="badge ahead">${hPlural(w.diff.set.length + w.diff.remove.length, 'price')} differ</span>`;
         body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? `<span class="t-muted">${d.busy && d.busy.w3b ? 'sending now' : `not sent yet: goes by itself ${d.busy && d.busy.next > d.view.at ? 'at ' + hClock(d.busy.next) + ' TCT' : 'within 2 minutes'}`}</span>` : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
     }
-    // The last write and how it ended: sent, sent and still different there, or refused with TornW3B's words.
+    // When your list there last changed from here, and the button that brings everything up to date now (the
+    // owner, 2026-10-12: "notify me last time pricelist was changed, and i should have a button that naturally
+    // updates it"): your prices fixed anew, TornW3B written if it says anything else, the shared server told.
+    const ch = key.set && d.busy ? d.busy.changed : null;
     const wr = key.set && d.busy ? d.busy.wrote : null;
-    if (wr) {
-        const by = wr.by === 'by itself' ? ' by itself' : '';
-        body += `<div class="row"><span class="grow1 ${wr.ok ? (wr.left ? 't-warn' : 't-muted') : 't-bad'}">${wr.ok
-            ? `<b class="${wr.left ? '' : 't-good'}">Sent</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}. ${wr.left ? `TornW3B took it, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.` : 'TornW3B took it.'}`
-            : `<b>Refused</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}.`}</span></div>`;
+    const byOf = (x) => (x.by === 'by itself' ? 'by itself' : 'on your press');
+    if (key.set) {
+        body += `<div class="row" data-k="w3b-changed"><span class="grow1">${ch
+            ? `Last changed <b>${hWhen(ch.at)} TCT</b> <span class="t-muted">· ${hAge(ch.at, d.view.at)} · ${byOf(ch)} · ${hEsc(ch.text)}</span>`
+            : '<span class="t-muted">Not changed from here yet.</span>'}</span><button class="btn sm" data-act="w3b" data-v="update"${d.busy && d.busy.w3b ? ' disabled' : ''}>${d.busy && d.busy.w3b ? 'Updating' : 'Update now'}</button></div>`;
     }
+    // The last write when it did not simply go through: refused with TornW3B's words, taken and still different
+    // there, or a press that found nothing to change.
+    if (wr && !wr.ok) body += `<div class="row"><span class="grow1 t-bad"><b>Refused</b> ${hClock(wr.at)} TCT, ${byOf(wr)}: ${hEsc(wr.text)}.</span></div>`;
+    else if (wr && wr.left) body += `<div class="row"><span class="grow1 t-warn">TornW3B took that write, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.</span></div>`;
+    else if (wr && wr.same) body += `<div class="row"><span class="grow1 t-muted">Checked ${hClock(wr.at)} TCT on your press: nothing to change, ${hEsc(wr.text)}.</span></div>`;
+    // Your own price list as the shared server holds it for Torn Bids (it trades with you on this one).
+    const sv = d.server && d.server.ownAt > 0 ? d.server.ownAt : 0;
+    if (sv) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server holds these prices for Torn Bids: told ${hAge(sv, d.view.at)}${d.view.prices.open ? '' : ', as what you would pay if you opened now'}.</span></div>`;
     // The pieces you hold too many of are not on your list, and come back by themselves.
     if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
     const listed = !key.set ? '' : w.listedUntil > d.view.at ? `Buyers see your list until ${hDay(w.listedUntil)}: TornW3B shows it for 7 days after a receipt.` : 'Buyers do not see your list: TornW3B shows it for 7 days after a receipt.';
@@ -693,8 +749,9 @@ function pgPrices(d) {
       <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
       ${pgW3b(d)}
       <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-        ${pr.forum.behind ? `<div class="ta-hold" data-k="post-behind" style="margin-bottom:10px"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Copy the post and paste it over the old one on Torn.</div>` : ''}<div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
-        <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}" data-post="1">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
+        ${pr.forum.behind ? `<div class="ta-hold" data-k="post-behind" style="margin-bottom:10px"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Open the post, copy it and paste it over the old one on Torn.</div>` : ''}
+        <div class="rows"><div class="row"><span class="grow1">${pgPostSays(pr)}</span></div></div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn${pr.open && pr.forum.behind ? ' go' : ''}" data-act="pop" data-v="post" data-id="open">Open post</button><button class="btn${!pr.open && pr.forum.behind ? ' go' : ''}" data-act="pop" data-v="post" data-id="closed">Closed post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
       </div></div>
       <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
     </div>

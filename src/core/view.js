@@ -420,7 +420,12 @@ export function archiveView(i) {
     };
 
     // ---- my prices ---------------------------------------------------------------------------------------------------
-    const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
+    const forumOf = (open) => forumText({ open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
+    const forum = forumOf(settings.open);
+    // The post for the other state too: both are yours to copy whatever the shop says (the owner, 2026-10-12:
+    // "so i can open and close it by copy paste"). `posted`: which one you copied last, and when.
+    forum.other = forumOf(!settings.open);
+    forum.posted = i.posted && i.posted.at > 0 ? { at: i.posted.at, open: !!i.posted.open } : null;
     // Only with a thread of yours known: without one there is nothing to edit.
     forum.behind = i.thread && i.thread.title ? postBehind(i.posted, forum.says) : null;
     // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
@@ -439,6 +444,11 @@ export function archiveView(i) {
     const w3bWant = desiredList(pieces, settings.open, w3bOwed);
     const w3bOver = settings.open ? pieces.filter((p) => p.pay > 0 && p.ahead > 0 && !w3bOwed.has(String(p.id))).map((p) => p.short || p.name) : [];
     const w3bDiff = w3bList ? listDiff(w3bList, w3bWant, ALL_PIECE_IDS) : null;
+    // What you pay for each piece now, said to the shared server whatever the shop says - closed, it is what you
+    // would pay if you opened now (the owner, 2026-10-12: "server should always keep my live pricelist"). `off`: the
+    // pieces you hold too many of: not wanted now.
+    const saidRows = desiredList(pieces, true, w3bOwed);
+    const said = { open: !!settings.open, rows: saidRows, off: pieces.filter((p) => p.pay > 0 && !saidRows.some((r) => String(r.itemID) === String(p.id))).map((p) => Number(p.id)) };
     const rates = [];
     for (let r = 99; r <= 104.001; r += 0.5) rates.push(Math.round(r * 10) / 10);
     const bidOf = (id) => (pieceOf(id) || {}).other || null;
@@ -465,7 +475,7 @@ export function archiveView(i) {
                 others, short: firstBid && s.rate.cap > 0 && firstBid.pct > s.rate.cap ? { name: first.short, pct: firstBid.pct } : null,
             };
         }),
-        verdict, cover, forum, thread,
+        verdict, cover, forum, thread, said,
         w3b: {
             known: !!w3bList, at: (i.w3b && i.w3b.listAt) || 0, error: (i.w3b && i.w3b.error) || '', sync: settings.w3bSync,
             diff: w3bDiff, matches: w3bDiff ? listMatches(w3bDiff) : null,
@@ -527,7 +537,7 @@ export function archiveView(i) {
     if (open.length) todo.push({ kind: 'trades', tone: 'warn', n: open.length, wait: trades.wait, money: trades.waitMoney });
     if (hotPlan.length) todo.push({ kind: 'hot', tone: '', n: vwSum(hotPlan, (l) => l.q), stops: hotPlanStops.length, pic: hotPlan[0].id, first: firstStops(hotPlanStops), cost: vwSum(hotPlanStops, (s) => s.cost), full: fullAfter((p) => onList(hotPlan, p.id)) });
     else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
-    if (prices.forum.behind) todo.push({ kind: 'post', tone: 'warn', words: prices.forum.behind.words });
+    if (prices.forum.behind) todo.push({ kind: 'post', tone: 'warn', words: prices.forum.behind.words, open: !!settings.open, thread: threadUrl });
     if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
     if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice, each: Math.ceil(book.cost / book.left), loss: pointsPrice > 0 && book.left * pointsPrice < book.cost });
 

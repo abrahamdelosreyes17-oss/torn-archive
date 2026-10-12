@@ -350,7 +350,11 @@ test('beside the shared server: what it is told names pieces and bazaars only, a
     await r.ready();
     const me = Number(r.world.you.id);
     const want = r.engine.serverWant();
-    assert.deepEqual(Object.keys(want).sort(), ['bought', 'dir', 'looking', 'need', 'sellers', 'worth']);
+    assert.deepEqual(Object.keys(want).sort(), ['bought', 'dir', 'looking', 'need', 'own', 'sellers', 'worth']);
+    // 1.3.6: your own price list - what you pay for each piece now, and the pieces you do not want now.
+    assert.equal(want.own.open, true);
+    for (const [id, pay] of Object.entries(want.own.prices)) assert.equal(pay, piece(r.view(), id).pay, 'piece ' + id);
+    assert.equal(Object.keys(want.own.prices).length + want.own.off.length, r.view().pieces.filter((p) => p.pay > 0).length);
     assert.deepEqual(want.need, r.view().pieces.filter((p) => p.need > 0).map((p) => Number(p.id)), 'the pieces still to buy');
     assert.ok(want.sellers.length > 0 && want.sellers.every((id) => Number.isInteger(id) && id > 0 && id !== me), 'bazaars that sell a piece, never your own');
     assert.ok(want.looking.length > 0 && want.looking.every((id) => Number.isInteger(id) && id !== me));
@@ -1722,4 +1726,100 @@ test('1.3.3 a piece you hold too many of comes off your TornW3B list, is named o
     // The piece is wanted again: the post you copied still strikes it.
     assert.equal(r.view().prices.forum.behind.back.length, 1);
     assert.match(r.view().prices.forum.behind.words[0], / is wanted again: no longer struck\.$/);
+});
+
+// ---- 1.3.6: the forum post's two versions, the warning at once, "Update now", your own list for the server -------------
+
+test('1.3.6 both forum posts are in the view whatever the shop says; copying the other one, or only its top line, is what your thread is taken to say', async (t) => {
+    const r = rig(t, { settings: { targetMode: 'number', target: 5 }, world: (w, fake) => { noTrades(w, fake); for (const set of w.sets) for (const id of set.pieces) w.held[id] = 5; w.held[258] = 40; } });
+    let v = await r.ready();
+    assert.equal(v.prices.open, true);
+    assert.equal(v.prices.forum.says.open, true);
+    assert.equal(v.prices.forum.other.says.open, false, 'the closed post is there while the shop is open');
+    assert.equal(v.prices.forum.other.top.text, 'CLOSED FOR NOW');
+    assert.equal(v.prices.forum.top.text, 'OPEN FOR TRADES');
+    assert.equal(v.prices.forum.posted, null);
+    // The open post copied: nothing is behind.
+    r.engine.act('posted', 'open');
+    v = r.view();
+    assert.equal(v.prices.forum.behind, null);
+    assert.equal(v.prices.forum.posted.open, true);
+    // The closed post copied while the shop is open: the thread says closed, and that is said.
+    r.engine.act('posted', 'closed');
+    v = r.view();
+    assert.equal(r.engine.state.posted.open, false);
+    assert.equal(v.prices.forum.behind.open, 'open');
+    assert.match(v.prices.forum.behind.words[0], /^Your shop is open: the post you copied last says CLOSED FOR NOW\./);
+    // Only the green top line pasted over it: open again, its pieces as the post before said them.
+    r.engine.act('posted', 'open');
+    r.engine.act('postedTop', 'closed');
+    assert.equal(r.engine.state.posted.open, false);
+    assert.deepEqual(r.engine.state.posted.struck, r.view().prices.forum.says.struck, 'the struck pieces stay as they were');
+    r.engine.act('postedTop', 'open');
+    assert.equal(r.view().prices.forum.behind, null);
+});
+
+test('1.3.6 a piece that becomes full is told at once, once, with the post to open; what stood at the start is not', async (t) => {
+    const r = rig(t, { settings: { targetMode: 'number', target: 5 }, world: (w, fake) => { noTrades(w, fake); for (const set of w.sets) for (const id of set.pieces) w.held[id] = 5; } });
+    await r.ready();
+    r.engine.act('posted', 'open');
+    await r.go(2 * MIN);
+    assert.equal(r.notices.filter((n) => n.post).length, 0, 'nothing is behind');
+    r.world.held[258] = 40;
+    await r.go(15 * MIN);
+    const told = r.notices.filter((n) => n.post);
+    assert.equal(told.length, 1, 'told once');
+    assert.equal(told[0].title, 'Update your forum post');
+    assert.match(told[0].body, / is full now: struck out in the new post\.$/);
+    assert.ok(r.said.some((s) => s.what === 'Your forum post is behind'));
+    await r.go(10 * MIN);
+    assert.equal(r.notices.filter((n) => n.post).length, 1, 'not again while it stands');
+    // A page opened with the post already behind: the hub shows it, no notice.
+    r.restart();
+    await r.go(10 * MIN);
+    assert.equal(r.notices.filter((n) => n.post).length, 1);
+});
+
+test('1.3.6 "Update now": your prices are fixed anew, your TornW3B list is written, and the time it last changed is kept apart from a later check', async (t) => {
+    const r = rig(t, { settings: { w3bSync: false }, world: noTrades });
+    await r.ready();
+    const was = r.engine.state.rate.table;
+    assert.ok(was && was.until > Date.now(), 'the hour is fixed');
+    assert.equal(r.engine.busy().changed, null);
+    await r.go(10 * MIN);
+    r.engine.act('w3b', 'update');
+    await r.wait(2000);
+    await r.go(MIN);
+    const now = r.engine.state.rate.table;
+    assert.ok(now.at > was.at, 'fixed anew: a new hour from the press');
+    assert.ok(r.said.some((s) => s.what === 'Pressed: Update my prices now'));
+    const v = r.view();
+    for (const p of v.pieces.filter((x) => x.pay > 0 && !(x.ahead > 0))) assert.equal(onW3b(r.world, p.id), p.pay, p.name);
+    const ch = r.engine.busy().changed;
+    assert.ok(ch && ch.by === 'your press' && ch.at > was.at, JSON.stringify(ch));
+    assert.match(ch.text, /^\d+ set, \d+ taken off$/);
+    // Pressed again with nothing to change: a check is said, the time of the last change stands.
+    await r.go(3 * MIN);
+    r.engine.act('w3b', 'update');
+    await r.wait(2000);
+    await r.go(MIN);
+    assert.equal(r.engine.busy().changed.at, ch.at);
+    assert.equal(r.engine.busy().wrote.same, true);
+    // With a trade open the prices stand: only the list is checked.
+});
+
+test('1.3.6 your own price list for the server: what you pay now, also with the shop closed, without the pieces you hold too many of', async (t) => {
+    const r = rig(t, { settings: { targetMode: 'number', target: 5 }, world: (w, fake) => { noTrades(w, fake); for (const set of w.sets) for (const id of set.pieces) w.held[id] = 5; w.held[258] = 40; } });
+    await r.ready();
+    let own = r.engine.serverWant().own;
+    assert.equal(own.open, true);
+    assert.deepEqual(own.off, [258]);
+    assert.equal(own.prices[258], undefined);
+    assert.equal(Object.keys(own.prices).length, 23);
+    r.set({ open: false });
+    await r.go(MIN);
+    own = r.engine.serverWant().own;
+    assert.equal(own.open, false);
+    assert.equal(Object.keys(own.prices).length, 23, 'closed: what you would pay if you opened now');
+    for (const [id, pay] of Object.entries(own.prices)) assert.equal(pay, piece(r.view(), id).pay);
 });

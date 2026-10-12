@@ -133,7 +133,10 @@ const hub = mountHub(document, {
     keyForget(kind) { keys[kind] = { set: false }; show(); },
     keyShow(kind) { keys[kind] = { ...keys[kind], shown: keys[kind].shown ? '' : 'made-up-key-0000' }; show(); },
     zip() { console.log('zip'); },
-    w3b(op) { if (op === 'send') { input.w3bSent = archiveView(input).prices.w3b.want; } show(); },
+    w3b(op) { if (op === 'send') { input.w3bSent = archiveView(input).prices.w3b.want; } if (op === 'update') busy.changed = { at: Date.now(), by: 'your press', text: '10 set, 1 taken off' }; show(); },
+    // As the engine (acts posted / postedTop): which post was copied last, and what it said.
+    posted(which) { const f = archiveView(input).prices.forum; const pick = (which === 'open' || which === 'closed') && which !== (f.says.open ? 'open' : 'closed') ? f.other : f; input.posted = { ...pick.says, at: Date.now() }; window.postedAs = which; show(); },
+    postedTop(which) { const f = archiveView(input).prices.forum; const was = input.posted && Array.isArray(input.posted.struck) ? input.posted : { pct: f.says.pct, struck: [] }; input.posted = { ...was, open: which === 'open', at: Date.now() }; window.postedAs = 'top ' + which; show(); },
     receipt(id) {
         const f = input.finished.find((x) => String(x.id) === String(id));
         if (q.get('receipt') === 'fail') input.w3b = { ...input.w3b, tried: { ...(input.w3b.tried || {}), [id]: { n: 3, at: Date.now(), why: 'TornW3B does not take the request: {"error":"Invalid request body"}' } } };

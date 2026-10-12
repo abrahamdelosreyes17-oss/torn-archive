@@ -85,6 +85,9 @@ export class ServerLink {
         this.grantKept = undefined;
         this.worthJson = '';
         this.worthAt = 0;
+        // Your own price list as last said to the server, and when (as `worth`): said again when it changed.
+        this.ownJson = '';
+        this.ownAt = 0;
     }
 
     /** { address, pass, own }, or null when the server is off. own: nothing was typed - the built-in address, as whoever Torn says you are. */
@@ -186,11 +189,19 @@ export class ServerLink {
         this.grantKept = null;
         this.worthJson = '';
         this.worthAt = 0;
+        this.ownJson = '';
+        this.ownAt = 0;
         this.d.forget();
     }
 
     /** Torn calls are waiting on the server's part: an exchange is wanted soon, to ask for room. */
     askSoon() { this.soon = true; }
+
+    /** "Update now" pressed: your own price list is said again with the next exchange, and that one comes soon. */
+    sayOwn() { this.ownJson = ''; this.soon = true; }
+
+    /** When the server last took your own price list from this page (0: not yet). */
+    ownSaidAt() { return this.ownAt; }
 
     /** Call every few seconds; it exchanges every SERVER_SYNC_MS. */
     async tick() {
@@ -250,9 +261,14 @@ export class ServerLink {
                 const mark = this.d.getMark() || {};
                 const worthJson = JSON.stringify(serverBody({ want, pieces: this.d.pieces, sendWorth: true }).worth);
                 const sendWorth = page === 0 && (worthJson !== this.worthJson || now - this.worthAt >= SL_WORTH_EVERY_MS || born === null);
+                // Your own price list: said when it changed, and as often as the worths otherwise - the server keeps
+                // the time it last heard it, which is how old Torn Bids takes it to be.
+                const ownSaid = want.own ? serverBody({ want, pieces: this.d.pieces, sendWorth: false, sendOwn: true }).own : null;
+                const ownJson = ownSaid ? JSON.stringify(ownSaid) : '';
+                const sendOwn = page === 0 && !!ownSaid && (ownJson !== this.ownJson || now - this.ownAt >= SL_WORTH_EVERY_MS || born === null);
                 // What this PC asked of TornW3B and Torn since the last answered exchange: with the first page only.
                 const callsOut = page === 0 ? usageCallsOut(this.d.load(SERVER_CALLS_KEY), now) : null;
-                const body = serverBody({ ver: this.d.version, used: use.used, waiting: use.waiting, want, pieces: this.d.pieces, since: mark.seq, seen: mark.seenAt, sendWorth, now, calls: callsOut });
+                const body = serverBody({ ver: this.d.version, used: use.used, waiting: use.waiting, want, pieces: this.d.pieces, since: mark.seq, seen: mark.seenAt, sendWorth, sendOwn, now, calls: callsOut });
                 if (!serverOutgoingOk(body, this.d.pieces)) throw new Error('Not sent: the message was not in the agreed shape.');
 
                 const response = await this.d.send(`${cfg.address}/sync`, { method: 'POST', headers: auth, body });
@@ -280,9 +296,13 @@ export class ServerLink {
                     this.worthJson = worthJson;
                     this.worthAt = now;
                 }
+                if (sendOwn) {
+                    this.ownJson = ownJson;
+                    this.ownAt = now;
+                }
                 // A server that started afresh has forgotten what the pieces are worth, and may be another one: asked again.
                 if (answer.born !== undefined && answer.born !== born) {
-                    if (born !== null) { this.worthJson = ''; state.helloOk = false; }
+                    if (born !== null) { this.worthJson = ''; this.ownJson = ''; state.helloOk = false; }
                     born = answer.born;
                 }
                 this.d.take(answer, got);

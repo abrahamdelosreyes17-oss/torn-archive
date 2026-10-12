@@ -40,7 +40,7 @@ const SV_MAX_SELLERS = 3000;
 const SV_MAX_NEAR = 200;
 const SV_MAX_BOUGHT = 200;
 const SV_MAX_DIR = 300;
-const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need', 'calls'];
+const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need', 'calls', 'own'];
 /** The server's read of the points market or of a piece's Item Market is used while it is no older than this. */
 export const SERVER_MARKET_FRESH_MS = 3 * 60000;
 const SV_MAX_ROWS = 20;
@@ -156,8 +156,12 @@ export function serverUse(own, { tradingOn = false, beside = [], besideAt = 0, n
  * `worth` is left out unless sendWorth: the server keeps the last one said.
  * @param o.calls  { tag: n } - this PC's requests since the last answered exchange (usageCallsOut); {} = on and
  *   nothing asked; null = not said with this message
+ * @param o.sendOwn  your own price list goes with this message (`want.own`: { open, prices: { piece: dollars },
+ *   off: [piece] }) - what you pay a seller for each piece now, and the pieces you do not want now. The server
+ *   keeps the last one said and hands it to Torn Bids, which then plans a trade with you on it instead of on
+ *   TornW3B's copy (the owner, 2026-10-12). It is your public price list: nothing about what you hold.
  */
-export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, now = 0, calls = null } = {}) {
+export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, sendOwn = false, now = 0, calls = null } = {}) {
     const count = (n) => (Number.isFinite(n) && n > 0 ? Math.min(1000, Math.floor(n)) : 0);
     const mine = new Set((pieces || []).map(String));
     const w = want && typeof want === 'object' ? want : {};
@@ -205,6 +209,16 @@ export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces 
         }
         body.worth = worth;
     }
+    if (sendOwn && w.own && typeof w.own === 'object') {
+        const prices = {};
+        for (const [key, value] of Object.entries(w.own.prices && typeof w.own.prices === 'object' ? w.own.prices : {})) {
+            const item = svId(key);
+            if (item === null || !mine.has(String(item)) || !Number.isFinite(value) || !(value > 0)) continue;
+            prices[item] = Math.max(1, Math.round(value));
+        }
+        const off = svIds([w.own.off], mine.size).filter((id) => mine.has(String(id)) && !(id in prices));
+        body.own = { open: w.own.open ? 1 : 0, prices, off };
+    }
     if (calls && typeof calls === 'object' && !Array.isArray(calls)) {
         body.calls = {};
         for (const [tag, n] of Object.entries(calls).slice(0, USAGE_CALLS_TAGS_MAX)) {
@@ -244,6 +258,12 @@ export function serverOutgoingOk(body, pieces = []) {
         } else if (key === 'worth') {
             if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
             for (const [item, price] of Object.entries(value)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
+        } else if (key === 'own') {
+            if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((k) => !['open', 'prices', 'off'].includes(k))) return false;
+            if (value.open !== 0 && value.open !== 1) return false;
+            if (!value.prices || typeof value.prices !== 'object' || Array.isArray(value.prices)) return false;
+            for (const [item, price] of Object.entries(value.prices)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
+            if (!Array.isArray(value.off) || !value.off.every((id) => Number.isInteger(id) && mine.has(String(id)))) return false;
         } else if (!whole(value)) {
             return false;
         }

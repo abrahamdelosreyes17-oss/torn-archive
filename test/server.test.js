@@ -938,3 +938,48 @@ test('against the server\'s own door: a copy let in at home is known by its word
     assert.equal(await other.tick(), true);
     assert.equal(other.link.status().why, 'address');
 });
+
+// ---- 1.3.6: your own price list ---------------------------------------------------------------------------------------
+
+test('1.3.6 your own price list: pieces and whole dollars only, said when asked for, and nothing else gets out with it', () => {
+    const want = { own: { open: true, prices: { [SHEEP]: 612.4, [PANDA]: 36199, [XANAX]: 800000, junk: 5 }, off: [DAHLIA, XANAX, SHEEP, 'x'], key: 'SECRETKEY1234567' } };
+    assert.equal('own' in serverBody({ want, pieces: PIECES, now: NOW }), false, 'not unless it is to be said');
+    const body = serverBody({ want, pieces: PIECES, sendOwn: true, now: NOW });
+    assert.deepEqual(body.own, { open: 1, prices: { [SHEEP]: 612, [PANDA]: 36199 }, off: [DAHLIA] });
+    assert.equal(serverOutgoingOk(body, PIECES), true);
+    assert.ok(!/SECRET/.test(JSON.stringify(body)));
+    assert.deepEqual(serverBody({ want: { own: { open: false, prices: { [SHEEP]: 600 }, off: [] } }, pieces: PIECES, sendOwn: true, now: NOW }).own, { open: 0, prices: { [SHEEP]: 600 }, off: [] });
+    const bad = [
+        (b) => { b.own.open = true; },
+        (b) => { b.own.prices[XANAX] = 5; },
+        (b) => { b.own.prices[SHEEP] = 1.5; },
+        (b) => { b.own.off.push(XANAX); },
+        (b) => { b.own.name = 'Somebody'; },
+        (b) => { b.own = [1]; },
+    ];
+    for (const spoil of bad) { const b = serverBody({ want, pieces: PIECES, sendOwn: true, now: NOW }); spoil(b); assert.equal(serverOutgoingOk(b, PIECES), false, spoil.toString()); }
+});
+
+test('1.3.6 your own price list goes with the first exchange, again when it changed, on "Update now", and every ten minutes otherwise', async () => {
+    const own = (price) => ({ open: true, prices: { [SHEEP]: price }, off: [] });
+    const r = rig({ answer: okAnswer(), want: { own: own(600) } });
+    r.link.saveConfig(ADDRESS, PASS);
+    assert.equal(r.link.ownSaidAt(), 0);
+    await r.tick();
+    assert.deepEqual(r.syncs()[0].body.own, { open: 1, prices: { [SHEEP]: 600 }, off: [] });
+    assert.equal(r.link.ownSaidAt(), NOW);
+    await r.tick(SERVER_SYNC_MS);
+    assert.equal('own' in r.syncs()[1].body, false, 'the same list is not said again');
+    r.want = { own: own(590) };
+    await r.tick(SERVER_SYNC_MS);
+    assert.deepEqual(r.syncs()[2].body.own.prices, { [SHEEP]: 590 });
+    // "Update now": said again, with an exchange that comes sooner than the usual one.
+    r.link.sayOwn();
+    await r.tick(7000);
+    assert.equal(r.syncs().length, 4, 'an exchange 7 s after the last');
+    assert.deepEqual(r.syncs()[3].body.own.prices, { [SHEEP]: 590 });
+    await r.tick(SERVER_SYNC_MS);
+    assert.equal('own' in r.syncs()[4].body, false);
+    await r.tick(10 * MIN);
+    assert.ok('own' in r.syncs()[5].body, 'ten minutes on: said again, so the server knows it still stands');
+});

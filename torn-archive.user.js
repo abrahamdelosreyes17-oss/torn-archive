@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.5
+// @version      1.3.6
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.5';
+    const TARC_BUILD_VERSION = '1.3.6';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -3219,7 +3219,7 @@
     const SV_MAX_NEAR = 200;
     const SV_MAX_BOUGHT = 200;
     const SV_MAX_DIR = 300;
-    const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need', 'calls'];
+    const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need', 'calls', 'own'];
     /** The server's read of the points market or of a piece's Item Market is used while it is no older than this. */
     const SERVER_MARKET_FRESH_MS = 3 * 60000;
     const SV_MAX_ROWS = 20;
@@ -3335,8 +3335,12 @@
      * `worth` is left out unless sendWorth: the server keeps the last one said.
      * @param o.calls  { tag: n } - this PC's requests since the last answered exchange (usageCallsOut); {} = on and
      *   nothing asked; null = not said with this message
+     * @param o.sendOwn  your own price list goes with this message (`want.own`: { open, prices: { piece: dollars },
+     *   off: [piece] }) - what you pay a seller for each piece now, and the pieces you do not want now. The server
+     *   keeps the last one said and hands it to Torn Bids, which then plans a trade with you on it instead of on
+     *   TornW3B's copy (the owner, 2026-10-12). It is your public price list: nothing about what you hold.
      */
-    function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, now = 0, calls = null } = {}) {
+    function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, sendOwn = false, now = 0, calls = null } = {}) {
         const count = (n) => (Number.isFinite(n) && n > 0 ? Math.min(1000, Math.floor(n)) : 0);
         const mine = new Set((pieces || []).map(String));
         const w = want && typeof want === 'object' ? want : {};
@@ -3384,6 +3388,16 @@
             }
             body.worth = worth;
         }
+        if (sendOwn && w.own && typeof w.own === 'object') {
+            const prices = {};
+            for (const [key, value] of Object.entries(w.own.prices && typeof w.own.prices === 'object' ? w.own.prices : {})) {
+                const item = svId(key);
+                if (item === null || !mine.has(String(item)) || !Number.isFinite(value) || !(value > 0)) continue;
+                prices[item] = Math.max(1, Math.round(value));
+            }
+            const off = svIds([w.own.off], mine.size).filter((id) => mine.has(String(id)) && !(id in prices));
+            body.own = { open: w.own.open ? 1 : 0, prices, off };
+        }
         if (calls && typeof calls === 'object' && !Array.isArray(calls)) {
             body.calls = {};
             for (const [tag, n] of Object.entries(calls).slice(0, USAGE_CALLS_TAGS_MAX)) {
@@ -3423,6 +3437,12 @@
             } else if (key === 'worth') {
                 if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
                 for (const [item, price] of Object.entries(value)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
+            } else if (key === 'own') {
+                if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((k) => !['open', 'prices', 'off'].includes(k))) return false;
+                if (value.open !== 0 && value.open !== 1) return false;
+                if (!value.prices || typeof value.prices !== 'object' || Array.isArray(value.prices)) return false;
+                for (const [item, price] of Object.entries(value.prices)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
+                if (!Array.isArray(value.off) || !value.off.every((id) => Number.isInteger(id) && mine.has(String(id)))) return false;
             } else if (!whole(value)) {
                 return false;
             }
@@ -3771,6 +3791,9 @@
             this.grantKept = undefined;
             this.worthJson = '';
             this.worthAt = 0;
+            // Your own price list as last said to the server, and when (as `worth`): said again when it changed.
+            this.ownJson = '';
+            this.ownAt = 0;
         }
 
         /** { address, pass, own }, or null when the server is off. own: nothing was typed - the built-in address, as whoever Torn says you are. */
@@ -3872,11 +3895,19 @@
             this.grantKept = null;
             this.worthJson = '';
             this.worthAt = 0;
+            this.ownJson = '';
+            this.ownAt = 0;
             this.d.forget();
         }
 
         /** Torn calls are waiting on the server's part: an exchange is wanted soon, to ask for room. */
         askSoon() { this.soon = true; }
+
+        /** "Update now" pressed: your own price list is said again with the next exchange, and that one comes soon. */
+        sayOwn() { this.ownJson = ''; this.soon = true; }
+
+        /** When the server last took your own price list from this page (0: not yet). */
+        ownSaidAt() { return this.ownAt; }
 
         /** Call every few seconds; it exchanges every SERVER_SYNC_MS. */
         async tick() {
@@ -3936,9 +3967,14 @@
                     const mark = this.d.getMark() || {};
                     const worthJson = JSON.stringify(serverBody({ want, pieces: this.d.pieces, sendWorth: true }).worth);
                     const sendWorth = page === 0 && (worthJson !== this.worthJson || now - this.worthAt >= SL_WORTH_EVERY_MS || born === null);
+                    // Your own price list: said when it changed, and as often as the worths otherwise - the server keeps
+                    // the time it last heard it, which is how old Torn Bids takes it to be.
+                    const ownSaid = want.own ? serverBody({ want, pieces: this.d.pieces, sendWorth: false, sendOwn: true }).own : null;
+                    const ownJson = ownSaid ? JSON.stringify(ownSaid) : '';
+                    const sendOwn = page === 0 && !!ownSaid && (ownJson !== this.ownJson || now - this.ownAt >= SL_WORTH_EVERY_MS || born === null);
                     // What this PC asked of TornW3B and Torn since the last answered exchange: with the first page only.
                     const callsOut = page === 0 ? usageCallsOut(this.d.load(SERVER_CALLS_KEY), now) : null;
-                    const body = serverBody({ ver: this.d.version, used: use.used, waiting: use.waiting, want, pieces: this.d.pieces, since: mark.seq, seen: mark.seenAt, sendWorth, now, calls: callsOut });
+                    const body = serverBody({ ver: this.d.version, used: use.used, waiting: use.waiting, want, pieces: this.d.pieces, since: mark.seq, seen: mark.seenAt, sendWorth, sendOwn, now, calls: callsOut });
                     if (!serverOutgoingOk(body, this.d.pieces)) throw new Error('Not sent: the message was not in the agreed shape.');
 
                     const response = await this.d.send(`${cfg.address}/sync`, { method: 'POST', headers: auth, body });
@@ -3966,9 +4002,13 @@
                         this.worthJson = worthJson;
                         this.worthAt = now;
                     }
+                    if (sendOwn) {
+                        this.ownJson = ownJson;
+                        this.ownAt = now;
+                    }
                     // A server that started afresh has forgotten what the pieces are worth, and may be another one: asked again.
                     if (answer.born !== undefined && answer.born !== born) {
-                        if (born !== null) { this.worthJson = ''; state.helloOk = false; }
+                        if (born !== null) { this.worthJson = ''; this.ownJson = ''; state.helloOk = false; }
                         born = answer.born;
                     }
                     this.d.take(answer, got);
@@ -4440,6 +4480,9 @@
     const SET_RULE = '─'.repeat(20);
     const SET_OPEN_COLOR = '#3fb950';
     const SET_CLOSED_COLOR = '#f85149';
+    /** A struck piece is red, word and line (the owner, 2026-10-12: "the strikeout should be red in color"). The colour
+     *  sits outside the `<s>`: the line takes the colour of the element it is drawn on. */
+    const SET_STRUCK_COLOR = SET_CLOSED_COLOR;
     /**
      * How a line is centred for Torn's forum box (TinyMCE 6.8.5, read on the owner's thread 2026-10-12): a paste loses
      * every `style`, and the posted thread drops `<center>` and `align` - but the box gives `data-mce-style` back as
@@ -4478,7 +4521,7 @@
     function setRowHtml(row) {
         if (row.gap) return '<br>';
         if (row.rule) return '<hr>';
-        let inner = row.parts.map((p) => (p.s ? `<s>${setHtml(p.t)}</s>` : p.href ? `<a href="${setHtml(p.href)}">${setHtml(p.t)}</a>` : setHtml(p.t))).join('');
+        let inner = row.parts.map((p) => (p.s ? `<font color="${SET_STRUCK_COLOR}"><s>${setHtml(p.t)}</s></font>` : p.href ? `<a href="${setHtml(p.href)}">${setHtml(p.t)}</a>` : setHtml(p.t))).join('');
         if (row.bold) inner = `<b>${inner}</b>`;
         if (row.size || row.color) inner = `<font${row.size ? ` size="${row.size}"` : ''}${row.color ? ` color="${row.color}"` : ''}>${inner}</font>`;
         return `<div ${SET_CENTRE}>${inner}</div>`;
@@ -4494,8 +4537,10 @@
      * plushies/flower that is overstocked". These are the pieces your TornW3B list leaves out (core/tw3b-list.js).
      * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
      * @param list your price list's address on TornW3B, '' when your Torn id is not known: its line is then left out
-     * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
-     *          `html` is the same post for a box that keeps the look (Torn's forum box)
+     * @returns { title, post, html, top, says } - `post` is plain text, a struck piece with a line through each letter;
+     *          `html` is the same post for a box that keeps the look (Torn's forum box); `top` is its first line
+     *          alone, { text, html }: OPEN FOR TRADES or CLOSED FOR NOW, to paste over the one on your thread (the
+     *          owner, 2026-10-12: "I need that Open thing again, just the open ... the green one")
      */
     function forumText({ open, pct, stocks = [], sets = SETS, list = '' }) {
         const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
@@ -4528,7 +4573,7 @@
         // What this post tells a seller that an edit of your thread is worth: the word on its top, your rate, the pieces
         // struck out (closed, it names no piece).
         const says = { open: !!open, pct: rate, struck: open ? rows.flatMap((r) => (r.parts || []).filter((p) => p.s).map((p) => p.t)).sort() : [] };
-        return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join(''), says };
+        return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join(''), top: { text: setRowText(rows[0]), html: setRowHtml(rows[0]) }, says };
     }
 
     /**
@@ -8808,7 +8853,12 @@
         };
 
         // ---- my prices ---------------------------------------------------------------------------------------------------
-        const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
+        const forumOf = (open) => forumText({ open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
+        const forum = forumOf(settings.open);
+        // The post for the other state too: both are yours to copy whatever the shop says (the owner, 2026-10-12:
+        // "so i can open and close it by copy paste"). `posted`: which one you copied last, and when.
+        forum.other = forumOf(!settings.open);
+        forum.posted = i.posted && i.posted.at > 0 ? { at: i.posted.at, open: !!i.posted.open } : null;
         // Only with a thread of yours known: without one there is nothing to edit.
         forum.behind = i.thread && i.thread.title ? postBehind(i.posted, forum.says) : null;
         // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
@@ -8827,6 +8877,11 @@
         const w3bWant = desiredList(pieces, settings.open, w3bOwed);
         const w3bOver = settings.open ? pieces.filter((p) => p.pay > 0 && p.ahead > 0 && !w3bOwed.has(String(p.id))).map((p) => p.short || p.name) : [];
         const w3bDiff = w3bList ? listDiff(w3bList, w3bWant, ALL_PIECE_IDS) : null;
+        // What you pay for each piece now, said to the shared server whatever the shop says - closed, it is what you
+        // would pay if you opened now (the owner, 2026-10-12: "server should always keep my live pricelist"). `off`: the
+        // pieces you hold too many of: not wanted now.
+        const saidRows = desiredList(pieces, true, w3bOwed);
+        const said = { open: !!settings.open, rows: saidRows, off: pieces.filter((p) => p.pay > 0 && !saidRows.some((r) => String(r.itemID) === String(p.id))).map((p) => Number(p.id)) };
         const rates = [];
         for (let r = 99; r <= 104.001; r += 0.5) rates.push(Math.round(r * 10) / 10);
         const bidOf = (id) => (pieceOf(id) || {}).other || null;
@@ -8853,7 +8908,7 @@
                     others, short: firstBid && s.rate.cap > 0 && firstBid.pct > s.rate.cap ? { name: first.short, pct: firstBid.pct } : null,
                 };
             }),
-            verdict, cover, forum, thread,
+            verdict, cover, forum, thread, said,
             w3b: {
                 known: !!w3bList, at: (i.w3b && i.w3b.listAt) || 0, error: (i.w3b && i.w3b.error) || '', sync: settings.w3bSync,
                 diff: w3bDiff, matches: w3bDiff ? listMatches(w3bDiff) : null,
@@ -8915,7 +8970,7 @@
         if (open.length) todo.push({ kind: 'trades', tone: 'warn', n: open.length, wait: trades.wait, money: trades.waitMoney });
         if (hotPlan.length) todo.push({ kind: 'hot', tone: '', n: vwSum(hotPlan, (l) => l.q), stops: hotPlanStops.length, pic: hotPlan[0].id, first: firstStops(hotPlanStops), cost: vwSum(hotPlanStops, (s) => s.cost), full: fullAfter((p) => onList(hotPlan, p.id)) });
         else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
-        if (prices.forum.behind) todo.push({ kind: 'post', tone: 'warn', words: prices.forum.behind.words });
+        if (prices.forum.behind) todo.push({ kind: 'post', tone: 'warn', words: prices.forum.behind.words, open: !!settings.open, thread: threadUrl });
         if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
         if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice, each: Math.ceil(book.cost / book.left), loss: pointsPrice > 0 && book.left * pointsPrice < book.cost });
 
@@ -10317,8 +10372,51 @@
          * owner, 2026-10-12: "i need to know if it is sending, sent, or refused/error").
          */
         function wrote(w) {
-            S.w3b = { ...S.w3b, wrote: { at: env.now(), ...w } };
+            const at = env.now();
+            // `changed`: the last write TornW3B took - when your list there last changed from here. Kept apart from
+            // `wrote`, so a later refusal or a press that found nothing to change does not hide it (the owner,
+            // 2026-10-12: "torn archive should notify me last time pricelist was changed").
+            S.w3b = { ...S.w3b, wrote: { at, ...w }, ...(w.ok && !w.same ? { changed: { at, by: w.by, text: w.text } } : {}) };
             touch('w3b');
+        }
+
+        /**
+         * "Update now" - the owner, 2026-10-12: "i should have a button that naturally updates it". Your prices are
+         * fixed anew at the points price of this moment (a new hour starts), your list on TornW3B is read and written
+         * if it says anything else, and the shared server is told (main.js). With a trade with set pieces open the
+         * prices stand as they are - its receipt is made from your list - and only the list is put right.
+         */
+        async function updateNow() {
+            const open = !!settings().open;
+            const held = open && tradeOpen();
+            env.say('note', 'Pressed: Update my prices now', !open ? 'your shop is closed: nothing is fixed, your list is checked' : held ? 'a trade with set pieces is open: your prices stand, your list is checked' : 'your prices are fixed anew');
+            if (open && !held && S.rate.table) { S.rate = { ...S.rate, table: null }; touch('rate'); }
+            cache = null;
+            last = null;
+            if (open) rateKeep(env.now(), view());
+            if (!keyOk('w3b') || !S.self.id) return;
+            await readOwnList();
+            cache = null;
+            const w = listWrite();
+            if (w.body) await sendList('your press');
+            else wrote({ ok: true, by: 'your press', text: w.why, same: true });
+        }
+
+        /**
+         * Your forum post fell behind your stock or your shop (core/sets.js postBehind): told at once, each time what
+         * it is behind on changes - the owner, 2026-10-12: "warn me when theres a full stock instantly to change my
+         * forum thread". Not for what already stood when the page was opened: the hub shows that.
+         */
+        let postSaid = null;
+        function postWatch(v) {
+            const b = v.ready && v.prices && v.prices.forum ? v.prices.forum.behind : null;
+            const sig = b ? b.words.join(' ') : '';
+            if (!v.ready || sig === postSaid) return;
+            const first = postSaid === null;
+            postSaid = sig;
+            if (!sig || first) return;
+            env.say('note', 'Your forum post is behind', sig);
+            env.notify({ title: 'Update your forum post', body: sig, post: true });
         }
 
         /** "Keep it at my rate by itself" is on and nothing is sent: the reason, said once each time it changes. */
@@ -10463,6 +10561,7 @@
             readBids();
             rateKeep(now, v);
             stepOwn(now);
+            postWatch(v);
             if (v.ready && now - (due.day || 0) > 0) { due.day = now + EG_MIN; recordDay(S, v, now); touch('hist'); }
             flush();
         }
@@ -10535,7 +10634,10 @@
             for (const r of S.ledger.rows) if (r.side === 'buy' && r.venue === 'bazaar' && r.who && now - r.t < SERVER_BOUGHT_MS) bought.push({ whoId: r.who, id: r.itemId, qty: r.qty, price: r.each, t: r.t });
             // Seen on the page and not in the log yet.
             for (const b of S.seen) if (b.whoId && !b.no && b.t > S.log.until && now - b.t < SERVER_BOUGHT_MS) bought.push({ whoId: b.whoId, id: b.id, qty: b.qty, price: b.price, t: b.t });
-            return { sellers: [...sellers], looking: shopsWanted(v).map(Number), worth, bought, dir, need: v.pieces.filter((p) => p.need > 0).map((p) => Number(p.id)) };
+            // Your own price list (core/server.js serverBody `own`): what you pay for each piece now, open or closed.
+            const said = v.ready && v.prices.said && v.prices.said.rows.length ? v.prices.said : null;
+            const own = said ? { open: said.open, prices: Object.fromEntries(said.rows.map((r) => [r.itemID, r.price])), off: said.off } : null;
+            return { sellers: [...sellers], looking: shopsWanted(v).map(Number), worth, bought, dir, need: v.pieces.filter((p) => p.need > 0).map((p) => Number(p.id)), own };
         }
 
         /** One answer of the shared server. */
@@ -10685,7 +10787,20 @@
             },
             clearList() { S.cart = []; idle(); touch('cart', 'run'); },
             // "Copy the post" pressed: what that post says is what your thread is taken to say from now on.
-            posted() { S.posted = { ...view().prices.forum.says, at: env.now() }; touch('posted'); },
+            // `which` 'open' | 'closed': the post copied, when it is not the one of the shop as it stands.
+            posted(which) {
+                const f = view().prices.forum;
+                const pick = (which === 'open' || which === 'closed') && which !== (f.says.open ? 'open' : 'closed') ? f.other : f;
+                S.posted = { ...pick.says, at: env.now() };
+                touch('posted');
+            },
+            // Only the top line copied (OPEN FOR TRADES / CLOSED FOR NOW): your thread says that now, its pieces as before.
+            postedTop(which) {
+                const f = view().prices.forum;
+                const was = S.posted && Array.isArray(S.posted.struck) ? S.posted : { pct: f.says.pct, struck: [] };
+                S.posted = { ...was, open: which === 'open', at: env.now() };
+                touch('posted');
+            },
             // `place` (Next pressed on a Torn page): where you stand. A bazaar of the list that is not the stop the run
             // is on becomes that stop first - you did not follow the order - and Next goes on from there; the stops
             // passed over stay on the list. (Until 1.3.0 Next was only offered on the current stop.)
@@ -10719,7 +10834,7 @@
             w3b(op) {
                 if (flags.w3b) return;
                 flags.w3b = true;
-                (op === 'send' ? sendList() : readOwnList()).catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
+                (op === 'send' ? sendList() : op === 'update' ? updateNow() : readOwnList()).catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
             },
             receipt(tradeId) { makeReceipt(String(tradeId)); },
         };
@@ -10778,7 +10893,8 @@
             serverMark: () => ({ seq: S.server.seq, seenAt: S.server.seenAt }),
             keys: () => keyState,
             // `wrote`: the last write of your list and how it ended; `next`: when a write by itself may go again.
-            busy: () => ({ ...flags, wrote: S.w3b.wrote || null, next: syncAt ? syncAt + EG_SYNC_GAP_MS : 0 }),
+            // `changed`: the last write TornW3B took (a state kept before 1.3.6 has it only as `wrote`).
+            busy: () => ({ ...flags, wrote: S.w3b.wrote || null, changed: S.w3b.changed || (S.w3b.wrote && S.w3b.wrote.ok ? S.w3b.wrote : null), next: syncAt ? syncAt + EG_SYNC_GAP_MS : 0 }),
             mv: mvOf(S),
             /** Whether the settings changed something the reads depend on. */
             settingsChanged() {
@@ -11791,7 +11907,12 @@
     .pop .card { width: min(620px, 92%); padding: 22px 24px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line2); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
     .pop h2 { margin: 0 0 8px; font: 650 19px var(--disp); } .pop p { margin: 0 0 10px; color: var(--text2); }
     .pop-l { margin: 14px 0 6px; color: var(--muted); font-size: 12px; } .pop-m { overflow-wrap: anywhere; user-select: all; }
-    .pop-b { display: flex; gap: 8px; margin-top: 10px; align-items: center; } .pop-b .sp { flex: 1; }
+    .pop-b { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; } .pop-b .sp { flex: 1; } .pop [hidden] { display: none !important; }
+    /* Your forum post in the box (1.3.6): the post as it will look, to change before it is copied. */
+    .pop .card:has(.post-edit) { width: min(780px, 94%); max-height: 94%; overflow: auto; }
+    .post-edit { margin-top: 0; padding: 10px 12px; border-top: 1px solid var(--line); max-height: 44vh; overflow: auto; outline: none; cursor: text; } .post-edit:focus { border-color: var(--brand); }
+    .post-title { width: 100%; box-sizing: border-box; font: inherit; outline: none; } .post-title:focus { border-color: var(--brand); }
+    .pill.post { cursor: pointer; font: inherit; font-size: 12px; background: var(--warn-bg); border-color: rgba(245,165,36,.4); color: var(--text2); } .pill.post b { color: var(--warn); } .pill.post[hidden] { display: none; }
     .paused h2 { margin: 0 0 8px; font: 650 19px var(--disp); display: flex; align-items: center; gap: 10px; } .paused p { margin: 0 0 10px; color: var(--text2); }
 
     /* ---------- item pictures: Torn's own, as Torn Bids shows them ---------- */
@@ -12293,7 +12414,7 @@
         if (t.kind === 'trades') return row(tone.warn, ic('trades'), `<b>${hPlural(t.n, 'trade')} open with you.</b> ${t.wait ? `${t.wait} ${t.wait === 1 ? 'waits' : 'wait'} for your money: ${hMoney(t.money)}.` : 'None waits for you.'}`, '<button class="btn sm go" data-go="trades">See them</button>');
         if (t.kind === 'hot') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Cheaper than from your sellers, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list" data-v="hot">The list</button>');
         if (t.kind === 'buy') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Under their worth, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
-        if (t.kind === 'post') return row(tone.warn, ic('tag'), `<b>Update your forum post.</b> ${hEsc(t.words[0])}${t.words.length > 1 ? ` And ${hPlural(t.words.length - 1, 'more thing')}.` : ''}`, '<button class="btn sm" data-go="prices">The post</button>');
+        if (t.kind === 'post') return row(tone.warn, ic('tag'), `<b>Update your forum post.</b> ${hEsc(t.words[0])}${t.words.length > 1 ? ` And ${hPlural(t.words.length - 1, 'more thing')}.` : ''}`, `<button class="btn sm go" data-act="pop" data-v="post" data-id="${t.open ? 'open' : 'closed'}">The post</button>`);
         if (t.kind === 'swap') return row(tone.brand, ic('brand'), `<b>Swap ${hPlural(t.n, 'set')}.</b> ${hNum(t.points)} points.`, hOut(MUSEUM_URL, 'Museum', 'btn sm out'));
         if (t.kind === 'hold') return row(tone.warn, ic('points'), `<b>Hold your points.</b> Under the usual ${hMoney(t.usual)}.`, '<button class="btn sm" data-go="points">Points</button>');
         if (t.loss) return row(tone.warn, ic('points'), `<b>Your ${hNum(t.n)} points would sell at a loss.</b> They cost you ${hMoney(t.each)} each, the market pays ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
@@ -12663,12 +12784,47 @@
         return `${words ? why : ''}<button class="btn sm" data-act="receipt" data-id="${hEsc(f.id)}"${f.why && !words ? ` title="${hEsc(f.why)}"` : ''}${busy ? ' disabled' : ''}>${busy ? 'Making it' : 'Generate receipt'}</button>`;
     }
 
+    /** One of your two forum posts: 'open' | 'closed' - the one for the shop as it stands, or the other. */
+    const hubPostOf = (d, which) => {
+        const pr = d && d.view && d.view.prices;
+        if (!pr || !pr.forum) return null;
+        return which === (pr.open ? 'open' : 'closed') ? pr.forum : pr.forum.other || null;
+    };
+
+    /**
+     * Your forum post in the box over the page - the owner, 2026-10-12: "can i open it like a popup that i can edit so
+     * i can open and close it by copy paste? i dont like how its giving me the info". Both posts are there whatever
+     * the shop says: the open one and the closed one. The title and the post can be changed before they are copied;
+     * what you changed is kept (hub.js, per post) until you take the Archive's post back. Only the top line can be
+     * copied by itself: OPEN FOR TRADES or CLOSED FOR NOW, to paste over the one on your thread.
+     * Nothing here depends on your changes: hub.js puts them in after the box is drawn, so typing never redraws it.
+     */
+    function popPost(d, pop) {
+        const pr = d.view.prices;
+        const which = pop.id === 'closed' ? 'closed' : 'open';
+        const f = hubPostOf(d, which);
+        if (!f) return '';
+        const now = which === (pr.open ? 'open' : 'closed');
+        const th = pr.thread;
+        const tab = (k, label) => `<button data-act="pop" data-v="post" data-id="${k}"${k === which ? ' class="on"' : ''}>${label}</button>`;
+        const shop = `Your shop is <b>${pr.open ? 'open' : 'closed'}</b>`;
+        return `<h2>Your forum post</h2>
+        <div class="pop-b" style="margin:0 0 10px"><span class="seg">${tab('open', 'Open')}${tab('closed', 'Closed')}</span><span class="t-muted">${now ? `${shop}: this is the post for now.` : `${shop}: this is the post for when you ${pr.open ? 'close' : 'open'}.`}</span></div>
+        ${now && pr.forum.behind ? `<div class="ta-hold" data-k="post-behind"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')}</div>` : ''}
+        <div class="ta-hold" id="pop-moved" hidden><b>The Archive's post has changed since you changed yours.</b> A piece became full or wanted again, or your rate moved. <button class="btn sm" data-act="post-reset" style="margin-left:6px">Take the new post</button></div>
+        <div class="pop-l">The title</div><input class="inp post-title" id="pop-title" value="${hEsc(f.title)}" autocomplete="off" spellcheck="false">
+        <div class="pop-l">The post · click in it to change a word</div>
+        <div class="msg post-view post-edit" id="pop-post" contenteditable="true" spellcheck="false" data-which="${which}">${f.html}</div>
+        <div class="pop-b"><button class="btn go" data-act="post-copy">Copy the post</button><button class="btn" data-act="post-top">Copy only the top line</button><button class="btn" data-act="post-title">Copy the title</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><button class="btn" id="pop-back" data-act="post-reset" hidden>Undo my changes</button><button class="btn" data-act="pop-close">Close</button></div>`;
+    }
+
     /**
      * The box over the page (hub.js draws it while `ui.pop` is set): a trade's receipt - its link to copy, and
      * what to send the seller with it. '' when there is nothing to show (the trade is gone): the box closes.
      */
     function hubPop(d, ui) {
         const pop = ui.pop;
+        if (pop && pop.kind === 'post') return popPost(d, pop);
         if (!pop || pop.kind !== 'receipt') return '';
         const f = d.view.trades.finished.find((x) => String(x.id) === String(pop.id));
         if (!f || !f.receipt) return '';
@@ -12799,6 +12955,16 @@
         closed: ['ahead', 'the title on Torn still says open'],
     };
 
+    /** What the post for the shop as it stands says, in a line, and which post you copied last. */
+    function pgPostSays(pr) {
+        const s = pr.forum.says;
+        const says = s.open
+            ? `The open post names <b>${hEsc(s.pct)}%</b> and ${s.struck.length ? `strikes out <b>${hPlural(s.struck.length, 'piece')}</b>: ${hEsc(s.struck.join(', '))}` : 'strikes out no piece'}.`
+            : 'The closed post says <b>CLOSED FOR NOW</b> and names no piece.';
+        const p = pr.forum.posted;
+        return `${says} <span class="t-muted">${p ? `You last copied the ${p.open ? 'open' : 'closed'} one on ${hWhen(p.at)} TCT.` : 'You have not copied a post from here yet.'}</span>`;
+    }
+
     function pgW3b(d) {
         const w = d.view.prices.w3b;
         const key = (d.keys && d.keys.w3b) || {};
@@ -12815,14 +12981,25 @@
             badge = `<span class="badge ahead">${hPlural(w.diff.set.length + w.diff.remove.length, 'price')} differ</span>`;
             body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? `<span class="t-muted">${d.busy && d.busy.w3b ? 'sending now' : `not sent yet: goes by itself ${d.busy && d.busy.next > d.view.at ? 'at ' + hClock(d.busy.next) + ' TCT' : 'within 2 minutes'}`}</span>` : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
         }
-        // The last write and how it ended: sent, sent and still different there, or refused with TornW3B's words.
+        // When your list there last changed from here, and the button that brings everything up to date now (the
+        // owner, 2026-10-12: "notify me last time pricelist was changed, and i should have a button that naturally
+        // updates it"): your prices fixed anew, TornW3B written if it says anything else, the shared server told.
+        const ch = key.set && d.busy ? d.busy.changed : null;
         const wr = key.set && d.busy ? d.busy.wrote : null;
-        if (wr) {
-            const by = wr.by === 'by itself' ? ' by itself' : '';
-            body += `<div class="row"><span class="grow1 ${wr.ok ? (wr.left ? 't-warn' : 't-muted') : 't-bad'}">${wr.ok
-                ? `<b class="${wr.left ? '' : 't-good'}">Sent</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}. ${wr.left ? `TornW3B took it, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.` : 'TornW3B took it.'}`
-                : `<b>Refused</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}.`}</span></div>`;
+        const byOf = (x) => (x.by === 'by itself' ? 'by itself' : 'on your press');
+        if (key.set) {
+            body += `<div class="row" data-k="w3b-changed"><span class="grow1">${ch
+                ? `Last changed <b>${hWhen(ch.at)} TCT</b> <span class="t-muted">· ${hAge(ch.at, d.view.at)} · ${byOf(ch)} · ${hEsc(ch.text)}</span>`
+                : '<span class="t-muted">Not changed from here yet.</span>'}</span><button class="btn sm" data-act="w3b" data-v="update"${d.busy && d.busy.w3b ? ' disabled' : ''}>${d.busy && d.busy.w3b ? 'Updating' : 'Update now'}</button></div>`;
         }
+        // The last write when it did not simply go through: refused with TornW3B's words, taken and still different
+        // there, or a press that found nothing to change.
+        if (wr && !wr.ok) body += `<div class="row"><span class="grow1 t-bad"><b>Refused</b> ${hClock(wr.at)} TCT, ${byOf(wr)}: ${hEsc(wr.text)}.</span></div>`;
+        else if (wr && wr.left) body += `<div class="row"><span class="grow1 t-warn">TornW3B took that write, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.</span></div>`;
+        else if (wr && wr.same) body += `<div class="row"><span class="grow1 t-muted">Checked ${hClock(wr.at)} TCT on your press: nothing to change, ${hEsc(wr.text)}.</span></div>`;
+        // Your own price list as the shared server holds it for Torn Bids (it trades with you on this one).
+        const sv = d.server && d.server.ownAt > 0 ? d.server.ownAt : 0;
+        if (sv) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server holds these prices for Torn Bids: told ${hAge(sv, d.view.at)}${d.view.prices.open ? '' : ', as what you would pay if you opened now'}.</span></div>`;
         // The pieces you hold too many of are not on your list, and come back by themselves.
         if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
         const listed = !key.set ? '' : w.listedUntil > d.view.at ? `Buyers see your list until ${hDay(w.listedUntil)}: TornW3B shows it for 7 days after a receipt.` : 'Buyers do not see your list: TornW3B shows it for 7 days after a receipt.';
@@ -12889,8 +13066,9 @@
           <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
           ${pgW3b(d)}
           <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-            ${pr.forum.behind ? `<div class="ta-hold" data-k="post-behind" style="margin-bottom:10px"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Copy the post and paste it over the old one on Torn.</div>` : ''}<div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
-            <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}" data-post="1">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
+            ${pr.forum.behind ? `<div class="ta-hold" data-k="post-behind" style="margin-bottom:10px"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Open the post, copy it and paste it over the old one on Torn.</div>` : ''}
+            <div class="rows"><div class="row"><span class="grow1">${pgPostSays(pr)}</span></div></div>
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn${pr.open && pr.forum.behind ? ' go' : ''}" data-act="pop" data-v="post" data-id="open">Open post</button><button class="btn${!pr.open && pr.forum.behind ? ' go' : ''}" data-act="pop" data-v="post" data-id="closed">Closed post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
           </div></div>
           <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
         </div>
@@ -13169,6 +13347,7 @@
 
 
 
+
     // What the drawing's stylesheet has no word for: real boxes to type in, links that look like buttons, an empty graph.
     const HUB_CSS_MORE = `
     input.inp { font: inherit; font-variant-numeric: tabular-nums; outline: 0; min-width: 0; }
@@ -13210,6 +13389,7 @@
         <span class="pill" id="pill-pts"></span>
         <span class="pill opt" id="pill-hand"></span>
         <span class="pill opt" id="pill-vault"></span>
+        <button class="pill post" id="pill-post" data-act="pop" data-v="post" hidden></button>
         <span class="pill" id="pill-age"></span>
         <button class="btn" data-act="read">Read now</button>
       </header>
@@ -13244,6 +13424,13 @@
         let shown = '';
         let tabsShown = '';
         let toastTrade = null;
+        let toastPost = false;
+        // Your own changes to a forum post, per post ('open' | 'closed'): { src, html, title } - `src` is the Archive's
+        // post they were made on. Kept in this browser until you take the Archive's post back.
+        const POST_EDIT_KEY = 'tarc-post-edit';
+        let postEdit = {};
+        try { const kept = JSON.parse(win.localStorage.getItem(POST_EDIT_KEY) || '{}'); if (kept && typeof kept === 'object') postEdit = kept; } catch { postEdit = {}; }
+        const keepPostEdit = () => { try { win.localStorage.setItem(POST_EDIT_KEY, JSON.stringify(postEdit)); } catch { /* kept for this page only */ } };
         let toastT = 0;
         let looked = { id: '', at: 0 };
         const view = $('#view');
@@ -13343,6 +13530,11 @@
                 if (flash) { pts.classList.remove('flash'); void pts.offsetWidth; pts.classList.add('flash'); }
             }
             const pill = (id, label, n) => { const el = $(id); el.hidden = n == null; if (n != null) el.innerHTML = `${label} <b class="num">${n >= 1e7 ? hShort(n) : hMoney(n)}</b>`; };
+            // Your forum post is behind your stock or your shop: on every page, and a press opens the post.
+            const behind = v.prices && v.prices.forum ? v.prices.forum.behind : null;
+            const pp = $('#pill-post');
+            pp.hidden = !behind;
+            if (behind) { pp.dataset.id = v.prices.open ? 'open' : 'closed'; pp.title = behind.words.join(' '); const html = `<b>Forum post behind</b>${behind.strike.length ? ` · ${behind.strike.length} full now` : ''}`; if (pp._src !== html) { pp.innerHTML = html; pp._src = html; } }
             pill('#pill-hand', 'On hand', v.top.onHand);
             pill('#pill-vault', 'Vault', v.top.vault);
             drawAge();
@@ -13382,7 +13574,43 @@
             if (ui.pop && !html) ui.pop = null;
             $('#pop').classList.toggle('on', !!html);
             const card = $('#pop-card');
-            if (card._src !== html) { card.innerHTML = html; card._src = html; }
+            if (card._src !== html) { card.innerHTML = html; card._src = html; fillPost(); }
+        }
+
+        /** The post in the box: your own changes put over the Archive's, and what goes with them shown. */
+        function fillPost() {
+            const box = $('#pop-post');
+            if (!box) return;
+            const which = box.dataset.which;
+            const f = hubPostOf(desk, which);
+            const mine = postEdit[which];
+            if (mine && typeof mine.html === 'string') { box.innerHTML = mine.html; if (typeof mine.title === 'string') $('#pop-title').value = mine.title; }
+            $('#pop-back').hidden = !mine;
+            $('#pop-moved').hidden = !(mine && f && mine.src !== f.html);
+        }
+
+        /** Typed in the box: kept at once, and nothing is drawn again for it. */
+        function postTyped() {
+            const box = $('#pop-post');
+            if (!box) return;
+            const which = box.dataset.which;
+            const f = hubPostOf(desk, which);
+            const had = postEdit[which];
+            postEdit[which] = { src: had ? had.src : f ? f.html : '', html: box.innerHTML, title: $('#pop-title').value };
+            keepPostEdit();
+            $('#pop-back').hidden = false;
+        }
+
+        /** The post as plain text, from the box as it stands: a struck word with a line through each letter. */
+        function postPlain(box) {
+            const text = (n) => (n.nodeType === 3 ? n.nodeValue : n.nodeType !== 1 || n.tagName === 'BR' ? '' : /^(S|STRIKE|DEL)$/.test(n.tagName) ? setStruck(n.textContent) : [...n.childNodes].map(text).join(''));
+            return [...box.childNodes].map((n) => (n.nodeType === 1 && n.tagName === 'HR' ? SET_RULE : text(n))).join('\n');
+        }
+
+        function openPost(which) {
+            const open = desk && desk.view && desk.view.prices ? desk.view.prices.open : true;
+            ui.pop = { kind: 'post', id: which || (open ? 'open' : 'closed') };
+            drawPop();
         }
 
         function fitTop() {
@@ -13479,6 +13707,20 @@
             else if (a === 'server-forget') act('serverForget');
             else if (a === 'receipt') act('receipt', id);
             else if (a === 'pop') { ui.pop = { kind: v, id }; drawPop(); }
+            // The forum post's box: what is copied is what the box shows, your changes with it.
+            else if (a === 'post-copy' || a === 'post-top' || a === 'post-title') {
+                const box = $('#pop-post');
+                if (!box) return;
+                const which = box.dataset.which;
+                const top = box.firstElementChild;
+                if (a === 'post-title') act('copy', $('#pop-title').value, '');
+                else if (a === 'post-top') { if (!top) return; act('copy', top.textContent.trim(), top.outerHTML); }
+                else act('copy', postPlain(box), box.innerHTML);
+                const was = el.textContent;
+                el.textContent = 'Copied ✓';
+                win.setTimeout(() => { if (el.isConnected) el.textContent = was; if (a === 'post-copy') act('posted', which); else if (a === 'post-top') act('postedTop', which); }, 1400);
+            }
+            else if (a === 'post-reset') { const box = $('#pop-post'); if (box) { delete postEdit[box.dataset.which]; keepPostEdit(); $('#pop-card')._src = ''; drawPop(); } }
             else if (a === 'pop-close') { ui.pop = null; drawPop(); }
             else if (a === 'w3b') act('w3b', v);
             else if (a === 'zip') act('zip');
@@ -13501,12 +13743,22 @@
             const g = t.closest('[data-go]');
             if (g) go(g.dataset.go, g.dataset.pane);
         });
+        // The forum post's box: every change of yours is kept; a paste comes in as plain words (nothing foreign).
+        doc.addEventListener('input', (e) => { const t = e.target; if (t && (t.id === 'pop-post' || t.id === 'pop-title')) postTyped(); });
+        doc.addEventListener('paste', (e) => {
+            const t = e.target && e.target.closest ? e.target.closest('#pop-post') : null;
+            if (!t) return;
+            e.preventDefault();
+            doc.execCommand('insertText', false, (e.clipboardData && e.clipboardData.getData('text/plain')) || '');
+        });
         doc.addEventListener('change', (e) => {
             const el = e.target;
             if (el.dataset && el.dataset.set) act('set', { [el.dataset.set]: setValue(el.dataset.set, el.value) });
         });
         doc.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && ui.pop) { ui.pop = null; drawPop(); return; }
+            // In the forum post's box every key is yours: no shortcut, and Enter is a new line.
+            if (e.target.isContentEditable) return;
             const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
             if (typing && e.key === 'Enter') { e.target.blur(); const k = e.target.dataset.key; if (k) { const b = $(`[data-act="key-save"][data-v="${k}"]`); if (b) b.click(); } if (e.target.dataset.server) { const b = $('[data-act="server-save"]'); if (b) b.click(); } return; }
             if (typing || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== 'n' || ui.page !== 'buy') return;
@@ -13534,11 +13786,12 @@
 
         const toastOn = (on) => $('#toast').classList.toggle('on', on);
         $('#toast-x').onclick = () => toastOn(false);
-        $('#toast-go').onclick = () => { if (toastTrade) ui.trade = toastTrade; toastOn(false); go('trades'); };
-        function toast({ title, body, tradeId }) {
+        $('#toast-go').onclick = () => { toastOn(false); if (toastPost) { openPost(); return; } if (toastTrade) ui.trade = toastTrade; go('trades'); };
+        function toast({ title, body, tradeId, post }) {
             $('#toast-t').textContent = title || '';
             $('#toast-s').textContent = body || '';
             toastTrade = tradeId || null;
+            toastPost = !!post;
             toastOn(true);
             win.clearTimeout(toastT);
             toastT = win.setTimeout(() => toastOn(false), 9000);
@@ -13565,6 +13818,8 @@
             },
             toast,
             go,
+            /** The forum post's box, on the post for the shop as it stands. */
+            post: () => openPost(),
         };
     }
 
@@ -18581,8 +18836,8 @@
             const hidden = document.visibilityState !== 'visible';
             if (s.notify === 'browser' && hidden && typeof Notification === 'function' && Notification.permission === 'granted') {
                 try {
-                    const note = new Notification(n.title, { body: n.body, tag: 'tarc-trade-' + (n.tradeId || '') });
-                    note.onclick = () => { window.focus(); if (hub && n.tradeId) hub.go('trades', 0); note.close(); };
+                    const note = new Notification(n.title, { body: n.body, tag: n.post ? 'tarc-post' : 'tarc-trade-' + (n.tradeId || '') });
+                    note.onclick = () => { window.focus(); if (hub && n.tradeId) hub.go('trades', 0); else if (hub && n.post) hub.post(); note.close(); };
                 } catch { /* the toast below still says it */ }
             }
             if (hub) hub.toast(n);
@@ -18661,7 +18916,7 @@
 
         function serverDesk() {
             const st = link.status();
-            return { ...serverLines(st, now()), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
+            return { ...serverLines(st, now()), ownAt: link.ownSaidAt(), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
         }
 
         // ---- what Torn's tabs told us ------------------------------------------------------------------------------
@@ -18865,7 +19120,8 @@
             readStock: () => { engine.act('readStock'); },
             copy: (text, html) => (html ? gmCopyRich(text, html) : gmCopy(text)),
             // "Copy the post": the engine keeps what that post says, to tell you when your thread is behind it.
-            posted: () => engine.act('posted'),
+            posted: (which) => engine.act('posted', which),
+            postedTop: (which) => engine.act('postedTop', which),
             keySave(kind, value) {
                 if (!KEY_KINDS.includes(kind) || !value) return;
                 gmSet('key.' + kind, String(value).trim());
@@ -18888,7 +19144,8 @@
                 if (shown[kind]) setTimeout(schedule, REVEAL_MS + 100);
             },
             zip,
-            w3b: (op) => engine.act('w3b', op),
+            // "Update now": the server is told your price list again with an exchange that comes soon.
+            w3b: (op) => { if (op === 'update' && link) link.sayOwn(); engine.act('w3b', op); },
             receipt: (id) => engine.act('receipt', id),
             usageExport() { flushUsage(); download('torn-archive-usage-' + stamp() + '.csv', usageCsv(gmGet('usage', null), { by: 'minute' }), 'text/csv'); },
             notifyTest() {

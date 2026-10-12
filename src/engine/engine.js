@@ -851,8 +851,51 @@ export function makeEngine(env) {
      * owner, 2026-10-12: "i need to know if it is sending, sent, or refused/error").
      */
     function wrote(w) {
-        S.w3b = { ...S.w3b, wrote: { at: env.now(), ...w } };
+        const at = env.now();
+        // `changed`: the last write TornW3B took - when your list there last changed from here. Kept apart from
+        // `wrote`, so a later refusal or a press that found nothing to change does not hide it (the owner,
+        // 2026-10-12: "torn archive should notify me last time pricelist was changed").
+        S.w3b = { ...S.w3b, wrote: { at, ...w }, ...(w.ok && !w.same ? { changed: { at, by: w.by, text: w.text } } : {}) };
         touch('w3b');
+    }
+
+    /**
+     * "Update now" - the owner, 2026-10-12: "i should have a button that naturally updates it". Your prices are
+     * fixed anew at the points price of this moment (a new hour starts), your list on TornW3B is read and written
+     * if it says anything else, and the shared server is told (main.js). With a trade with set pieces open the
+     * prices stand as they are - its receipt is made from your list - and only the list is put right.
+     */
+    async function updateNow() {
+        const open = !!settings().open;
+        const held = open && tradeOpen();
+        env.say('note', 'Pressed: Update my prices now', !open ? 'your shop is closed: nothing is fixed, your list is checked' : held ? 'a trade with set pieces is open: your prices stand, your list is checked' : 'your prices are fixed anew');
+        if (open && !held && S.rate.table) { S.rate = { ...S.rate, table: null }; touch('rate'); }
+        cache = null;
+        last = null;
+        if (open) rateKeep(env.now(), view());
+        if (!keyOk('w3b') || !S.self.id) return;
+        await readOwnList();
+        cache = null;
+        const w = listWrite();
+        if (w.body) await sendList('your press');
+        else wrote({ ok: true, by: 'your press', text: w.why, same: true });
+    }
+
+    /**
+     * Your forum post fell behind your stock or your shop (core/sets.js postBehind): told at once, each time what
+     * it is behind on changes - the owner, 2026-10-12: "warn me when theres a full stock instantly to change my
+     * forum thread". Not for what already stood when the page was opened: the hub shows that.
+     */
+    let postSaid = null;
+    function postWatch(v) {
+        const b = v.ready && v.prices && v.prices.forum ? v.prices.forum.behind : null;
+        const sig = b ? b.words.join(' ') : '';
+        if (!v.ready || sig === postSaid) return;
+        const first = postSaid === null;
+        postSaid = sig;
+        if (!sig || first) return;
+        env.say('note', 'Your forum post is behind', sig);
+        env.notify({ title: 'Update your forum post', body: sig, post: true });
     }
 
     /** "Keep it at my rate by itself" is on and nothing is sent: the reason, said once each time it changes. */
@@ -997,6 +1040,7 @@ export function makeEngine(env) {
         readBids();
         rateKeep(now, v);
         stepOwn(now);
+        postWatch(v);
         if (v.ready && now - (due.day || 0) > 0) { due.day = now + EG_MIN; recordDay(S, v, now); touch('hist'); }
         flush();
     }
@@ -1069,7 +1113,10 @@ export function makeEngine(env) {
         for (const r of S.ledger.rows) if (r.side === 'buy' && r.venue === 'bazaar' && r.who && now - r.t < SERVER_BOUGHT_MS) bought.push({ whoId: r.who, id: r.itemId, qty: r.qty, price: r.each, t: r.t });
         // Seen on the page and not in the log yet.
         for (const b of S.seen) if (b.whoId && !b.no && b.t > S.log.until && now - b.t < SERVER_BOUGHT_MS) bought.push({ whoId: b.whoId, id: b.id, qty: b.qty, price: b.price, t: b.t });
-        return { sellers: [...sellers], looking: shopsWanted(v).map(Number), worth, bought, dir, need: v.pieces.filter((p) => p.need > 0).map((p) => Number(p.id)) };
+        // Your own price list (core/server.js serverBody `own`): what you pay for each piece now, open or closed.
+        const said = v.ready && v.prices.said && v.prices.said.rows.length ? v.prices.said : null;
+        const own = said ? { open: said.open, prices: Object.fromEntries(said.rows.map((r) => [r.itemID, r.price])), off: said.off } : null;
+        return { sellers: [...sellers], looking: shopsWanted(v).map(Number), worth, bought, dir, need: v.pieces.filter((p) => p.need > 0).map((p) => Number(p.id)), own };
     }
 
     /** One answer of the shared server. */
@@ -1219,7 +1266,20 @@ export function makeEngine(env) {
         },
         clearList() { S.cart = []; idle(); touch('cart', 'run'); },
         // "Copy the post" pressed: what that post says is what your thread is taken to say from now on.
-        posted() { S.posted = { ...view().prices.forum.says, at: env.now() }; touch('posted'); },
+        // `which` 'open' | 'closed': the post copied, when it is not the one of the shop as it stands.
+        posted(which) {
+            const f = view().prices.forum;
+            const pick = (which === 'open' || which === 'closed') && which !== (f.says.open ? 'open' : 'closed') ? f.other : f;
+            S.posted = { ...pick.says, at: env.now() };
+            touch('posted');
+        },
+        // Only the top line copied (OPEN FOR TRADES / CLOSED FOR NOW): your thread says that now, its pieces as before.
+        postedTop(which) {
+            const f = view().prices.forum;
+            const was = S.posted && Array.isArray(S.posted.struck) ? S.posted : { pct: f.says.pct, struck: [] };
+            S.posted = { ...was, open: which === 'open', at: env.now() };
+            touch('posted');
+        },
         // `place` (Next pressed on a Torn page): where you stand. A bazaar of the list that is not the stop the run
         // is on becomes that stop first - you did not follow the order - and Next goes on from there; the stops
         // passed over stay on the list. (Until 1.3.0 Next was only offered on the current stop.)
@@ -1253,7 +1313,7 @@ export function makeEngine(env) {
         w3b(op) {
             if (flags.w3b) return;
             flags.w3b = true;
-            (op === 'send' ? sendList() : readOwnList()).catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
+            (op === 'send' ? sendList() : op === 'update' ? updateNow() : readOwnList()).catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
         },
         receipt(tradeId) { makeReceipt(String(tradeId)); },
     };
@@ -1312,7 +1372,8 @@ export function makeEngine(env) {
         serverMark: () => ({ seq: S.server.seq, seenAt: S.server.seenAt }),
         keys: () => keyState,
         // `wrote`: the last write of your list and how it ended; `next`: when a write by itself may go again.
-        busy: () => ({ ...flags, wrote: S.w3b.wrote || null, next: syncAt ? syncAt + EG_SYNC_GAP_MS : 0 }),
+        // `changed`: the last write TornW3B took (a state kept before 1.3.6 has it only as `wrote`).
+        busy: () => ({ ...flags, wrote: S.w3b.wrote || null, changed: S.w3b.changed || (S.w3b.wrote && S.w3b.wrote.ok ? S.w3b.wrote : null), next: syncAt ? syncAt + EG_SYNC_GAP_MS : 0 }),
         mv: mvOf(S),
         /** Whether the settings changed something the reads depend on. */
         settingsChanged() {

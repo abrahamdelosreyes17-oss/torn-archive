@@ -284,7 +284,12 @@ table.t { width: 100%; border-collapse: collapse; }
 .pop .card { width: min(620px, 92%); padding: 22px 24px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line2); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
 .pop h2 { margin: 0 0 8px; font: 650 19px var(--disp); } .pop p { margin: 0 0 10px; color: var(--text2); }
 .pop-l { margin: 14px 0 6px; color: var(--muted); font-size: 12px; } .pop-m { overflow-wrap: anywhere; user-select: all; }
-.pop-b { display: flex; gap: 8px; margin-top: 10px; align-items: center; } .pop-b .sp { flex: 1; }
+.pop-b { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; } .pop-b .sp { flex: 1; } .pop [hidden] { display: none !important; }
+/* Your forum post in the box (1.3.6): the post as it will look, to change before it is copied. */
+.pop .card:has(.post-edit) { width: min(780px, 94%); max-height: 94%; overflow: auto; }
+.post-edit { margin-top: 0; padding: 10px 12px; border-top: 1px solid var(--line); max-height: 44vh; overflow: auto; outline: none; cursor: text; } .post-edit:focus { border-color: var(--brand); }
+.post-title { width: 100%; box-sizing: border-box; font: inherit; outline: none; } .post-title:focus { border-color: var(--brand); }
+.pill.post { cursor: pointer; font: inherit; font-size: 12px; background: var(--warn-bg); border-color: rgba(245,165,36,.4); color: var(--text2); } .pill.post b { color: var(--warn); } .pill.post[hidden] { display: none; }
 .paused h2 { margin: 0 0 8px; font: 650 19px var(--disp); display: flex; align-items: center; gap: 10px; } .paused p { margin: 0 0 10px; color: var(--text2); }
 
 /* ---------- item pictures: Torn's own, as Torn Bids shows them ---------- */

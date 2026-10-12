@@ -109,8 +109,8 @@ what Torn Archive uses, the server takes less; a Torn Archive it has not heard f
 
 | | |
 | --- | --- |
-| What it is told | The bazaars that sell a piece and the ones your shopping list names, what each of the 24 pieces is worth to you, a bazaar buy of a piece (bazaar, piece, count, price, time) so the others stop being sent to a shelf you emptied, when you last read a piece's listing on TornW3B, which pieces are still on your list to buy (their numbers, not how many), and how many Torn requests you used in the last minute. |
-| What it is never told | A key. How many of anything you hold, your money, your trades, your prices, your profit. Any item that is not a plushie or a flower. |
+| What it is told | The bazaars that sell a piece and the ones your shopping list names, what each of the 24 pieces is worth to you, a bazaar buy of a piece (bazaar, piece, count, price, time) so the others stop being sent to a shelf you emptied, when you last read a piece's listing on TornW3B, which pieces are still on your list to buy (their numbers, not how many), how many Torn requests you used in the last minute, and your own price list: what you pay a seller for each set piece now (shop closed: what you would pay if you opened), whether your shop is open, and which pieces you take none of now - what your public TornW3B list and your forum post say. The server keeps the last one said and hands it to the others' Torn Trading, so a friend there sees your prices while your shop is closed and your PC is off. |
+| What it is never told | A key. How many of anything you hold, your money, your trades, your profit, a price of anything that is not a set piece. Any item that is not a plushie or a flower. |
 | What it gives | Bazaars as Torn itself shows them, read with a key of each of you: a price there is under a minute old, where TornW3B's can be hours old. Torn Archive then leaves those bazaars to the server and does not read them itself. Also the points market (once a minute) and the Item Market's cheapest rows of each piece (every minute for a piece still to buy, every ten for the rest): while the server's read is fresh, Torn Archive does not ask Torn for them. |
 | Your Torn limit | The server reads with your key too, so its part of your 100 a minute is left to it: Torn Archive and Torn Trading together plus the server stay under 80. |
 | Its address | Built in, never shown on the page, in no log and no report. An address and password typed into an older copy are still used, and can be forgotten in Settings. |
@@ -175,7 +175,10 @@ rest is worked out.
 - **Your TornW3B list is written whenever it does not say those prices**: after each hour's fix, and inside the
   hour when a price was changed on TornW3B's own page (your list is read every five minutes; a write is at
   least two minutes after the last). Every price is set fixed, in dollars, with TornW3B's inflation protection
-  on. Your own press sends at any time.
+  on. Your own press sends at any time. The TornW3B panel says when your list last changed from here, and
+  whether by itself or on your press. **Update now** works the prices out anew (not while a trade with set
+  pieces is open: that trade holds them), reads your list and writes it if it differs; with nothing to change
+  it says so.
 - **A piece you hold too many of is not on the list** (over your target: the word "ahead" on Your stock). It
   comes back by itself when you no longer do. The pieces of a trade that ended in the last six hours stay on
   until its receipt is made, since TornW3B makes a receipt from this list.
@@ -193,10 +196,20 @@ age said from an hour on. When the piece you are shortest of has a buyer over yo
 you are not made to pay over the ceiling for it. Your forum text keeps your rate; when a set is paid less today,
 the page and the box on your thread say so.
 
-The forum post names every piece, plushies and flowers each on a line, and strikes out the ones you hold too
-many of - the same pieces your TornW3B list leaves out. "Copy the post" puts the post on the clipboard both
-with the look and as plain text (a line through each letter), so the struck pieces stay struck where you paste.
-It also tells sellers to look at your profile picture for whether you are open.
+The forum post names every piece, plushies and flowers each on a line, and strikes out in red the ones you hold
+too many of - the same pieces your TornW3B list leaves out. It carries your rate and the link to your TornW3B
+price list, and tells sellers to look at your profile picture for whether you are open.
+
+**The post opens in a box** ("Open post" / "Closed post" on My prices, "The post" on a warning): both posts are
+always there, whichever your shop is. You can change any word in the box, and the title; what you changed is
+kept until you press "Undo my changes", and the box says when the Archive's post has changed since. "Copy the
+post" copies what the box shows, with the look and as plain text (a line through each letter); "Copy only the
+top line" copies OPEN FOR TRADES or CLOSED FOR NOW by itself, to paste over the top line of your thread;
+"Copy the title" the title. "Your thread" is beside them.
+
+**When your thread falls behind** - a piece became full or is wanted again, your rate changed, your shop opened
+or closed since the post you copied last - you are told once at that moment (a notification, and a note in the
+hub), and "Forum post behind" stays in the hub's top bar on every page until you copy the new post.
 
 ## The Ledger
 

@@ -385,16 +385,19 @@ export function mostWanted(stocks, perSet = 3) {
 
 /** A word struck out in plain text: a line through each letter, kept wherever it is pasted. */
 const SET_STRIKE = '̶';
-const setStruck = (word) => [...String(word)].map((c) => (c === ' ' ? c : c + SET_STRIKE)).join('');
+export const setStruck = (word) => [...String(word)].map((c) => (c === ' ' ? c : c + SET_STRIKE)).join('');
 const setHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 const SET_DOT = ' · ';
 /** A list in the post is cut into lines of about this many letters: the posted thread is narrower than the box you
  *  paste into, and a line Torn wraps leaves one name alone under the rest (the owner's thread, 2026-10-12). */
 const SET_LINE_LETTERS = 60;
-const SET_RULE = '─'.repeat(20);
+export const SET_RULE = '─'.repeat(20);
 const SET_OPEN_COLOR = '#3fb950';
 const SET_CLOSED_COLOR = '#f85149';
+/** A struck piece is red, word and line (the owner, 2026-10-12: "the strikeout should be red in color"). The colour
+ *  sits outside the `<s>`: the line takes the colour of the element it is drawn on. */
+const SET_STRUCK_COLOR = SET_CLOSED_COLOR;
 /**
  * How a line is centred for Torn's forum box (TinyMCE 6.8.5, read on the owner's thread 2026-10-12): a paste loses
  * every `style`, and the posted thread drops `<center>` and `align` - but the box gives `data-mce-style` back as
@@ -433,7 +436,7 @@ function setRowText(row) {
 function setRowHtml(row) {
     if (row.gap) return '<br>';
     if (row.rule) return '<hr>';
-    let inner = row.parts.map((p) => (p.s ? `<s>${setHtml(p.t)}</s>` : p.href ? `<a href="${setHtml(p.href)}">${setHtml(p.t)}</a>` : setHtml(p.t))).join('');
+    let inner = row.parts.map((p) => (p.s ? `<font color="${SET_STRUCK_COLOR}"><s>${setHtml(p.t)}</s></font>` : p.href ? `<a href="${setHtml(p.href)}">${setHtml(p.t)}</a>` : setHtml(p.t))).join('');
     if (row.bold) inner = `<b>${inner}</b>`;
     if (row.size || row.color) inner = `<font${row.size ? ` size="${row.size}"` : ''}${row.color ? ` color="${row.color}"` : ''}>${inner}</font>`;
     return `<div ${SET_CENTRE}>${inner}</div>`;
@@ -449,8 +452,10 @@ function setRowHtml(row) {
  * plushies/flower that is overstocked". These are the pieces your TornW3B list leaves out (core/tw3b-list.js).
  * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
  * @param list your price list's address on TornW3B, '' when your Torn id is not known: its line is then left out
- * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
- *          `html` is the same post for a box that keeps the look (Torn's forum box)
+ * @returns { title, post, html, top, says } - `post` is plain text, a struck piece with a line through each letter;
+ *          `html` is the same post for a box that keeps the look (Torn's forum box); `top` is its first line
+ *          alone, { text, html }: OPEN FOR TRADES or CLOSED FOR NOW, to paste over the one on your thread (the
+ *          owner, 2026-10-12: "I need that Open thing again, just the open ... the green one")
  */
 export function forumText({ open, pct, stocks = [], sets = SETS, list = '' }) {
     const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
@@ -483,7 +488,7 @@ export function forumText({ open, pct, stocks = [], sets = SETS, list = '' }) {
     // What this post tells a seller that an edit of your thread is worth: the word on its top, your rate, the pieces
     // struck out (closed, it names no piece).
     const says = { open: !!open, pct: rate, struck: open ? rows.flatMap((r) => (r.parts || []).filter((p) => p.s).map((p) => p.t)).sort() : [] };
-    return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join(''), says };
+    return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join(''), top: { text: setRowText(rows[0]), html: setRowHtml(rows[0]) }, says };
 }
 
 /**
