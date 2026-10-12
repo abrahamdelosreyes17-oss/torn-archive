@@ -6,6 +6,10 @@
 //     await m.measureHub();              // hub.html: every page and every tab of it
 //     m.measureBox();                    // torn.html: the overlay's box (and "Your stock")
 // Each finding: { what, el, text, by } - what is wrong, the element, its words, and by how many pixels.
+// Measure with the side menu pinned open as well (localStorage 'tarc-pin' = '1', then reload): the owner's is, and
+// a 1707 px window then leaves the pages 1471 px, not 1647. 1.3.0 was measured only with it closed, and Buy and
+// Stock fell into their narrow layouts on his screen. A page that scrolls is no finding here: read
+// `.view.scrollHeight - .view.clientHeight` for that.
 
 const SKIP = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'OPTION', 'TITLE']);
 

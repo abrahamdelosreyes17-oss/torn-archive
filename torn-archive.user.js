@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.0
+// @version      1.3.1
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.0';
+    const TARC_BUILD_VERSION = '1.3.1';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -11303,6 +11303,8 @@
        three lines - so as many go across as fit, at most --cols (two rows on a wide window), and a window too short
        scrolls the page. Nothing in a tile is hidden by its size any more. */
     .pgrid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(max(140px, calc((100% - (var(--cols, 7) - 1) * 8px) / var(--cols, 7) - .1px)), 1fr)); grid-auto-rows: minmax(166px, 1fr); }
+    /* Seven tiles across need 1056 px: on a narrower page the sets take three quarters of it, not two thirds. */
+    @container (max-width: 1640px) { .page.p-stock { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); } }
     .p-stock > .col { min-height: auto; } .p-stock .panel.setp { flex: 1 0 auto; min-height: auto; } .p-stock .panel.setp > .pb { display: grid; flex: 1 0 auto; min-height: auto; }
     .pc { border-radius: 10px; background: var(--raised); border: 1px solid var(--line); min-width: 0; transition: transform .2s var(--ease), border-color .2s; }
     .pc:hover { transform: translateY(-2px); border-color: var(--line2); }
@@ -11398,8 +11400,11 @@
 
     /* ---------- buy: every place that sells a piece, and the shopping list ---------- */
     .p-buy { grid-template-columns: minmax(0, 1fr); } .p-buy > .pane { height: 100%; } .gbuy { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
-    /* Side by side only while "Sold by" keeps room for a seller's name beside its six columns. */
-    @container (max-width: 1560px) { .pane.stk { grid-template-columns: minmax(0, 1fr); } .pane.stk .minc { min-height: 260px !important; } }
+    /* Side by side only while "Sold by" keeps room for a seller's name beside its six columns. With the side menu
+       pinned open a 1707 px window leaves the pages 1471 px (the owner, 2026-10-12: "why do i have to be at 90%"):
+       there "Sold by" keeps the width it needs and the table beside it gives way; one under the other only below that. */
+    @container (max-width: 1560px) { .gbuy { grid-template-columns: minmax(0, 1fr) 632px; } }
+    @container (max-width: 1400px) { .pane.stk { grid-template-columns: minmax(0, 1fr); } .pane.stk .minc { min-height: 260px !important; } }
     .t tr.pick { cursor: pointer; } .t tbody tr.sel, .t tbody tr.sel:hover { background: var(--brand-bg); box-shadow: inset 2px 0 0 var(--brand); }
     .rec { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; } .rec .hero { white-space: nowrap; } .rec-t { flex: 1; min-width: 240px; color: var(--text2); line-height: 1.5; } .rec-t b { color: var(--text); } .rec-b { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; } .from { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; white-space: nowrap; } .ph .from { margin-right: 6px; }
     /* "Against its worth" holds "No thanks · $1,234 a point over" whole (1.3.0: at 150px it ran under "Checked"). */
