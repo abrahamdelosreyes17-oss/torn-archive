@@ -22,7 +22,7 @@ export const SET_MARK_CLASS = 'tarc-setmark';
 export const SET_FILL_CLASS = 'tarc-setfill';
 /* A hairline on the top edge of a row of Torn's (the points market). */
 export const SET_RULE_CLASS = 'tarc-setrule';
-/* A line of ours after one of Torn's money boxes: Fill buttons and a few words (1.3.7). */
+/* Small buttons of ours floating beside one of Torn's money boxes (1.3.7; floating, and so taking no room, since 1.3.8). */
 export const SET_FILLROW_CLASS = 'tarc-fillrow';
 
 const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS + ', .' + SET_FILLROW_CLASS;
@@ -78,8 +78,7 @@ export function setMark(host, text, state = '', where = '') {
 
 /** Every Sets mark and Fill button off the page, and Torn's elements given back as they were. */
 export function clearSetMarks(doc = document) {
-    for (const row of doc.querySelectorAll('.' + SET_FILLROW_CLASS)) row.remove();
-    for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS)) {
+    for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILLROW_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS)) {
         const host = m.parentElement;
         m.remove();
         if (host && !host.querySelector(':scope > .tarc-float')) releaseMarks(host);
@@ -106,10 +105,18 @@ export function boxesNear(el, min = 1) {
     return { root: null, boxes: [] };
 }
 
-/** A box and its hidden twin (Torn's money boxes keep the plain number in one), for writeInputs. */
+/**
+ * A box and its hidden twin (Torn's money boxes keep the plain number in one), for writeInputs.
+ * Only the boxes: the group also holds Torn's "$" button (span.input-money-symbol > input.wai-btn, type button -
+ * read on the real vault and Item Market 2026-10-12). Until 1.3.8 it was handed over with them, and being the
+ * first input you can see it was the one told "typed": Torn's own script on the text box never heard it, so the
+ * number stood there without its commas and WITHDRAW / Buy stayed off (the owner: "when i press withdraw, button
+ * doesnt pop up. same with item market when filled").
+ */
 export function boxTwins(box) {
     const group = box && box.closest && box.closest('.input-money-group');
-    return group ? [...group.querySelectorAll('input')] : box ? [box] : [];
+    const isBox = (i) => /^(text|number|tel|hidden|)$/.test(String(i.getAttribute('type') || '').toLowerCase());
+    return group ? [...group.querySelectorAll('input')].filter(isBox) : box ? [box] : [];
 }
 
 /**
@@ -260,9 +267,10 @@ export const boxesMeet = (a, b, gap = 3) => a.left < b.right + gap && a.right > 
  * It never stands on a button, a link or a box of Torn's (the owner, 2026-10-11, on the points market's "Are you
  * sure ...? Yes / No": "this also blocks my buttons"). Where neither place is free of them, and when the control
  * it belongs to is no longer shown, the mark is not shown at all: the box says the same words.
+ * @param within Torn's element the mark stays inside; left out, the widest panel around the control
  * @returns whether the mark is shown
  */
-export function markBeside(mark, anchor) {
+export function markBeside(mark, anchor, within = null) {
     const host = mark && mark.parentElement;
     if (!host || !anchor || !anchor.getBoundingClientRect) return false;
     const hide = () => { if (mark.style.visibility !== 'hidden') mark.style.visibility = 'hidden'; return false; };
@@ -272,7 +280,8 @@ export function markBeside(mark, anchor) {
     // The room is the widest thing around the control that starts where its own row starts: Torn's panel.
     let room = h;
     let roomEl = host;
-    for (let node = host.parentElement, up = 0; node && up < 6 && node !== host.ownerDocument.body; node = node.parentElement, up += 1) {
+    if (within && within.getBoundingClientRect) { room = within.getBoundingClientRect(); roomEl = within; }
+    for (let node = within ? null : host.parentElement, up = 0; node && up < 6 && node !== host.ownerDocument.body; node = node.parentElement, up += 1) {
         const r = node.getBoundingClientRect();
         if (Math.abs(r.left - h.left) > 24) break;
         if (r.width > room.width) { room = r; roomEl = node; }
@@ -284,7 +293,7 @@ export function markBeside(mark, anchor) {
     // Beside the control (when it fits there), else under it; `top` is the mark's middle line.
     const spots = [];
     if (fits) spots.push({ left: a.right - h.left + 12, top: a.top - h.top + a.height / 2 });
-    spots.push({ left: Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)), top: a.bottom - h.top + 14 });
+    spots.push({ left: Math.max(0, Math.min(a.left - h.left, room.right - 6 - width - h.left)), top: a.bottom - h.top + (half > 11 ? half + 4 : 14) });
     const theirs = tornControls(roomEl).map((el) => el.getBoundingClientRect());
     const free = spots.find((s) => {
         const box = { left: h.left + s.left, right: h.left + s.left + width, top: h.top + s.top - half, bottom: h.top + s.top + half };
@@ -342,6 +351,11 @@ export function tradeMyMoneyRow(doc) {
     return li && setsShown(li) ? li : null;
 }
 
+/** Torn's own button of a form as it stands on the page, whether it can be pressed or not. */
+function tornButtonOf(form) {
+    return form ? [...form.querySelectorAll('input[type="submit"], button[type="submit"]')].find((b) => !setsOurs(b) && setsShown(b)) || null : null;
+}
+
 /** Torn's own button of a form (WITHDRAW, DEPOSIT, Change): null when it is not there or cannot be pressed now. */
 export function tornSubmit(form) {
     const btn = form ? [...form.querySelectorAll('input.torn-btn[type="submit"], button.torn-btn[type="submit"], input[type="submit"], button[type="submit"]')].find((b) => !setsOurs(b) && setsShown(b)) || null : null;
@@ -357,7 +371,7 @@ export function tradeMoneyForm(doc) {
     const box = shownMoneyBox(form);
     const group = box && box.closest('.input-money-group');
     if (!group) return null;
-    return { form, group, box, line: group.closest('ul') || group, onHand: setsMoney(doc.querySelector('.init-trade.add-money .money-value')) };
+    return { form, group, box, line: group.closest('li') || group.parentElement, anchor: group, onHand: setsMoney(doc.querySelector('.init-trade.add-money .money-value')) };
 }
 
 /** Your vault's Withdraw form: { group, box, line, vault, onHand } - what is in the vault and on you, as the page says. */
@@ -366,7 +380,7 @@ export function vaultWithdraw(doc) {
     const box = shownMoneyBox(form);
     const group = box && box.closest('.input-money-group');
     if (!group) return null;
-    return { form, group, box, line: group.closest('.cont') || group, vault: setsMoney(form.querySelector('.wvalue')), onHand: setsMoney(doc.querySelector('.vault-wrap .dvalue')) };
+    return { form, group, box, line: group.closest('.cont') || group.parentElement, anchor: tornButtonOf(form) || group, vault: setsMoney(form.querySelector('.wvalue')), onHand: setsMoney(doc.querySelector('.vault-wrap .dvalue')) };
 }
 
 /** Your vault's Deposit form: { form, group, box, line, onHand }. */
@@ -375,64 +389,83 @@ export function vaultDepositForm(doc) {
     const box = shownMoneyBox(form);
     const group = box && box.closest('.input-money-group');
     if (!group) return null;
-    return { form, group, box, line: group.closest('.cont') || group, onHand: setsMoney(form.querySelector('.dvalue')) };
+    return { form, group, box, line: group.closest('.cont') || group.parentElement, anchor: tornButtonOf(form) || group, onHand: setsMoney(form.querySelector('.dvalue')) };
 }
 
 /**
- * A line of ours right after one of Torn's: Fill buttons, a link, a few words. It stands in the page's own flow
- * (beside Torn's box where there is room, else under it), so nothing of Torn's is covered. Made once, kept up
- * when its words change, gone with `spec` null.
- * @param anchor  Torn's element it comes after
- * @param spec    { buttons: [{ label, amount }], link: { label, href } | null, note, state, block } | null
+ * Small buttons of ours beside one of Torn's controls. They float: absolutely placed inside `host`, so they take
+ * no room and nothing of Torn's moves (the owner, 2026-10-12, on the line 1.3.7 put under his vault's box: "i dont
+ * like it takes up torn page space ... either bring to front, to the side, or just a small button"). Placed by
+ * measure (markBeside): in the empty room right of `anchor`, else just under it, never on a control of Torn's and
+ * never outside `within`; where neither place is free they are not shown, and the box says the same.
+ * Made once, kept up when the buttons change, gone with `spec` null.
+ * @param host    Torn's element they are placed in (it is given back as it was when they go)
+ * @param spec    { buttons: [{ label, amount, state, title }], link: { label, href } | null } | null
  * @param onPress (button, element, event) => void
+ * @param anchor  Torn's control they stand beside (host when left out)
+ * @param within  Torn's element they stay inside (the widest panel around host when left out)
  */
-export function setFills(anchor, spec, onPress) {
-    if (!anchor || !anchor.parentElement) return null;
-    const next = anchor.nextElementSibling;
-    let row = next && next.classList && next.classList.contains(SET_FILLROW_CLASS) ? next : null;
-    const empty = !spec || (!(spec.buttons || []).length && !spec.note && !spec.link);
+export function setFills(host, spec, onPress, anchor = null, within = null) {
+    if (!host || !host.children) return null;
+    let row = null;
+    for (const c of host.children) {
+        if (c.classList && c.classList.contains(SET_FILLROW_CLASS)) {
+            row = c;
+            break;
+        }
+    }
+    const empty = !spec || (!(spec.buttons || []).length && !spec.link);
     if (empty) {
-        if (row) row.remove();
+        if (row) {
+            row.remove();
+            if (!host.querySelector(':scope > .tarc-float')) releaseMarks(host);
+        }
         return null;
     }
-    const sig = JSON.stringify(spec);
-    if (row && row.dataset.sig === sig) return row;
-    const doc = anchor.ownerDocument;
+    const doc = host.ownerDocument;
     if (!row) {
-        row = doc.createElement(spec.block ? 'div' : 'span');
-        row.className = SET_FILLROW_CLASS;
-        anchor.insertAdjacentElement('afterend', row);
+        row = doc.createElement('span');
+        row.className = 'tarc-float ' + SET_FILLROW_CLASS;
+        host.appendChild(row);
+        holdMarks(host);
     }
-    row.dataset.sig = sig;
-    row.dataset.state = spec.state || '';
-    row.dataset.block = spec.block ? '1' : '';
-    row.textContent = '';
-    for (const b of spec.buttons || []) {
-        const el = doc.createElement('button');
-        el.type = 'button';
-        el.className = SET_FILL_CLASS;
-        el.textContent = b.label;
-        el.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (onPress) onPress(b, el, e);
-        });
-        row.appendChild(el);
+    row.tarcPress = onPress || null;
+    const sig = JSON.stringify(spec);
+    if (row.dataset.sig !== sig) {
+        row.dataset.sig = sig;
+        row.textContent = '';
+        for (const b of spec.buttons || []) {
+            const el = doc.createElement('button');
+            el.type = 'button';
+            el.className = SET_FILL_CLASS;
+            el.textContent = b.label;
+            if (b.short) el.dataset.short = b.short;
+            if (b.state) el.dataset.state = b.state;
+            if (b.title) el.title = b.title;
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (row.tarcPress) row.tarcPress(b, el, e);
+            });
+            row.appendChild(el);
+        }
+        if (spec.link) {
+            const a = doc.createElement('a');
+            a.className = SET_FILL_CLASS;
+            a.href = spec.link.href;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.textContent = spec.link.label;
+            row.appendChild(a);
+        }
     }
-    if (spec.note) {
-        const n = doc.createElement('span');
-        n.className = 'tarc-fillnote';
-        n.textContent = spec.note;
-        row.appendChild(n);
+    // One line, never wider than Torn's own panel: where the words do not fit (your vault's half is 392 wide on
+    // the real page, and four sums with their words are more), the buttons keep the sum and the word is their
+    // title; the box beside the page names each sum.
+    const roomWidth = (within || host).getBoundingClientRect().width - 12;
+    if (roomWidth > 0 && row.getBoundingClientRect().width > roomWidth) {
+        for (const el of row.children) if (el.dataset.short) el.textContent = el.dataset.short;
     }
-    if (spec.link) {
-        const a = doc.createElement('a');
-        a.className = SET_FILL_CLASS;
-        a.href = spec.link.href;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        a.textContent = spec.link.label;
-        row.appendChild(a);
-    }
+    markBeside(row, anchor || host, within);
     return row;
 }

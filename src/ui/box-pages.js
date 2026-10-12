@@ -614,11 +614,12 @@ export function vaultMoney(v, onHand = null, vault = null) {
     const most = take(all + list);
     if (!most) return { buttons: [], note: `${why}: enough, nothing to take out.`, state: 'good', all, need, n, list };
     const buttons = [];
-    const add = (label, amount) => { if (amount > 0 && !buttons.some((b) => b.amount === amount)) buttons.push({ label: `Withdraw ${hMoney(amount)} · ${label}`, amount }); };
-    if (all) add(n === 1 ? 'your trade' : 'your trades', take(all));
-    if (all && need < all) add('only what I need', take(need));
-    if (list) add('your list', take(list));
-    if (all && list) add('both', most);
+    // Small buttons beside Torn's WITHDRAW: the sum and one word; what it is for in full is the button's own title.
+    const add = (label, amount, title) => { if (amount > 0 && !buttons.some((b) => b.amount === amount)) buttons.push({ label: `${hMoney(amount)} · ${label}`, short: hMoney(amount), amount, title: `Withdraw ${hMoney(amount)}: ${title}${have ? `, less the ${hMoney(have)} on you` : ''}` }); };
+    if (all) add(n === 1 ? 'trade' : 'trades', take(all), `what your ${hPlural(n, 'open trade')} still ${n === 1 ? 'wants' : 'want'}`);
+    if (all && need < all) add('what I need', take(need), 'only the pieces you need of them');
+    if (list) add('list', take(list), 'what your shopping list costs');
+    if (all && list) add('both', most, 'your trades and your shopping list');
     const lacks = inVault != null && inVault < most;
     return {
         buttons: inVault == null ? buttons : buttons.filter((b) => b.amount <= inVault),
@@ -630,7 +631,7 @@ export function vaultMoney(v, onHand = null, vault = null) {
 /** Your vault's Deposit box: everything on you, in one press ("a button that automatically deposits all"). */
 export function vaultDeposit(onHand = null) {
     const have = Math.max(0, Math.floor(Number(onHand) || 0));
-    return have ? { buttons: [{ label: `Deposit all ${hMoney(have)}`, amount: have }] } : null;
+    return have ? { buttons: [{ label: `All ${hMoney(have)}`, amount: have, title: `Deposit all ${hMoney(have)} that is on you` }] } : null;
 }
 
 /** The box on your vault's page: the same numbers, once. */
@@ -641,6 +642,6 @@ export function boxVault(v, m) {
     if (m.all && m.need !== m.all) html += bxKv('Only what you need', hMoney(m.need));
     if (m.list) html += bxKv('Your shopping list', hMoney(m.list));
     html += `<div class="${m.state === 'over' ? 'ta-hold' : m.state === 'good' ? 'ta-ok' : 'ta-kv sep'}">${hEsc(m.note)}</div>`;
-    html += bxNote(`One press of a button under Torn's box types the number and presses Torn's own <b>Withdraw</b> or <b>Deposit</b>, once.`);
+    html += bxNote(`One press of a small button beside Torn's <b>Withdraw</b> or <b>Deposit</b> types the number and presses that button of Torn's, once.`);
     return { where: 'your vault', html, marks: [] };
 }

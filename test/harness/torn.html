@@ -29,8 +29,16 @@
   .init-trade ul.inputs { list-style: none; margin: 8px 0; padding: 0; } .init-trade ul.inputs li { display: block; }
   .init-trade .title { display: inline-block; width: 60px; }
   .input-money-group { display: inline-block; width: 315px; vertical-align: middle; } .input-money-group input { width: 270px; background: #1b1b1b; border: 1px solid #444; color: #ccc; padding: 5px 6px; }
-  .vault-wrap { display: grid; grid-template-columns: 1fr 1fr; } .vault-cont .title { padding: 8px 10px; } .vault-cont .title p { margin: 0; }
-  .vault-cont .cont { display: flex; gap: 8px; align-items: center; padding: 10px; } .vault-cont .input-money-group { width: 190px; } .vault-cont .input-money-group input { width: 150px; }
+  /* Your vault in Torn's own sizes (measured on the real page 2026-10-12 at 1707 wide): the wrap 784, each half 392,
+     the line 55 high with 10 around, the box 158 x 33, WITHDRAW 81 x 34 right after it - 85 free to its right -
+     and under the halves Torn's own options, 22 further down. */
+  .vault-wrap { width: 784px; } .vault-cont { float: left; width: 392px; box-sizing: border-box; } .vault-cont .title { padding: 11px 10px 0; height: 49px; box-sizing: border-box; } .vault-cont .title p { margin: 0; }
+  .vault-cont .cont { position: relative; padding: 10px; height: 55px; box-sizing: border-box; white-space: nowrap; } .vault-cont .cont > i { display: inline-block; width: 24px; height: 21px; margin-right: 13px; vertical-align: middle; background: #444; }
+  .vault-cont .input-money-group { width: 158px; } .vault-cont .input-money-group input.input-money { width: 121px; height: 33px; box-sizing: border-box; } .vault-cont .input-money-group .wai-btn { height: 33px; box-sizing: border-box; margin-right: 0; }
+  .vault-cont .torn-btn { height: 34px; margin-left: 3px; padding: 0; width: 81px; vertical-align: middle; } .vault-cont.right .torn-btn { width: 65px; }
+  .vault-access-wrap { clear: both; padding: 10px; } .vault-access-wrap ul { list-style: none; margin: 0; padding: 10px 0 0; } .vault-access-wrap a { color: #9cf; }
+  .input-money-group .wai-btn { width: 24px; padding: 5px 0; margin-right: 4px; }
+  .torn-btn.disabled { opacity: .45; cursor: default; }
   .torn-btn { background: #555; color: #eee; border: 0; border-radius: 3px; padding: 5px 14px; cursor: pointer; } .sent { color: #8a8; }
   .set { margin: 12px 0; padding: 10px; background: #2a2a2a; border-radius: 4px; }
   .set ul { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 10px 0; }
@@ -160,7 +168,7 @@ if (page === 'bazaar') {
     main.innerHTML = `<h1>Trade</h1><div class="trade-cont">
       <div class="user left"><div class="title-black">You</div><ul class="cont">${mine(t && t.myMoney)}<li class="color2"><ul class="desc"><li><div class="name">No items in trade</div></li></ul></li></ul></div>
       <div class="user right"><div class="title-black">${esc((t && t.who) || 'Someone')}</div><ul class="cont"><li class="color1"><ul class="desc"><li><div class="name left">No money in trade</div></li></ul></li><li class="color2"><ul class="desc">${rows.map((r) => `<li><div class="name">${esc(r.name)} x${r.qty}</div></li>`).join('')}</ul></li></ul></div>
-    </div>${q.has('money') ? `<div class="init-trade add-money"><div class="title-black">Add Money to Trade</div><div class="cont-gray"><p>You have $<span class="money-value">${hand.toLocaleString('en-US')}</span></p><form><ul class="inputs"><li><div class="title">Money:</div><div class="input-money-group"><span class="input-money-symbol">$</span><input class="user-id input-money" type="text" value=""><input class="user-id input-money" type="hidden" name="amount" value=""></div></li></ul><span class="btn-wrap silver"><input class="torn-btn" type="submit" value="Change"></span><p class="sent" hidden></p></form></div></div>` : ''}`;
+    </div>${q.has('money') ? `<div class="init-trade add-money"><div class="title-black">Add Money to Trade</div><div class="cont-gray"><p>You have $<span class="money-value">${hand.toLocaleString('en-US')}</span></p><form><ul class="inputs"><li><div class="title">Money:</div><div class="input-money-group"><span class="input-money-symbol"><input class="wai-btn" type="button" aria-label="All of it"></span><input class="user-id input-money" type="text" value=""><input class="user-id input-money" type="hidden" name="amount" value=""></div></li></ul><span class="btn-wrap silver"><input class="torn-btn disabled" type="submit" value="Change" disabled></span><p class="sent" hidden></p></form></div></div>` : ''}`;
     const form = main.querySelector('.add-money form');
     if (form) form.addEventListener('submit', (e) => { e.preventDefault(); window.sent = [...(window.sent || []), ['Change', form.querySelector('[name=amount]').value]]; const p = form.querySelector('.sent'); p.hidden = false; p.textContent = 'Stand-in: Torn was sent ' + JSON.stringify(window.sent); });
 } else if (page === 'vault') {
@@ -169,8 +177,8 @@ if (page === 'bazaar') {
     // &hand=N &vault=N: what is on you and in the vault (the fixture's own numbers when left out).
     const hand = q.has('hand') ? Number(q.get('hand')) || 0 : view.top.onHand || 0;
     const inVault = q.has('vault') ? Number(q.get('vault')) || 0 : view.top.vault || 0;
-    const side = (cls, val, n, words, btn) => `<form class="vault-cont ${cls}"><div class="title"><p>${words[0]} <span class="${val}">$${n.toLocaleString('en-US')}</span> ${words[1]}</p></div><div class="cont torn-divider"><i class="${btn.toLowerCase()}-icon"></i><div class="input-money-group"><span class="input-money-symbol">$</span><input class="input-money" type="text" value=""><input class="input-money" type="hidden" name="${btn.toLowerCase()}" value=""></div><span class="btn-wrap silver"><input class="torn-btn" type="submit" value="${btn}"></span></div></form>`;
-    main.innerHTML = `<h1>Properties</h1><div class="vault-wrap">${side('left', 'wvalue', inVault, ['There is', 'stored in the vault.'], 'WITHDRAW')}${side('right deposit-box', 'dvalue', hand, ['You have', 'on you.'], 'DEPOSIT')}</div><p class="sent" hidden></p>`;
+    const side = (cls, val, n, words, btn) => `<form class="vault-cont ${cls}"><div class="title"><p>${words[0]} <span class="${val}">$${n.toLocaleString('en-US')}</span> ${words[1]}</p></div><div class="cont torn-divider"><i class="${btn.toLowerCase()}-icon"></i><div class="input-money-group"><span class="input-money-symbol"><input class="wai-btn" type="button" aria-label="All of it"></span><input class="input-money" type="text" value=""><input class="input-money" type="hidden" name="${btn.toLowerCase()}" value=""></div><span class="btn-wrap silver"><input class="torn-btn disabled" type="submit" value="${btn}" disabled></span></div></form>`;
+    main.innerHTML = `<h1>Properties</h1><div class="vault-wrap">${side('left', 'wvalue', inVault, ['There is', 'stored in the vault.'], 'WITHDRAW')}${side('right deposit-box', 'dvalue', hand, ['You have', 'on you.'], 'DEPOSIT')}<div class="clear"></div><div class="vault-access-wrap p10"><ul class="options-wrap p-top10"><li><a href="#">Give your spouse access to the vault</a></li></ul></div></div><p class="sent" hidden></p>`;
     for (const form of main.querySelectorAll('form')) form.addEventListener('submit', (e) => { e.preventDefault(); window.sent = [...(window.sent || []), [form.querySelector('.torn-btn').value, form.querySelector('input[type=hidden]').value]]; const p = main.querySelector('.sent'); p.hidden = false; p.textContent = 'Stand-in: Torn was sent ' + JSON.stringify(window.sent); });
 } else if (page === 'museum') {
     main.innerHTML = '<h1>Museum</h1>' + SETS.map((s) => `<div class="set"><p>To exchange a ${esc(s.museum)} for ${s.points} points, you need one of each:</p><ul>${s.pieces.map((p) => `<li>${pic(p.id)}</li>`).join('')}</ul>
@@ -210,6 +218,16 @@ if (page === 'bazaar') {
     main.innerHTML = `<h1>Forums</h1><div class="thread"><h4>${esc(title)}</h4><p style="padding:10px;background:#2a2a2a">The first post.</p></div>`;
 } else {
     main.innerHTML = '<h1>Gym</h1><div class="set"><p>A page of Torn\'s that Torn Archive has nothing to say on.</p></div>';
+}
+// Torn's money boxes as its own script keeps them (read on the real vault and Item Market, 2026-10-12): the "$" in
+// the group is a button of Torn's (input.wai-btn), the form's own button is off until the TEXT box hears "input",
+// and then the number is shown with its commas and kept plain in the hidden twin.
+for (const g of main.querySelectorAll('.input-money-group')) {
+    const text = g.querySelector('input.input-money[type=text]');
+    const hidden = g.querySelector('input.input-money[type=hidden]');
+    const btn = g.closest('form') && g.closest('form').querySelector('.torn-btn');
+    if (!text || !hidden || !btn) continue;
+    text.addEventListener('input', () => { const n = text.value.replace(/[^0-9]/g, ''); hidden.value = n; text.value = n ? Number(n).toLocaleString('en-US') : ''; btn.disabled = !n; btn.classList.toggle('disabled', !n); });
 }
 if (q.has('trading')) {
     const h = document.createElement('div');

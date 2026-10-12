@@ -828,8 +828,10 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (mine) setMark(mine, words.mark ? words.mark.text : '', words.mark ? words.mark.state : '', 'money');
         if (form) {
             const f = words.fill;
-            setFills(form.group, f && f.buttons.length ? { buttons: f.buttons } : null, (b, el, e) => payNow(form, b, el, e, 'a trade'));
-            setFills(form.line, f && f.note ? { note: f.note, state: f.state, block: true, link: f.vault ? { label: 'Your vault', href: VAULT_URL } : null } : null);
+            // Small buttons floating beside Torn's box: red when what is on you is short (the words are their title,
+            // and the box's), with the way to your vault.
+            const short = f && f.state === 'over';
+            setFills(form.line, f && f.buttons.length ? { buttons: f.buttons.map((b) => ({ ...b, state: short ? 'over' : '', title: `${b.label}. ${f.note}` })), link: f.vault ? { label: 'Your vault', href: VAULT_URL } : null } : null, (b, el, e) => payNow(form, b, el, e, 'a trade'), form.anchor, form.line);
         }
         return out;
     }
@@ -858,9 +860,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     function onVault(v) {
         const out = vaultWithdraw(doc);
         const m = out ? vaultMoney(v, out.onHand, out.vault) : null;
-        if (out) setFills(out.line, m ? { buttons: m.buttons, note: m.note, state: m.state, block: true } : null, (b, el, e) => payNow(out, b, el, e, 'your vault'));
+        if (out) setFills(out.line, m && m.buttons.length ? { buttons: m.buttons.map((b) => ({ ...b, state: m.state === 'over' ? 'over' : '' })) } : null, (b, el, e) => payNow(out, b, el, e, 'your vault'), out.anchor, out.form);
         const put = vaultDepositForm(doc);
-        if (put) setFills(put.line, vaultDeposit(put.onHand != null ? put.onHand : out && out.onHand) ? { ...vaultDeposit(put.onHand != null ? put.onHand : out && out.onHand), block: true } : null, (b, el, e) => payNow(put, b, el, e, 'your vault'));
+        if (put) setFills(put.line, vaultDeposit(put.onHand != null ? put.onHand : out && out.onHand), (b, el, e) => payNow(put, b, el, e, 'your vault'), put.anchor, put.form);
         return boxVault(v, m);
     }
 

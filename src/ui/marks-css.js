@@ -313,16 +313,14 @@ export const MARKS_CSS = `
 .tarc-setfill[data-done="1"] { border-color: rgba(111, 220, 127, 0.55); background: #12301a; color: #b9f3c2; }
 
 /*
- * Our own line after Torn's money box - a trade's Add Money, your vault's Withdraw (1.3.7): Fill buttons and what
- * you are short of. It stands in the page's flow, beside the box or under it, and covers nothing of Torn's.
+ * Small buttons of ours beside Torn's money box - a trade's Add Money, your vault's Withdraw and Deposit. They
+ * float (tarc-float): no room is taken and nothing of Torn's moves (1.3.8, the owner: "i dont like it takes up torn
+ * page space"). Their left and top are set by measure (markBeside); "top" is their middle line.
  */
-.tarc-fillrow { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 0 10px; vertical-align: middle; }
-.tarc-fillrow[data-block="1"] { display: flex; margin: 8px 10px; }
-.tarc-fillrow .tarc-setfill { position: static; transform: none; display: inline-block; height: 26px; line-height: 24px; font-size: 12px; text-decoration: none; white-space: nowrap; }
-.tarc-fillnote { font: 600 12px/18px "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif; font-variant-numeric: tabular-nums; color: #c3c9d4; }
-.tarc-fillrow[data-state="over"] .tarc-fillnote { color: #ff8f8f; }
-.tarc-fillrow[data-state="good"] .tarc-fillnote { color: #9be3a6; }
-.tarc-fillrow[data-state="ahead"] .tarc-fillnote { color: #ffd98a; }
+.tarc-fillrow { display: inline-flex !important; align-items: center; gap: 6px; margin: 0 !important; padding: 0 !important; transform: translateY(-50%); }
+.tarc-fillrow .tarc-setfill { position: static; transform: none; display: inline-block; box-sizing: border-box; height: 24px; line-height: 22px; font-size: 11px; text-decoration: none; white-space: nowrap; margin: 0; }
+/* What is on you, or in the vault, is short of it. */
+.tarc-fillrow .tarc-setfill[data-state="over"] { border-color: rgba(255, 120, 120, 0.7); background: #3a1414; color: #ffc9c9; }
 /* Your money row of a trade: the mark stands left of Torn's bin, never on it. */
 .tarc-setmark[data-where="money"] { top: 50%; left: auto; right: 58px; transform: translateY(-50%); }
 

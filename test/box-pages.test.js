@@ -371,16 +371,20 @@ test('your vault: exactly what to take out for your trades, your list, or both; 
     const b = { total: 1000000, needTotal: 1000000, myMoney: 400000 };
     // Trades alone: what they still want, less what is on you.
     const m = vaultMoney(view([a, b]), 500000, 90000000);
-    assert.deepEqual(m.buttons, [{ label: 'Withdraw $7,121,632 · your trades', amount: 7121632 }, { label: 'Withdraw $5,379,012 · only what I need', amount: 5379012 }]);
+    // 1.3.8: small buttons - the sum and one word; the whole sentence is the button's title.
+    assert.deepEqual(m.buttons.map((x) => [x.label, x.amount]), [['$7,121,632 · trades', 7121632], ['$5,379,012 · what I need', 5379012]]);
+    assert.deepEqual(m.buttons.map((x) => x.short), ['$7,121,632', '$5,379,012'], 'where four do not fit in Torn\'s panel: the sum alone');
+    assert.deepEqual(m.buttons.map((x) => x.title), ['Withdraw $7,121,632: what your 2 open trades still want, less the $500,000 on you', 'Withdraw $5,379,012: only the pieces you need of them, less the $500,000 on you']);
     assert.deepEqual([m.all, m.need, m.n, m.list, m.state], [7621632, 5879012, 2, 0, '']);
     assert.ok(m.note.startsWith('2 open trades want $7,621,632 more from you · $500,000 on you'));
     // A shopping list alone, and both together: each its own exact sum, and one for both.
-    assert.deepEqual(vaultMoney(view([], 2300000), 300000, 9e7).buttons, [{ label: 'Withdraw $2,000,000 · your list', amount: 2000000 }]);
+    assert.deepEqual(vaultMoney(view([], 2300000), 300000, 9e7).buttons.map((x) => [x.label, x.amount]), [['$2,000,000 · list', 2000000]]);
+    assert.equal(vaultMoney(view([], 2300000), 0, 9e7).buttons[0].title, 'Withdraw $2,300,000: what your shopping list costs');
     const both = vaultMoney(view([b], 2300000), 100000, 9e7);
-    assert.deepEqual(both.buttons, [{ label: 'Withdraw $500,000 · your trade', amount: 500000 }, { label: 'Withdraw $2,200,000 · your list', amount: 2200000 }, { label: 'Withdraw $2,800,000 · both', amount: 2800000 }]);
+    assert.deepEqual(both.buttons.map((x) => [x.label, x.amount]), [['$500,000 · trade', 500000], ['$2,200,000 · list', 2200000], ['$2,800,000 · both', 2800000]]);
     assert.ok(both.note.startsWith('1 open trade wants $600,000 more from you · your list costs $2,300,000 · $100,000 on you'));
     // Enough on you for a part: no button for that part, the rest still to take out.
-    assert.deepEqual(vaultMoney(view([b], 2300000), 700000, 9e7).buttons.map((x) => x.label), ['Withdraw $1,600,000 · your list', 'Withdraw $2,200,000 · both']);
+    assert.deepEqual(vaultMoney(view([b], 2300000), 700000, 9e7).buttons.map((x) => x.label), ['$1,600,000 · list', '$2,200,000 · both']);
     // Enough for everything: said, no button. The vault short: red, and no button for more than it holds.
     const fine = vaultMoney(view([b]), 600000, 5);
     assert.deepEqual([fine.buttons.length, fine.state], [0, 'good']);
@@ -389,16 +393,16 @@ test('your vault: exactly what to take out for your trades, your list, or both; 
     assert.deepEqual(low.buttons.map((x) => x.amount), [5279012]);
     assert.ok(low.note.includes('Your vault holds $6,000,000: $1,021,632 short'));
     // The page's own numbers first; without them, the hub's last read.
-    assert.deepEqual(vaultMoney(view([b], 0, { onHand: 100000 })).buttons, [{ label: 'Withdraw $500,000 · your trade', amount: 500000 }]);
+    assert.deepEqual(vaultMoney(view([b], 0, { onHand: 100000 })).buttons.map((x) => [x.label, x.amount]), [['$500,000 · trade', 500000]]);
     // Nothing wants money: nothing at all, and no box.
     assert.equal(vaultMoney(view([{ ...b, myMoney: 1000000 }]), 0, 0), null);
     assert.equal(vaultMoney(view([]), 0, 0), null);
     assert.equal(boxVault(view([]), null), null);
     const box = boxVault(view([b], 2300000), both);
     assert.equal(box.where, 'your vault');
-    assert.ok(box.html.includes('$600,000') && box.html.includes('$2,300,000') && /presses Torn's own/.test(box.html));
+    assert.ok(box.html.includes('$600,000') && box.html.includes('$2,300,000') && /presses that button of Torn's, once/.test(box.html));
     // Deposit: all of it, one button; nothing on you, no button.
-    assert.deepEqual(vaultDeposit(500000), { buttons: [{ label: 'Deposit all $500,000', amount: 500000 }] });
+    assert.deepEqual(vaultDeposit(500000), { buttons: [{ label: 'All $500,000', amount: 500000, title: 'Deposit all $500,000 that is on you' }] });
     assert.equal(vaultDeposit(0), null);
     assert.equal(vaultDeposit(null), null);
 });

@@ -182,9 +182,11 @@ export function readInputs(inputs) {
  */
 export function writeInputs(inputs, value) {
     const list = inputs || [];
+    // A button is no box, whoever hands it over: nothing is written into it and it is never the one told "typed".
+    const noBox = (i) => /^(button|submit|reset|image|checkbox|radio)$/.test(String((i && i.type) || '').toLowerCase());
     list.forEach((input, i) => {
         let v = Array.isArray(value) ? value[i] : value;
-        if (v === undefined || v === null) return;
+        if (v === undefined || v === null || noBox(input)) return;
         // A hidden twin holds the plain number (value="119999"), the visible box the formatted one.
         if (input.type === 'hidden' && !Array.isArray(value)) v = String(v).replace(/[^\d]/g, '');
         const proto = Object.getPrototypeOf(input);
@@ -194,8 +196,8 @@ export function writeInputs(inputs, value) {
     });
     // One set of events, from the box you can see (Torn mirrors it into the hidden one).
     // The one box that is not a hidden twin is the one you see (asking the page costs a layout of all of it, 3.22.0).
-    const shown = list.filter((i) => i && i.type !== 'hidden');
-    const target = (shown.length === 1 ? shown[0] : shown.find(visible)) || list[0];
+    const shown = list.filter((i) => i && i.type !== 'hidden' && !noBox(i));
+    const target = (shown.length === 1 ? shown[0] : shown.find(visible)) || list.find((i) => i && !noBox(i));
     if (!target) return;
     for (const type of ['input', 'change']) target.dispatchEvent(new Event(type, { bubbles: true }));
     target.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));

@@ -45,9 +45,10 @@ your browser. Nothing is sent to that site.
 - **Fill** types a number into one of Torn's own boxes, on the page you are looking at, only when you press Fill.
   You press Torn's button yourself.
 - **Three places where one press of yours also presses Torn's own button, once (1.3.7):**
-  - **Your vault** (Properties, the vault tab). Under Torn's Withdraw box: exactly what to take out for your open
-    trades, for your shopping list, or for both - what they want less what is on you already. Under its Deposit
-    box: **Deposit all**. A press types the number and presses Torn's WITHDRAW or DEPOSIT in that same press.
+  - **Your vault** (Properties, the vault tab). Small buttons floating by Torn's WITHDRAW: exactly what to take
+    out for your open trades, for your shopping list, or for both - what they want less what is on you already.
+    By its DEPOSIT: **All $...**. A press types the number and presses Torn's WITHDRAW or DEPOSIT in that same
+    press. They take no room on Torn's page: nothing of Torn's moves (1.3.8).
   - **A trade's Add Money step.** Beside Torn's box: **Add $...** (everything) and **Add only what I need**. A
     press types the money and presses Torn's Change. Accept stays yours. Your own money row of the trade shows
     the total, red when what is on you is short, with a link to your vault.
@@ -265,7 +266,7 @@ hub), and "Forum post behind" stays in the hub's top bar on every page until you
 | --- | --- | --- |
 | Someone's bazaar, the Item Market | what is on your list here, what else is under its worth, the next stop of your run. Start, Next and Stop show in the box at once; when the hub has not taken a press after a few seconds the box says so. Next works from wherever you stand: on a bazaar of your list that is not the run's stop it goes on from there, and the stops passed over stay on the list | on each set piece: on your list, need, ahead |
 | A trade | your price for each row, the total, what it leaves you, the money to take out of the vault | beside each of their items; on your own money row: the total, and what is still to add (red when what is on you is short); beside Torn's Add Money box: Add (everything, or only what you need) |
-| Your vault | what your open trades still want from you and what your shopping list costs | under Torn's Withdraw box: the exact sums to take out, each a button; under its Deposit box: Deposit all |
+| Your vault | what your open trades still want from you and what your shopping list costs | small buttons floating by Torn's WITHDRAW: the exact sums to take out; by its DEPOSIT: all that is on you |
 | The museum | full sets, what they cost you, what they are worth at today's points price | on each piece: held, need; beside EXCHANGE, when you type more sets than you hold |
 | The points market | the price and lot to list, or to hold when points are cheap or it would be a loss; and for the price you type into Torn's box: how many points sell before yours, and whether it is a loss, cheap, or more under the lowest than it takes | beside ADD LISTING: the same, in a line; in Torn's list: a hairline on the edge between two rows where your listing would sit, and one above which a price is cheap or a loss (no words on them: the box says which is which) |
 | Your buying thread | whether its title still says what your shop says | beside the title |
