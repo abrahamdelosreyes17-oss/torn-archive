@@ -532,6 +532,54 @@ test('against the server\'s own code: every message Torn Archive can make is one
     assert.deepEqual(serverDirIn(out, null, NOW).turn, { of: 1, me: 0 });
 });
 
+// ---- your own price list, and what whole sets need -----------------------------------------------------------------------
+
+test('your own list goes with what whole sets need: every piece\'s price, the sets taken now, the units of each piece - pieces and set keys only', () => {
+    const own = {
+        open: true, prices: { [SHEEP]: 612, [XANAX]: 5 }, off: [PANDA, XANAX],
+        all: { [SHEEP]: 612, [PANDA]: 640.4, [XANAX]: 5, junk: 3, [DAHLIA]: 0 },
+        sets: { plushie: 6, flower: 0, 'Not A Set': 2, exotic: 1.5, x: -1 },
+        take: { [SHEEP]: 4, [PANDA]: 0, [XANAX]: 9, [DAHLIA]: 2.5 },
+    };
+    const body = serverBody({ ver: '1.0.0', pieces: PIECES, now: NOW, sendWorth: false, sendOwn: true, want: { own } });
+    assert.deepEqual(body.own, { open: 1, prices: { [SHEEP]: 612 }, off: [PANDA], all: { [SHEEP]: 612, [PANDA]: 640 }, sets: { plushie: 6, flower: 0 }, take: { [SHEEP]: 4, [PANDA]: 0 } });
+    assert.equal(serverOutgoingOk(body, PIECES), true);
+    // Without them (nothing to say): the list as it always was.
+    const plain = serverBody({ ver: '1.0.0', pieces: PIECES, now: NOW, sendWorth: false, sendOwn: true, want: { own: { open: false, prices: { [SHEEP]: 612 }, off: [] } } });
+    assert.deepEqual(plain.own, { open: 0, prices: { [SHEEP]: 612 }, off: [] });
+    assert.equal(serverOutgoingOk(plain, PIECES), true);
+    assert.equal('own' in serverBody({ ver: '1.0.0', pieces: PIECES, now: NOW, want: { own } }), false, 'only when it is said with this message');
+    // Nothing else passes the check on the way out.
+    for (const bad of [{ all: { [XANAX]: 5 } }, { all: [5] }, { take: { [SHEEP]: -1 } }, { take: { [XANAX]: 1 } }, { sets: { 'Not A Set': 1 } }, { sets: { plushie: 1.5 } }, { held: { [SHEEP]: 9 } }]) {
+        assert.equal(serverOutgoingOk({ ...body, own: { ...body.own, ...bad } }, PIECES), false, JSON.stringify(bad));
+    }
+});
+
+test('the server says whether it kept your list: only its owner\'s is, and the link remembers which', async () => {
+    const own = { open: true, prices: { [SHEEP]: 612 }, off: [], all: { [SHEEP]: 612 }, sets: { plushie: 6 }, take: { [SHEEP]: 4 } };
+    const r = rig({ answer: okAnswer({ ownKept: 1 }), want: { own } });
+    r.link.saveConfig(ADDRESS, PASS);
+    assert.equal(r.link.ownKept(), null, 'not said yet');
+    await r.tick();
+    assert.deepEqual(r.syncs()[0].body.own, { open: 1, prices: { [SHEEP]: 612 }, off: [], all: { [SHEEP]: 612 }, sets: { plushie: 6 }, take: { [SHEEP]: 4 } });
+    assert.equal(r.link.ownKept(), true);
+    assert.equal(r.link.ownSaidAt(), NOW);
+    // A count moved (you bought a piece): said again with the next exchange, not ten minutes on.
+    r.want = { own: { ...own, take: { [SHEEP]: 3 } } };
+    await r.tick(SERVER_SYNC_MS);
+    assert.deepEqual(r.syncs()[1].body.own.take, { [SHEEP]: 3 });
+    // A key that is not the one marked as the owner's own.
+    const friend = rig({ answer: okAnswer({ ownKept: 0 }), want: { own } });
+    friend.link.saveConfig(ADDRESS, PASS);
+    await friend.tick();
+    assert.equal(friend.link.ownKept(), false);
+    // A server from before it answered that: not known.
+    const old = rig({ answer: okAnswer(), want: { own } });
+    old.link.saveConfig(ADDRESS, PASS);
+    await old.tick();
+    assert.equal(old.link.ownKept(), null);
+});
+
 // ---- the two markets the server reads for Torn Archive ------------------------------------------------------------------
 
 test('the pieces still to buy are named to the server; its reads of the two markets come back in this PC\'s time, pieces only', () => {

@@ -40,6 +40,10 @@ const SV_MAX_SELLERS = 3000;
 const SV_MAX_NEAR = 200;
 const SV_MAX_BOUGHT = 200;
 const SV_MAX_DIR = 300;
+// Your own list's part for whole sets: a set's key as core/sets.js writes it, and the most a count may say.
+const SV_OWN_SET = /^[a-z]{1,16}$/;
+const SV_OWN_SETS_MAX = 8;
+const SV_OWN_COUNT_MAX = 1000000;
 const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need', 'calls', 'own'];
 /** The server's read of the points market or of a piece's Item Market is used while it is no older than this. */
 export const SERVER_MARKET_FRESH_MS = 3 * 60000;
@@ -159,7 +163,9 @@ export function serverUse(own, { tradingOn = false, beside = [], besideAt = 0, n
  * @param o.sendOwn  your own price list goes with this message (`want.own`: { open, prices: { piece: dollars },
  *   off: [piece] }) - what you pay a seller for each piece now, and the pieces you do not want now. The server
  *   keeps the last one said and hands it to Torn Bids, which then plans a trade with you on it instead of on
- *   TornW3B's copy (the owner, 2026-10-12). It is your public price list: nothing about what you hold.
+ *   TornW3B's copy (the owner, 2026-10-12). With it, for whole sets: `all` (every piece's price), `sets` (whole
+ *   sets taken now) and `take` (units of each piece still taken) - how many you still want, never what you hold.
+ *   The server keeps a list only from the key marked there as its owner's own, and answers `ownKept` 1 or 0.
  */
 export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, sendOwn = false, now = 0, calls = null } = {}) {
     const count = (n) => (Number.isFinite(n) && n > 0 ? Math.min(1000, Math.floor(n)) : 0);
@@ -218,6 +224,25 @@ export function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces 
         }
         const off = svIds([w.own.off], mine.size).filter((id) => mine.has(String(id)) && !(id in prices));
         body.own = { open: w.own.open ? 1 : 0, prices, off };
+        // For whole sets: every piece's price (also the ones in `off`), the whole sets taken now, and the units
+        // of each piece still taken. Each only when there is one to say.
+        const all = {};
+        const take = {};
+        for (const [key, value] of Object.entries(w.own.all && typeof w.own.all === 'object' ? w.own.all : {})) {
+            const item = svId(key);
+            if (item !== null && mine.has(String(item)) && Number.isFinite(value) && value > 0) all[item] = Math.max(1, Math.round(value));
+        }
+        for (const [key, value] of Object.entries(w.own.take && typeof w.own.take === 'object' ? w.own.take : {})) {
+            const item = svId(key);
+            if (item !== null && mine.has(String(item)) && Number.isInteger(value) && value >= 0) take[item] = Math.min(SV_OWN_COUNT_MAX, value);
+        }
+        const sets = {};
+        for (const [key, value] of Object.entries(w.own.sets && typeof w.own.sets === 'object' ? w.own.sets : {}).slice(0, SV_OWN_SETS_MAX)) {
+            if (SV_OWN_SET.test(key) && Number.isInteger(value) && value >= 0) sets[key] = Math.min(SV_OWN_COUNT_MAX, value);
+        }
+        if (Object.keys(all).length) body.own.all = all;
+        if (Object.keys(sets).length) body.own.sets = sets;
+        if (Object.keys(take).length) body.own.take = take;
     }
     if (calls && typeof calls === 'object' && !Array.isArray(calls)) {
         body.calls = {};
@@ -259,11 +284,16 @@ export function serverOutgoingOk(body, pieces = []) {
             if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
             for (const [item, price] of Object.entries(value)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
         } else if (key === 'own') {
-            if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((k) => !['open', 'prices', 'off'].includes(k))) return false;
+            if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((k) => !['open', 'prices', 'off', 'all', 'sets', 'take'].includes(k))) return false;
             if (value.open !== 0 && value.open !== 1) return false;
-            if (!value.prices || typeof value.prices !== 'object' || Array.isArray(value.prices)) return false;
+            const table = (t) => !!t && typeof t === 'object' && !Array.isArray(t);
+            if (!table(value.prices)) return false;
             for (const [item, price] of Object.entries(value.prices)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
             if (!Array.isArray(value.off) || !value.off.every((id) => Number.isInteger(id) && mine.has(String(id)))) return false;
+            const count = (n) => Number.isInteger(n) && n >= 0 && n <= SV_OWN_COUNT_MAX;
+            if ('all' in value && (!table(value.all) || !Object.entries(value.all).every(([item, price]) => mine.has(item) && Number.isInteger(price) && price > 0))) return false;
+            if ('take' in value && (!table(value.take) || !Object.entries(value.take).every(([item, n]) => mine.has(item) && count(n)))) return false;
+            if ('sets' in value && (!table(value.sets) || Object.keys(value.sets).length > SV_OWN_SETS_MAX || !Object.entries(value.sets).every(([key, n]) => SV_OWN_SET.test(key) && count(n)))) return false;
         } else if (!whole(value)) {
             return false;
         }

@@ -336,7 +336,7 @@ function bootHub(tabId) {
 
     function serverDesk() {
         const st = link.status();
-        return { ...serverLines(st, now()), ownAt: link.ownSaidAt(), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
+        return { ...serverLines(st, now()), ownAt: link.ownSaidAt(), ownKept: link.ownKept(), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
     }
 
     // ---- what Torn's tabs told us ------------------------------------------------------------------------------

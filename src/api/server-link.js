@@ -88,6 +88,8 @@ export class ServerLink {
         // Your own price list as last said to the server, and when (as `worth`): said again when it changed.
         this.ownJson = '';
         this.ownAt = 0;
+        // Did the server keep it? true / false as it last answered (`ownKept`); null: a server that does not say.
+        this.ownHeld = null;
     }
 
     /** { address, pass, own }, or null when the server is off. own: nothing was typed - the built-in address, as whoever Torn says you are. */
@@ -191,6 +193,7 @@ export class ServerLink {
         this.worthAt = 0;
         this.ownJson = '';
         this.ownAt = 0;
+        this.ownHeld = null;
         this.d.forget();
     }
 
@@ -202,6 +205,12 @@ export class ServerLink {
 
     /** When the server last took your own price list from this page (0: not yet). */
     ownSaidAt() { return this.ownAt; }
+
+    /**
+     * Whether the server kept the list it was last told: it keeps one only from the key marked there as its owner's
+     * own (the owner, 2026-10-12). null: not said yet, or a server from before it answered that.
+     */
+    ownKept() { return this.ownHeld; }
 
     /** Call every few seconds; it exchanges every SERVER_SYNC_MS. */
     async tick() {
@@ -299,6 +308,7 @@ export class ServerLink {
                 if (sendOwn) {
                     this.ownJson = ownJson;
                     this.ownAt = now;
+                    this.ownHeld = answer.ownKept === 1 ? true : answer.ownKept === 0 ? false : null;
                 }
                 // A server that started afresh has forgotten what the pieces are worth, and may be another one: asked again.
                 if (answer.born !== undefined && answer.born !== born) {

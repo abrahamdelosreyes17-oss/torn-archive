@@ -1124,7 +1124,7 @@ export function makeEngine(env) {
         for (const b of S.seen) if (b.whoId && !b.no && b.t > S.log.until && now - b.t < SERVER_BOUGHT_MS) bought.push({ whoId: b.whoId, id: b.id, qty: b.qty, price: b.price, t: b.t });
         // Your own price list (core/server.js serverBody `own`): what you pay for each piece now, open or closed.
         const said = v.ready && v.prices.said && v.prices.said.rows.length ? v.prices.said : null;
-        const own = said ? { open: said.open, prices: Object.fromEntries(said.rows.map((r) => [r.itemID, r.price])), off: said.off } : null;
+        const own = said ? { open: said.open, prices: Object.fromEntries(said.rows.map((r) => [r.itemID, r.price])), off: said.off, all: said.all, sets: said.sets, take: said.take } : null;
         return { sellers: [...sellers], looking: shopsWanted(v).map(Number), worth, bought, dir, need: v.pieces.filter((p) => p.need > 0).map((p) => Number(p.id)), own };
     }
 

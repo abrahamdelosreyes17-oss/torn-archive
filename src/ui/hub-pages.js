@@ -680,9 +680,11 @@ function pgW3b(d) {
     if (wr && !wr.ok) body += `<div class="row"><span class="grow1 t-bad"><b>Refused</b> ${hClock(wr.at)} TCT, ${byOf(wr)}: ${hEsc(wr.text)}.</span></div>`;
     else if (wr && wr.left) body += `<div class="row"><span class="grow1 t-warn">TornW3B took that write, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.</span></div>`;
     else if (wr && wr.same) body += `<div class="row"><span class="grow1 t-muted">Checked ${hClock(wr.at)} TCT on your press: nothing to change, ${hEsc(wr.text)}.</span></div>`;
-    // Your own price list as the shared server holds it for Torn Bids (it trades with you on this one).
+    // Your own price list as the shared server holds it for Torn Bids (it trades with you on this one). The server
+    // keeps one list: its owner's. Told to it from any other key, it answers that it did not keep it.
     const sv = d.server && d.server.ownAt > 0 ? d.server.ownAt : 0;
-    if (sv) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server holds these prices for Torn Bids: told ${hAge(sv, d.view.at)}${d.view.prices.open ? '' : ', as what you would pay if you opened now'}.</span></div>`;
+    if (sv && d.server.ownKept === false) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server keeps one price list, its owner's: yours is not held there.</span></div>`;
+    else if (sv) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server holds these prices for Torn Bids: told ${hAge(sv, d.view.at)}${d.view.prices.open ? '' : ', as what you would pay if you opened now'}.</span></div>`;
     // The pieces you hold too many of are not on your list, and come back by themselves.
     if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
     const listed = !key.set ? '' : w.listedUntil > d.view.at ? `Buyers see your list until ${hDay(w.listedUntil)}: TornW3B shows it for 7 days after a receipt.` : 'Buyers do not see your list: TornW3B shows it for 7 days after a receipt.';

@@ -1822,6 +1822,19 @@ test('1.3.6 your own price list for the server: what you pay now, also with the 
     assert.equal(own.open, false);
     assert.equal(Object.keys(own.prices).length, 23, 'closed: what you would pay if you opened now');
     for (const [id, pay] of Object.entries(own.prices)) assert.equal(pay, piece(r.view(), id).pay);
+    // 1.3.10, for whole sets: every piece has a price, also the one held too many of; five sets are held and five
+    // are the aim, so no whole set and no piece is taken now.
+    assert.equal(Object.keys(own.all).length, 24);
+    assert.equal(own.all[258], piece(r.view(), 258).pay);
+    assert.deepEqual(own.sets, { plushie: 0, flower: 0 });
+    assert.ok(Object.values(own.take).every((n) => n === 0));
+    // The aim raised to nine: four more whole sets of each, four of every piece but the one there is plenty of.
+    r.set({ target: 9 });
+    await r.go(MIN);
+    own = r.engine.serverWant().own;
+    assert.deepEqual(own.sets, { plushie: 4, flower: 4 });
+    assert.equal(own.take[258], 0);
+    assert.equal(own.take[186], 4);
 });
 
 // 1.3.7 - the owner, 2026-10-12: "trade is done. it takes forever for it to show up in torn archive ... for the

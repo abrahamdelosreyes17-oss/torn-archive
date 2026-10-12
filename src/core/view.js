@@ -448,7 +448,20 @@ export function archiveView(i) {
     // would pay if you opened now (the owner, 2026-10-12: "server should always keep my live pricelist"). `off`: the
     // pieces you hold too many of: not wanted now.
     const saidRows = desiredList(pieces, true, w3bOwed);
-    const said = { open: !!settings.open, rows: saidRows, off: pieces.filter((p) => p.pay > 0 && !saidRows.some((r) => String(r.itemID) === String(p.id))).map((p) => Number(p.id)) };
+    // For whole sets (the owner, 2026-10-12: a friend's Torn Bids sells him "full sets ... so its always complete"):
+    // `all` what you pay for EVERY piece, also one you hold too many of - a whole set is paid whole; `sets` how
+    // many whole sets you take now: the sets you are still building, no more than your money pays for at these
+    // prices; `take` how many of each piece you still take by itself.
+    const priced = pieces.filter((p) => p.pay > 0);
+    const said = {
+        open: !!settings.open, rows: saidRows, off: priced.filter((p) => !saidRows.some((r) => String(r.itemID) === String(p.id))).map((p) => Number(p.id)),
+        all: Object.fromEntries(priced.map((p) => [p.id, p.pay])),
+        sets: Object.fromEntries(sets.map((s) => {
+            const building = Math.max(0, s.target - s.full);
+            return [s.key, budget == null || !(s.rate.cost > 0) ? building : Math.min(building, Math.floor(budget / s.rate.cost))];
+        })),
+        take: Object.fromEntries(priced.map((p) => [p.id, p.need])),
+    };
     const rates = [];
     for (let r = 99; r <= 104.001; r += 0.5) rates.push(Math.round(r * 10) / 10);
     const bidOf = (id) => (pieceOf(id) || {}).other || null;

@@ -90,4 +90,8 @@ test('the TornW3B panel: when your list last changed, "Update now", a refusal or
     assert.ok(panel(page(desk({}, { w3b: true }), 'prices'), 'w3b').includes('disabled>Updating</button>'));
     const served = panel(page(desk({}, {}, { on: true, level: 'ok', now: 'On.', ownAt: NOW - 2 * MIN }), 'prices'), 'w3b');
     assert.ok(served.includes('The shared server holds these prices for Torn Bids'), served);
+    // A key that is not the one marked as the server's owner's: the server did not keep the list, and it says so.
+    const notKept = panel(page(desk({}, {}, { on: true, level: 'ok', now: 'On.', ownAt: NOW - 2 * MIN, ownKept: false }), 'prices'), 'w3b');
+    assert.ok(notKept.includes("The shared server keeps one price list, its owner's: yours is not held there."), notKept);
+    assert.ok(!notKept.includes('holds these prices'));
 });

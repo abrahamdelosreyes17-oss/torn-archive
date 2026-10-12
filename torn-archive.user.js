@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.9
+// @version      1.3.10
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.9';
+    const TARC_BUILD_VERSION = '1.3.10';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -3229,6 +3229,10 @@
     const SV_MAX_NEAR = 200;
     const SV_MAX_BOUGHT = 200;
     const SV_MAX_DIR = 300;
+    // Your own list's part for whole sets: a set's key as core/sets.js writes it, and the most a count may say.
+    const SV_OWN_SET = /^[a-z]{1,16}$/;
+    const SV_OWN_SETS_MAX = 8;
+    const SV_OWN_COUNT_MAX = 1000000;
     const SV_BODY_KEYS = ['app', 'ver', 'used', 'waiting', 'sellers', 'trades', 'looking', 'worth', 'since', 'seen', 'going', 'bought', 'dir', 'need', 'calls', 'own'];
     /** The server's read of the points market or of a piece's Item Market is used while it is no older than this. */
     const SERVER_MARKET_FRESH_MS = 3 * 60000;
@@ -3348,7 +3352,9 @@
      * @param o.sendOwn  your own price list goes with this message (`want.own`: { open, prices: { piece: dollars },
      *   off: [piece] }) - what you pay a seller for each piece now, and the pieces you do not want now. The server
      *   keeps the last one said and hands it to Torn Bids, which then plans a trade with you on it instead of on
-     *   TornW3B's copy (the owner, 2026-10-12). It is your public price list: nothing about what you hold.
+     *   TornW3B's copy (the owner, 2026-10-12). With it, for whole sets: `all` (every piece's price), `sets` (whole
+     *   sets taken now) and `take` (units of each piece still taken) - how many you still want, never what you hold.
+     *   The server keeps a list only from the key marked there as its owner's own, and answers `ownKept` 1 or 0.
      */
     function serverBody({ ver = '', used = 0, waiting = 0, want = {}, pieces = [], since = 0, seen = 0, sendWorth = true, sendOwn = false, now = 0, calls = null } = {}) {
         const count = (n) => (Number.isFinite(n) && n > 0 ? Math.min(1000, Math.floor(n)) : 0);
@@ -3407,6 +3413,25 @@
             }
             const off = svIds([w.own.off], mine.size).filter((id) => mine.has(String(id)) && !(id in prices));
             body.own = { open: w.own.open ? 1 : 0, prices, off };
+            // For whole sets: every piece's price (also the ones in `off`), the whole sets taken now, and the units
+            // of each piece still taken. Each only when there is one to say.
+            const all = {};
+            const take = {};
+            for (const [key, value] of Object.entries(w.own.all && typeof w.own.all === 'object' ? w.own.all : {})) {
+                const item = svId(key);
+                if (item !== null && mine.has(String(item)) && Number.isFinite(value) && value > 0) all[item] = Math.max(1, Math.round(value));
+            }
+            for (const [key, value] of Object.entries(w.own.take && typeof w.own.take === 'object' ? w.own.take : {})) {
+                const item = svId(key);
+                if (item !== null && mine.has(String(item)) && Number.isInteger(value) && value >= 0) take[item] = Math.min(SV_OWN_COUNT_MAX, value);
+            }
+            const sets = {};
+            for (const [key, value] of Object.entries(w.own.sets && typeof w.own.sets === 'object' ? w.own.sets : {}).slice(0, SV_OWN_SETS_MAX)) {
+                if (SV_OWN_SET.test(key) && Number.isInteger(value) && value >= 0) sets[key] = Math.min(SV_OWN_COUNT_MAX, value);
+            }
+            if (Object.keys(all).length) body.own.all = all;
+            if (Object.keys(sets).length) body.own.sets = sets;
+            if (Object.keys(take).length) body.own.take = take;
         }
         if (calls && typeof calls === 'object' && !Array.isArray(calls)) {
             body.calls = {};
@@ -3448,11 +3473,16 @@
                 if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
                 for (const [item, price] of Object.entries(value)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
             } else if (key === 'own') {
-                if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((k) => !['open', 'prices', 'off'].includes(k))) return false;
+                if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((k) => !['open', 'prices', 'off', 'all', 'sets', 'take'].includes(k))) return false;
                 if (value.open !== 0 && value.open !== 1) return false;
-                if (!value.prices || typeof value.prices !== 'object' || Array.isArray(value.prices)) return false;
+                const table = (t) => !!t && typeof t === 'object' && !Array.isArray(t);
+                if (!table(value.prices)) return false;
                 for (const [item, price] of Object.entries(value.prices)) if (!mine.has(item) || !Number.isInteger(price) || price <= 0) return false;
                 if (!Array.isArray(value.off) || !value.off.every((id) => Number.isInteger(id) && mine.has(String(id)))) return false;
+                const count = (n) => Number.isInteger(n) && n >= 0 && n <= SV_OWN_COUNT_MAX;
+                if ('all' in value && (!table(value.all) || !Object.entries(value.all).every(([item, price]) => mine.has(item) && Number.isInteger(price) && price > 0))) return false;
+                if ('take' in value && (!table(value.take) || !Object.entries(value.take).every(([item, n]) => mine.has(item) && count(n)))) return false;
+                if ('sets' in value && (!table(value.sets) || Object.keys(value.sets).length > SV_OWN_SETS_MAX || !Object.entries(value.sets).every(([key, n]) => SV_OWN_SET.test(key) && count(n)))) return false;
             } else if (!whole(value)) {
                 return false;
             }
@@ -3804,6 +3834,8 @@
             // Your own price list as last said to the server, and when (as `worth`): said again when it changed.
             this.ownJson = '';
             this.ownAt = 0;
+            // Did the server keep it? true / false as it last answered (`ownKept`); null: a server that does not say.
+            this.ownHeld = null;
         }
 
         /** { address, pass, own }, or null when the server is off. own: nothing was typed - the built-in address, as whoever Torn says you are. */
@@ -3907,6 +3939,7 @@
             this.worthAt = 0;
             this.ownJson = '';
             this.ownAt = 0;
+            this.ownHeld = null;
             this.d.forget();
         }
 
@@ -3918,6 +3951,12 @@
 
         /** When the server last took your own price list from this page (0: not yet). */
         ownSaidAt() { return this.ownAt; }
+
+        /**
+         * Whether the server kept the list it was last told: it keeps one only from the key marked there as its owner's
+         * own (the owner, 2026-10-12). null: not said yet, or a server from before it answered that.
+         */
+        ownKept() { return this.ownHeld; }
 
         /** Call every few seconds; it exchanges every SERVER_SYNC_MS. */
         async tick() {
@@ -4015,6 +4054,7 @@
                     if (sendOwn) {
                         this.ownJson = ownJson;
                         this.ownAt = now;
+                        this.ownHeld = answer.ownKept === 1 ? true : answer.ownKept === 0 ? false : null;
                     }
                     // A server that started afresh has forgotten what the pieces are worth, and may be another one: asked again.
                     if (answer.born !== undefined && answer.born !== born) {
@@ -8894,7 +8934,20 @@
         // would pay if you opened now (the owner, 2026-10-12: "server should always keep my live pricelist"). `off`: the
         // pieces you hold too many of: not wanted now.
         const saidRows = desiredList(pieces, true, w3bOwed);
-        const said = { open: !!settings.open, rows: saidRows, off: pieces.filter((p) => p.pay > 0 && !saidRows.some((r) => String(r.itemID) === String(p.id))).map((p) => Number(p.id)) };
+        // For whole sets (the owner, 2026-10-12: a friend's Torn Bids sells him "full sets ... so its always complete"):
+        // `all` what you pay for EVERY piece, also one you hold too many of - a whole set is paid whole; `sets` how
+        // many whole sets you take now: the sets you are still building, no more than your money pays for at these
+        // prices; `take` how many of each piece you still take by itself.
+        const priced = pieces.filter((p) => p.pay > 0);
+        const said = {
+            open: !!settings.open, rows: saidRows, off: priced.filter((p) => !saidRows.some((r) => String(r.itemID) === String(p.id))).map((p) => Number(p.id)),
+            all: Object.fromEntries(priced.map((p) => [p.id, p.pay])),
+            sets: Object.fromEntries(sets.map((s) => {
+                const building = Math.max(0, s.target - s.full);
+                return [s.key, budget == null || !(s.rate.cost > 0) ? building : Math.min(building, Math.floor(budget / s.rate.cost))];
+            })),
+            take: Object.fromEntries(priced.map((p) => [p.id, p.need])),
+        };
         const rates = [];
         for (let r = 99; r <= 104.001; r += 0.5) rates.push(Math.round(r * 10) / 10);
         const bidOf = (id) => (pieceOf(id) || {}).other || null;
@@ -10658,7 +10711,7 @@
             for (const b of S.seen) if (b.whoId && !b.no && b.t > S.log.until && now - b.t < SERVER_BOUGHT_MS) bought.push({ whoId: b.whoId, id: b.id, qty: b.qty, price: b.price, t: b.t });
             // Your own price list (core/server.js serverBody `own`): what you pay for each piece now, open or closed.
             const said = v.ready && v.prices.said && v.prices.said.rows.length ? v.prices.said : null;
-            const own = said ? { open: said.open, prices: Object.fromEntries(said.rows.map((r) => [r.itemID, r.price])), off: said.off } : null;
+            const own = said ? { open: said.open, prices: Object.fromEntries(said.rows.map((r) => [r.itemID, r.price])), off: said.off, all: said.all, sets: said.sets, take: said.take } : null;
             return { sellers: [...sellers], looking: shopsWanted(v).map(Number), worth, bought, dir, need: v.pieces.filter((p) => p.need > 0).map((p) => Number(p.id)), own };
         }
 
@@ -13025,9 +13078,11 @@
         if (wr && !wr.ok) body += `<div class="row"><span class="grow1 t-bad"><b>Refused</b> ${hClock(wr.at)} TCT, ${byOf(wr)}: ${hEsc(wr.text)}.</span></div>`;
         else if (wr && wr.left) body += `<div class="row"><span class="grow1 t-warn">TornW3B took that write, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.</span></div>`;
         else if (wr && wr.same) body += `<div class="row"><span class="grow1 t-muted">Checked ${hClock(wr.at)} TCT on your press: nothing to change, ${hEsc(wr.text)}.</span></div>`;
-        // Your own price list as the shared server holds it for Torn Bids (it trades with you on this one).
+        // Your own price list as the shared server holds it for Torn Bids (it trades with you on this one). The server
+        // keeps one list: its owner's. Told to it from any other key, it answers that it did not keep it.
         const sv = d.server && d.server.ownAt > 0 ? d.server.ownAt : 0;
-        if (sv) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server holds these prices for Torn Bids: told ${hAge(sv, d.view.at)}${d.view.prices.open ? '' : ', as what you would pay if you opened now'}.</span></div>`;
+        if (sv && d.server.ownKept === false) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server keeps one price list, its owner's: yours is not held there.</span></div>`;
+        else if (sv) body += `<div class="row" data-k="w3b-server"><span class="grow1 t-muted">The shared server holds these prices for Torn Bids: told ${hAge(sv, d.view.at)}${d.view.prices.open ? '' : ', as what you would pay if you opened now'}.</span></div>`;
         // The pieces you hold too many of are not on your list, and come back by themselves.
         if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
         const listed = !key.set ? '' : w.listedUntil > d.view.at ? `Buyers see your list until ${hDay(w.listedUntil)}: TornW3B shows it for 7 days after a receipt.` : 'Buyers do not see your list: TornW3B shows it for 7 days after a receipt.';
@@ -19343,7 +19398,7 @@
 
         function serverDesk() {
             const st = link.status();
-            return { ...serverLines(st, now()), ownAt: link.ownSaidAt(), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
+            return { ...serverLines(st, now()), ownAt: link.ownSaidAt(), ownKept: link.ownKept(), bazaars: engine ? Object.keys(engine.state.server.shops).length : 0, address: st.address || '', typed: st.typed, hasPass: st.hasPass, own: st.own, builtIn: st.builtIn, msg: serverMsg };
         }
 
         // ---- what Torn's tabs told us ------------------------------------------------------------------------------

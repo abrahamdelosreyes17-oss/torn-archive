@@ -169,6 +169,30 @@ test('my prices: the verdict, the thread, the TornW3B list', () => {
     assert.equal(closed.shop.open, false);
 });
 
+test('your own list, as the shared server is told it: every piece priced for whole sets, the sets you still build, the units of each piece', () => {
+    const base = fixtureInput(NOW);
+    const v = archiveView(base);
+    const said = v.prices.said;
+    const priced = v.pieces.filter((p) => p.pay > 0);
+    assert.equal(priced.length, 24, 'the made-up desk pays for every piece');
+    // Every piece has a price in `all`, also the ones left off the list because you hold too many.
+    assert.deepEqual(said.all, Object.fromEntries(priced.map((p) => [p.id, p.pay])));
+    assert.ok(said.off.length > 0, 'the made-up desk holds too many of some piece');
+    for (const id of said.off) assert.ok(said.all[id] > 0 && !said.rows.some((r) => Number(r.itemID) === id));
+    assert.deepEqual(said.take, Object.fromEntries(priced.map((p) => [p.id, p.need])));
+    // Whole sets: the sets still being built, no more than the money pays for at these prices.
+    const money = base.money.onHand + base.money.vault;
+    for (const s of v.sets) {
+        assert.ok(Number.isInteger(said.sets[s.key]) && said.sets[s.key] >= 0, s.key);
+        assert.ok(said.sets[s.key] <= s.target - s.full, s.key + ': never more than you are building');
+        assert.ok(said.sets[s.key] * s.rate.cost <= money, s.key + ': never more than your money pays for');
+    }
+    assert.ok(Object.values(said.sets).some((n) => n > 0), 'the made-up desk is still building a set');
+    // The money not known: the sets you are building, uncapped.
+    const blind = archiveView({ ...base, money: { onHand: null, vault: null } });
+    for (const s of blind.sets) assert.equal(blind.prices.said.sets[s.key], s.target - s.full);
+});
+
 test('nothing read yet: the view still stands, and says it is not ready', () => {
     const v = archiveView({ now: NOW, settings: archiveSettings(null), held: () => 0, mv: () => 0, stockAt: 0 });
     assert.equal(v.ready, false);
