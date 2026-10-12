@@ -62,6 +62,12 @@ export function fillPlan(pieces, offersOf) {
  * gathers at the bazaars that hold a lot of what you need. (The owner, 2026-10-11: "prioritize for example a bazaar
  * has a lot of things i need instead of just 1 bazaar 1 bazaar".) The price of it: those units at the other
  * bazaar's price, which is the dearer one - never over the worth. The Item Market's line is left as it is.
+ *
+ * 1.3.0: each stop is tried once, the smallest first, and a piece's listings are sorted by place once. A stop
+ * that could not be emptied never can be later (the others only fill up), so trying it again changes nothing -
+ * until then every stop was tried again after each one dropped, and the time grew about with the stops cubed
+ * (his own state, 2026-10-11: 182 to 1,195 ms a list, the page frozen meanwhile; now 21 to 31 ms, the same list).
+ * test/fewer-stops.test.js holds the old working-out beside this one on made-up lists.
  * @param plan     fillPlan's lines
  * @param pieces   [{ id, worth }] as given to fillPlan
  * @param offersOf id -> [{ price, qty, src, who, whoId }]
@@ -69,40 +75,52 @@ export function fillPlan(pieces, offersOf) {
 export function fewerStops(plan, pieces, offersOf) {
     const worth = new Map((pieces || []).map((p) => [String(p.id), shWhole(p.worth)]));
     let cart = (plan || []).map((l) => ({ ...l }));
+    const byPlace = new Map();
+    const rows = new Map();
     const rowAt = (id, place) => {
-        const w = worth.get(String(id)) || 0;
-        const o = placeOffer((offersOf && offersOf(id)) || [], place, w);
-        return o && w > 0 && shWhole(o.price) < w ? o : null;
+        const k = String(id);
+        if (!byPlace.has(k)) {
+            const by = new Map();
+            for (const o of (offersOf && offersOf(id)) || []) { const p = placeOf(o); if (!by.has(p)) by.set(p, []); by.get(p).push(o); }
+            byPlace.set(k, by);
+            rows.set(k, new Map());
+        }
+        const known = rows.get(k);
+        if (!known.has(place)) {
+            const w = worth.get(k) || 0;
+            const o = placeOffer(byPlace.get(k).get(place) || [], place, w);
+            known.set(place, o && w > 0 && shWhole(o.price) < w ? o : null);
+        }
+        return known.get(place);
     };
+    const stuck = new Set();
     for (;;) {
         const units = new Map();
         for (const l of cart) if (!l.im) units.set(l.place, (units.get(l.place) || 0) + l.q);
         if (units.size < 2) return cart;
         const order = [...units].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1)).map(([place]) => place);
-        let moved = false;
-        for (const from of order) {
-            const others = order.filter((x) => x !== from);
-            const next = cart.filter((l) => l.place !== from).map((l) => ({ ...l }));
-            let fits = true;
-            for (const line of cart.filter((l) => l.place === from)) {
-                let left = line.q;
-                // Where else on the list this piece is sold under its worth, cheapest first, and how many are still free there.
-                const spots = others.map((place) => ({ place, o: rowAt(line.id, place) })).filter((s) => s.o).sort((a, b) => a.o.price - b.o.price || (a.place < b.place ? -1 : 1));
-                for (const s of spots) {
-                    if (!left) break;
-                    const have = next.find((l) => l.place === s.place && String(l.id) === String(line.id));
-                    const free = shWhole(s.o.qty) - (have ? have.q : 0);
-                    const q = Math.min(left, free);
-                    if (q <= 0) continue;
-                    if (have) have.q += q;
-                    else next.push(shLine({ id: line.id, name: line.name, set: line.set }, s.o, q));
-                    left -= q;
-                }
-                if (left) { fits = false; break; }
+        const from = order.find((place) => !stuck.has(place));
+        if (from === undefined) return cart;
+        const next = cart.filter((l) => l.place !== from).map((l) => ({ ...l }));
+        const at = new Map();
+        for (const l of next) { const k = lineKey(l.id, l.place); if (!at.has(k)) at.set(k, l); }
+        let fits = true;
+        for (const line of cart.filter((l) => l.place === from)) {
+            let left = line.q;
+            const spots = order.filter((place) => place !== from).map((place) => ({ place, o: rowAt(line.id, place) })).filter((s) => s.o).sort((a, b) => a.o.price - b.o.price || (a.place < b.place ? -1 : 1));
+            for (const s of spots) {
+                if (!left) break;
+                const have = at.get(lineKey(line.id, s.place));
+                const free = shWhole(s.o.qty) - (have ? have.q : 0);
+                const q = Math.min(left, free);
+                if (q <= 0) continue;
+                if (have) have.q += q;
+                else { const made = shLine({ id: line.id, name: line.name, set: line.set }, s.o, q); next.push(made); at.set(lineKey(made.id, made.place), made); }
+                left -= q;
             }
-            if (fits) { cart = next; moved = true; break; }
+            if (left) { fits = false; break; }
         }
-        if (!moved) return cart;
+        if (fits) cart = next; else stuck.add(from);
     }
 }
 
@@ -281,6 +299,30 @@ export function runTook(run, key, units) {
 }
 
 export const tookAt = (run, stop) => (stop ? stop.lines.reduce((s, l) => s + Math.min(l.q, shWhole(run && run.took && run.took[l.key])), 0) : 0);
+
+/**
+ * A press of Start, Next or Stop in the box on a Torn page, applied to the run as the view has it (runView's
+ * answer) - at once, before the hub's tab has taken the press. Until 1.3.0 the box showed nothing until the hub
+ * answered, and a busy hub answered after up to 42 s ("i press stop the run but nothing happens").
+ * As the engine does it (engine.js act run): Next from a bazaar of the list that is not the stop the run is on
+ * goes on from that bazaar; the stops passed over stay on the list.
+ * @param run   { stops: [{ place, units, took, state }], at, took }; the answer adds `over`: the press passed the last stop
+ * @param op    'start' | 'next' | 'stop'
+ * @param place where you stand ('b:' + id, or 'im'), for Next
+ */
+export function runLocal(run, op, place = null) {
+    const stops = (run && run.stops) || [];
+    if (op === 'stop') return { ...run, stops: stops.map((s) => ({ ...s, state: '', took: 0 })), at: -1, began: false, over: false, took: {}, got: 0, skipped: 0 };
+    if (op === 'start') return { ...run, stops: stops.map((s, i) => ({ ...s, took: 0, state: i === 0 ? 'cur' : '' })), at: stops.length ? 0 : -1, began: true, over: false, took: {}, got: 0, skipped: 0 };
+    if (op !== 'next') return run;
+    const cur = stops.findIndex((s) => s.state === 'cur');
+    if (cur < 0) return run;
+    const here = place ? stops.findIndex((s) => s.place === place) : -1;
+    const next = (here >= 0 ? here : cur) + 1;
+    const past = (s) => (s.took >= s.units ? 'done' : s.took ? 'part' : 'skip');
+    const rows = stops.map((s, i) => ({ ...s, state: i === next ? 'cur' : i < next ? past(s) : '' }));
+    return { ...run, stops: rows, at: next < stops.length ? next : -1, over: next >= stops.length, skipped: rows.filter((r) => r.state === 'skip').length };
+}
 
 /**
  * What each stop says while a run is on, and after it.

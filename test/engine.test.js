@@ -79,7 +79,7 @@ function rig(t, { settings = {}, keys = {}, paused = false, world = null, tornPe
         paused,
         keys: { limited: FAKE_KEYS.limited, full: FAKE_KEYS.full, w3b: FAKE_KEYS.w3b, ...keys },
         settings: archiveSettings({ open: true, pct: 101, least: 2, targetMode: 'number', target: 4, readMin: 1, ...settings }),
-        said: [], failed: [], notices: [], changed: 0, saved: [],
+        said: [], failed: [], notices: [], changed: 0, saved: [], worked: 0,
         engine: null, clients: null, onUrl: null,
     };
     const fetchImpl = (url, init) => { urls.push(String(url)); if (r.onUrl) r.onUrl(String(url)); return fake.fetch(url, init); };
@@ -106,6 +106,8 @@ function rig(t, { settings = {}, keys = {}, paused = false, world = null, tornPe
             hasKey: (kind) => !!r.keys[kind],
             paused: () => r.paused,
             say: (kind, what, detail) => r.said.push({ kind, what, detail }),
+            // As main.js times it for the speed log: here it counts how often the view is worked out.
+            timed: (name, fn) => { r.worked += 1; return fn(); },
             changed: () => { r.changed += 1; },
             notify: (n) => r.notices.push(n),
             // As main.js: a read that came back steps the engine again.
@@ -949,4 +951,578 @@ test('your items first: "Read now" asks for them ahead of every other read, and 
     r.engine.act('readStock');
     await r.wait(2000);
     assert.equal(torn(press).filter(inv).length, n, 'three presses in five seconds are one read');
+});
+
+// ---- 1.3.0: the next build (HANDOFF "THE NEXT BUILD: FULL AGENDA", 2026-10-12) ---------------------------------------
+
+const logCalls = (r, since = 0) => r.torn('/v2/user/log').filter((c) => c.t >= since);
+/** Until just past a regular read of your log: the next one by itself is two minutes off. */
+async function pastLogRead(r) {
+    const n = logCalls(r).length;
+    for (let k = 0; k < 40 && logCalls(r).length === n; k++) await r.go(5000);
+    assert.ok(logCalls(r).length > n, 'the log is read by itself every two minutes');
+    await r.go(10000);
+}
+
+test('B1. Buy pressed on a Torn page: nothing is counted and nothing drawn for the press; your log is asked a few seconds and twenty seconds after it', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    await pastLogRead(r);
+    const held = piece(r.view(), 186).held;
+    const seen = r.engine.state.seen.length;
+    const drawn = r.changed;
+    const press = Date.now();
+    r.engine.note('press', { t: press, id: '186', whoId: '3000005' });
+    assert.equal(r.changed, drawn, 'the press itself changes nothing on the screen');
+    await r.go(40000);
+    const after = logCalls(r, press).map((c) => c.t - press);
+    assert.ok(after.some((d) => d >= 5000 && d < 15000), 'asked a few seconds after the press: ' + after.join(', '));
+    assert.ok(after.some((d) => d >= 20000 && d < 32000), 'and again twenty seconds after it: ' + after.join(', '));
+    assert.equal(piece(r.view(), 186).held, held, 'nothing was bought: nothing is counted');
+    assert.equal(r.engine.state.seen.length, seen);
+
+    // Without a Full key there is no log to ask: the press asks Torn for nothing.
+    const q = rig(t, { keys: { full: '' } });
+    await q.ready();
+    q.engine.note('press', { t: Date.now(), id: '186', whoId: '3000005' });
+    await q.go(30000);
+    assert.equal(q.torn('/v2/user/log').length, 0);
+});
+
+test('B1. with a Full key: a buy the page saw that Torn\'s log does not have is taken back a minute on - off your stock and the run, said once, and the seller has it again', async (t) => {
+    const r = rig(t, { settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    r.engine.act('run', 'start');
+    const line = r.engine.state.cart.find((l) => !l.im);
+    assert.ok(line, 'the list has a bazaar line');
+    const rowOf = (v) => piece(v, line.id).offers.find((o) => String(o.whoId) === String(line.whoId));
+    const before = piece(r.view(), line.id).held;
+    const stock = rowOf(r.view()).qty;
+    const at = Date.now();
+    // The page said "bought" - and Torn sold nothing (the fake's log gets no row, its bazaar keeps the stock).
+    r.engine.note('buy', { t: at, id: String(line.id), qty: line.q, price: line.price, whoId: String(line.whoId) });
+    assert.equal(piece(r.view(), line.id).held, before + line.q, 'shown as taken at once');
+    assert.equal(r.engine.state.run.took[line.key], line.q, 'and ticked on the run');
+    await r.go(50000);
+    assert.equal(piece(r.view(), line.id).held, before + line.q, 'not judged before the log was read a minute past it');
+    await r.go(40000);
+    const v = r.view();
+    assert.equal(piece(v, line.id).held, before, 'taken back from your stock');
+    assert.equal(r.engine.state.run.took[line.key] || 0, 0, 'from the run');
+    assert.deepEqual(r.engine.state.cart.filter((l) => l.key === line.key).map((l) => l.q), [line.q], 'the line is on your list as it was');
+    assert.equal(rowOf(v).qty, stock, 'and the seller\'s listing is whole again');
+    assert.deepEqual(v.buy.back.map((b) => [String(b.id), b.qty, String(b.whoId)]), [[String(line.id), line.q, String(line.whoId)]], 'the screen says which buy');
+    const lines = r.said.filter((s) => s.what === 'Not a buy after all: taken back');
+    assert.equal(lines.length, 1, 'once in the log');
+    assert.match(lines[0].detail, new RegExp('^' + line.q + ' x .+ at bazaar ' + line.whoId + ', seen \\d\\d:\\d\\d:\\d\\d UTC\\. '));
+    // Said for ten minutes, then gone from the screen; never counted again.
+    await r.go(11 * MIN);
+    assert.deepEqual(r.view().buy.back, []);
+    assert.equal(piece(r.view(), line.id).held, before);
+    // Closed and opened again: it stays taken back.
+    r.restart();
+    await r.go(3 * MIN);
+    assert.equal(piece(r.view(), line.id).held, before);
+});
+
+test('B1. with a Full key: a real buy the page saw is tied to its row in the log and kept in the store so - it is one buy after a reload too', async (t) => {
+    const r = rig(t);
+    const before = piece(await r.ready(), 186).held;
+    r.fake.buy(3000005, 186, 2);
+    r.engine.note('buy', { t: Date.now(), id: '186', qty: 2, price: 880, whoId: '3000005' });
+    await r.go(2 * MIN);
+    const b = r.engine.state.seen.find((x) => x.id === '186');
+    assert.ok(b && b.logged && !b.no, 'tied to its log row');
+    assert.deepEqual(r.said.filter((s) => s.what === 'Not a buy after all: taken back'), []);
+    r.restart();
+    assert.ok(r.engine.state.seen.find((x) => x.id === '186').logged, 'the tie was stored');
+    await r.go(3 * MIN);
+    assert.equal(piece(r.view(), 186).held, before + 2);
+});
+
+test('B3. Next pressed at a bazaar of your list that is not the stop the run is on: the run goes on from there, and the stops passed over stay on the list', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    r.engine.act('run', 'start');
+    const stops = r.view().buy.run.stops;
+    assert.ok(stops.length > 4, 'the made-up list has more than four stops: ' + stops.length);
+    const lines = r.engine.state.cart.map((l) => l.key).sort();
+    const cur = () => r.view().buy.run.stops.findIndex((s) => s.state === 'cur');
+    assert.equal(cur(), 0);
+    // You went to the third stop on your own, and press Next there.
+    r.engine.act('run', 'next', stops[2].place);
+    const now = r.view().buy.run.stops;
+    assert.deepEqual(now.map((s) => s.place), stops.map((s) => s.place), 'the order of the stops does not move');
+    assert.equal(cur(), 3, 'the run is on the stop after the one you stood at');
+    assert.deepEqual(now.slice(0, 3).map((s) => s.state), ['skip', 'skip', 'skip']);
+    assert.deepEqual(r.engine.state.cart.map((l) => l.key).sort(), lines, 'nothing left the list');
+    // At a bazaar that is no stop of the list, Next goes on from the run's own stop.
+    r.engine.act('run', 'next', 'b:424242');
+    assert.equal(cur(), 4);
+    // The presses are in the problem log, with where you stood.
+    assert.ok(r.said.some((s) => s.what === 'Pressed: run' && s.detail === 'next ' + stops[2].place));
+});
+
+test('B4. a Torn tab says a piece is gone from a bazaar, or that the bazaar is empty: its lines leave your list at once; the look is not kept for ever', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    await r.ready();
+    r.engine.act('makeList');
+    const cart = () => r.engine.state.cart;
+    const line = cart().find((l) => !l.im);
+    const other = cart().find((l) => !l.im && String(l.whoId) !== String(line.whoId));
+    assert.ok(line && other, 'two bazaars on the list');
+    const at = (id, whoId) => piece(r.view(), id).offers.find((o) => String(o.whoId) === String(whoId) && o.ok !== false && o.qty > 0);
+    assert.ok(at(line.id, line.whoId) && at(other.id, other.whoId));
+
+    r.engine.note('shop', { t: Date.now(), whoId: String(line.whoId), items: [{ id: String(line.id), gone: true }] });
+    assert.equal(cart().some((l) => l.key === line.key), false, 'the gone piece is off the list');
+    assert.equal(at(line.id, line.whoId), undefined, 'and not offered at that bazaar');
+    assert.ok(cart().some((l) => l.key === other.key), 'the other bazaar is not touched');
+
+    r.engine.note('shop', { t: Date.now(), whoId: String(other.whoId), items: [], empty: true });
+    assert.equal(cart().some((l) => String(l.whoId) === String(other.whoId)), false, 'an empty bazaar has no line left');
+    assert.equal(at(other.id, other.whoId), undefined);
+
+    // The fake's bazaars still hold both. A page's look is kept an hour (a read of Torn a minute newer stands over
+    // it sooner: test/next-build.test.js); then the bazaars are rows not checked lately, asked of Torn, and count.
+    await r.go(75 * MIN);
+    assert.ok(at(line.id, line.whoId), 'offered again once Torn was asked');
+    assert.ok(at(other.id, other.whoId));
+});
+
+const W3B_KEY_REFUSED = '{"error":"Invalid API key. The API key must match the API key linked to this user ID in our database"}';
+
+test('B5. TornW3B refuses the key for your Torn id (403 naming the key): the key\'s box says so, and nothing of yours is asked there again until the key is changed', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    assert.equal(r.engine.keys().w3b.ok, true, 'TornW3B took the key at first');
+    const real = r.clients.own.send;
+    let asked = 0;
+    r.clients.own.send = () => { asked += 1; return Promise.resolve({ ok: false, status: 403, json: async () => JSON.parse(W3B_KEY_REFUSED), text: async () => W3B_KEY_REFUSED }); };
+    await r.go(35 * MIN);
+    const k = r.engine.keys().w3b;
+    assert.ok(asked >= 1, 'TornW3B was asked');
+    assert.deepEqual([k.ok, k.error], [false, 'TornW3B refuses this key for your Torn id: it is not the one registered there']);
+    const then = asked;
+    await r.go(3 * 60 * MIN);
+    assert.equal(asked, then, 'not asked once more in three hours');
+    // Another key is pasted: it is tried again, and taken.
+    r.clients.own.send = real;
+    r.engine.keyChanged('w3b');
+    await r.go(2 * MIN);
+    assert.deepEqual([r.engine.keys().w3b.ok, r.engine.keys().w3b.error], [true, '']);
+});
+
+test('B5. TornW3B calls a receipt request wrong (400): it is not sent for that trade again, and its shape - no value of yours - goes into the log', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true } });
+    await r.ready();
+    const id = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 2 }] }));
+    await r.go(2 * MIN);
+    const real = r.clients.own.send;
+    let sent = 0;
+    r.clients.own.send = (url, init) => (/\/api\/pricelist\/\d+$/.test(String(url)) && init && init.method === 'POST'
+        ? (sent += 1, Promise.resolve({ ok: false, status: 400, json: async () => ({ error: 'Invalid request body' }), text: async () => '{"error":"Invalid request body"}' }))
+        : real(url, init));
+    r.fake.finishTrade(id, { pay: 2 * payOf(r.world, 384) });
+    await r.go(40 * MIN);
+    assert.equal(sent, 1, 'the same request is not sent again');
+    const lines = r.said.filter((s) => s.what === 'TornW3B called a receipt request wrong');
+    assert.equal(lines.length, 1);
+    assert.match(lines[0].detail, new RegExp('^trade ' + id + ' · sent: \\{ .+ \\} · it is not sent for this trade again$'));
+    assert.doesNotMatch(lines[0].detail.replace('trade ' + id, ''), /\d{3,}/, 'kinds and names only: no id, no price');
+    assert.equal(r.engine.keys().w3b.error || '', '', 'a wrong request is no verdict on the key');
+});
+
+test('A3. the calm pace: the view that decides what to read is worked out at most every three seconds, however many answers come in', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    const reads0 = r.fake.calls.length;
+    const worked0 = r.worked;
+    await r.go(10 * MIN);
+    const reads = r.fake.calls.length - reads0;
+    const worked = r.worked - worked0;
+    assert.ok(reads > 200, 'ten minutes bring hundreds of answers: ' + reads);
+    assert.ok(worked <= 10 * 60 / 3 + 5, 'worked out ' + worked + ' times in ten minutes');
+    assert.ok(worked * 2 < reads, 'not once for every answer: ' + worked + ' for ' + reads + ' reads');
+    // Asked twice within the pace: the same view, not a second working-out.
+    const a = r.engine.calm();
+    assert.equal(r.engine.calm(), a);
+    // A buy is not calm: the next look has it.
+    r.fake.buy(3000005, 186, 1);
+    r.engine.note('buy', { t: Date.now(), id: '186', qty: 1, price: 880, whoId: '3000005' });
+    assert.notEqual(r.engine.calm(), a);
+});
+
+test('A2. a look at a piece\'s sellers asks Torn about them and draws nothing: no press of it is logged, the screen is not told to change', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    const v = await r.ready();
+    const p = v.pieces.find((x) => x.offers.some((o) => o.src !== 'market'));
+    const drawn = r.changed;
+    const said = r.said.length;
+    for (let k = 0; k < 50; k++) assert.equal(r.engine.act('look', p.id), true, 'the engine knows the press');
+    assert.equal(r.changed, drawn, 'fifty looks: not one draw');
+    assert.equal(r.said.length, said);
+});
+
+test('B6. a listing at $1 is a locked one, never a price: it is no day\'s low and no deal', async (t) => {
+    const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
+    const v0 = await r.ready();
+    const p0 = v0.pieces.find((x) => x.offers.some((o) => o.src !== 'market' && o.ok !== false));
+    const row = p0.offers.find((o) => o.src !== 'market' && o.ok !== false);
+    r.fake.setPrice(row.whoId, p0.id, 1, 5);
+    await r.go(20 * MIN);
+    const p = piece(r.view(), p0.id);
+    assert.ok(!p.offers.some((o) => o.price <= 1), 'not among its listings');
+    const lows = (r.engine.state.hist.low[p0.id] || []).map((d) => d.low);
+    assert.ok(lows.length > 0 && lows.every((l) => l > 1), 'and not a low of the day: ' + lows.join(', '));
+    assert.ok(!r.engine.state.cart.some((l) => l.price <= 1));
+});
+
+const tradeRow = (r, id, itemId) => r.engine.state.ledger.rows.find((x) => String(x.id).startsWith('trade:' + id + ':') && String(x.itemId) === String(itemId));
+
+test('B7. a trade with other things in it: your money is shared over everything by market value - the set piece is not priced with all of it', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    // One Ceibo Flower and three Xanax for one sum (the owner's trade of 2026-10-03 priced the flower with all of it).
+    const id = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 1 }, { id: 206, qty: 3 }] }));
+    await r.go(2 * MIN);
+    const pay = payOf(r.world, 384) + 3 * mvOf(r.world, 206);
+    r.fake.finishTrade(id, { pay });
+    await r.go(12 * MIN);
+    const row = tradeRow(r, id, 384);
+    assert.ok(row, 'the piece is in the Ledger');
+    const fair = pay * mvOf(r.world, 384) / (mvOf(r.world, 384) + 3 * mvOf(r.world, 206));
+    assert.ok(Math.abs(row.each - fair) <= 1, 'priced at its share: ' + row.each + ' against ' + fair);
+    assert.ok(row.each < 2 * mvOf(r.world, 384), 'not with the whole trade\'s ' + pay);
+    assert.equal(r.view().trades.finished.find((x) => x.id === id).paid, Math.round(row.each), 'and the trade says what went to the piece');
+
+    // A row kept from before this build, priced the old way: its trade is read again, once, and priced as now.
+    r.engine.state.ledger = { ...r.engine.state.ledger, repriced: false, rows: r.engine.state.ledger.rows.map((x) => (x === row ? { ...x, each: pay } : x)) };
+    const asked = r.torn(new RegExp('^/v2/user/' + id + '/trade$')).length + r.torn('/v2/trade/' + id).length + r.fake.calls.filter((c) => c.path.includes(id)).length;
+    await r.go(12 * MIN);
+    const again = tradeRow(r, id, 384);
+    assert.ok(Math.abs(again.each - fair) <= 1, 'priced again: ' + again.each);
+    assert.equal(again.fixed, true);
+    assert.equal(r.engine.state.ledger.repriced, true);
+    assert.equal(r.said.filter((s) => s.what === 'An old trade priced again').length, 1);
+    assert.ok(r.fake.calls.filter((c) => c.path.includes(id)).length + r.torn(new RegExp('^/v2/user/' + id + '/trade$')).length + r.torn('/v2/trade/' + id).length > asked, 'Torn was asked for that trade again');
+    const n = r.fake.calls.filter((c) => c.path.includes(id)).length;
+    await r.go(30 * MIN);
+    assert.equal(r.fake.calls.filter((c) => c.path.includes(id)).length, n, 'and never after that');
+});
+
+test('F3. pieces sold as themselves (here in a trade): booked with what they had cost you - their own line, and in the day\'s profit', async (t) => {
+    const r = rig(t);
+    await r.ready();
+    const held = piece(r.view(), 186).held;
+    assert.ok(held >= 2);
+    const profit = r.view().ledger.sum.profit;
+    const id = String(r.fake.openTrade({ whoId: 4000006, mine: [{ id: 186, qty: 2 }], theirMoney: 5000, by: 'you' }));
+    await r.go(2 * MIN);
+    r.fake.finishTrade(id);
+    await r.go(12 * MIN);
+    const v = r.view();
+    assert.equal(piece(v, 186).held, held - 2, 'out of your stock');
+    const d = v.ledger.direct;
+    assert.deepEqual(d.rows.map((x) => [x.itemId, x.qty, x.got, x.venue, x.give]), [['186', 2, 5000, 'trade', false]]);
+    assert.ok(d.rows[0].cost > 0, 'with what the two had cost you');
+    assert.deepEqual([d.units, d.got, d.gain], [2, 5000, 5000 - d.rows[0].cost]);
+    assert.equal(v.ledger.sum.direct, d.gain);
+    assert.equal(v.ledger.sum.profit, profit + d.gain, 'the money is in the profit, not nowhere');
+    // Some of the made-up player's Sheep were never seen bought (Torn's count opened the book): a part of the
+    // cost is an estimate, and said.
+    assert.ok(d.rows[0].est > 0.01 && d.rows[0].est <= 1, 'the share that is an estimate: ' + d.rows[0].est);
+    assert.equal(v.ledger.sum.about, true);
+    // Read again and again: booked once.
+    await r.go(30 * MIN);
+    assert.equal(r.view().ledger.direct.rows.length, 1);
+    r.restart();
+    await r.go(10 * MIN);
+    assert.equal(r.view().ledger.direct.rows.length, 1);
+});
+
+// ---- the write of your own list to TornW3B, in the problem log (the owner, 2026-10-12: "add to the zip logs") ----------
+
+const listPuts = (r) => r.w3b(/^\/api\/pricelist\/\d+$/, (c) => c.method === 'PUT');
+const QUIET = 'Keeping your TornW3B list at your rate: nothing sent';
+
+test('the list write, kept by itself: what was sent and what TornW3B answered is in the log - and why nothing is sent after it', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true } });
+    await r.ready();
+    await r.go(20 * MIN);
+    const puts = listPuts(r).length;
+    assert.ok(puts >= 1, 'the list was written');
+    const wrote = r.said.filter((s) => s.what === 'Your list written to TornW3B');
+    assert.equal(wrote.length, puts, 'one line a write');
+    assert.match(wrote[0].detail, /^by itself · [1-9]\d* set, \d+ taken off · it answered: \{"success":true,"updated":\d+,"inserted":\d+,"deleted":\d+,"total":\d+\}$/);
+    // After it the list matches: said once, not at every step of twenty minutes.
+    const quiet = r.said.filter((s) => s.what === QUIET && s.detail === 'it already matches your rate');
+    assert.ok(quiet.length >= 1 && quiet.length <= puts, quiet.length + ' lines for ' + puts + ' writes');
+    assert.equal(r.said.filter((s) => /refused the write/.test(s.what)).length, 0);
+});
+
+test('the list write refused (400): TornW3B\'s words, the request\'s shape and the whole of what was sent are in the log; the same request is not sent by itself again', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true } });
+    const real = r.clients.own.send;
+    let sent = 0;
+    let body = null;
+    r.clients.own.send = (url, init) => (/\/api\/pricelist\/\d+$/.test(String(url)) && init && init.method === 'PUT'
+        ? (sent += 1, body = init.body, Promise.resolve({ ok: false, status: 400, json: async () => ({ error: 'Invalid request body' }), text: async () => '{"error":"Invalid request body"}' }))
+        : real(url, init));
+    await r.ready();
+    await r.go(30 * MIN);
+    assert.equal(sent, 1, 'sent once in half an hour, not every two minutes');
+    const lines = r.said.filter((s) => /^TornW3B refused the write of your list/.test(s.what));
+    const head = lines.find((s) => s.what === 'TornW3B refused the write of your list');
+    assert.match(head.detail, /^by itself · TornW3B answered 400\. · it said: \{"error":"Invalid request body"\} · sent: [1-9]\d* set, \d+ taken off$/);
+    const shape = lines.find((s) => /its shape$/.test(s.what));
+    assert.match(shape.detail, /^\{ items: \[\{ itemID: number, pricingType: string, pricingValue: number, inflationProtectionEnabled: boolean, roundToPlace: number, bulkType: string \}\] x \d+ \}/);
+    // Every item that was sent, with its price, over as many lines as it takes - each one whole in the log (300).
+    const what = lines.filter((s) => /what was sent, \d+ of \d+$/.test(s.what));
+    assert.ok(what.length >= 1);
+    for (const l of lines) assert.ok(l.what.length <= 300 && l.detail.length <= 300, 'a line the log keeps whole: ' + l.detail.length);
+    const said = what.map((s) => s.detail).join(' | ');
+    for (const it of body.items) assert.ok(it.pricingValue == null ? new RegExp('taken off: [^|]*\\b' + it.itemID + '\\b').test(said) : said.includes(it.itemID + ' $' + it.pricingValue + ' ('), 'item ' + it.itemID + ' is in the log');
+    assert.ok(!lines.some((s) => (s.what + s.detail).includes(r.keys.w3b)), 'never the key');
+    assert.equal(r.engine.keys().w3b.error || '', '', 'a wrong request is no verdict on the key');
+    const quiet = r.said.filter((s) => s.what === QUIET && /^TornW3B called this same request wrong/.test(s.detail));
+    assert.equal(quiet.length, 1, 'why nothing more is sent, once');
+    // Your own press sends it all the same, and is logged as yours.
+    r.engine.act('w3b', 'send');
+    await r.go(MIN);
+    assert.equal(sent, 2);
+    assert.ok(r.said.some((s) => s.what === 'TornW3B refused the write of your list' && /^your press · /.test(s.detail)));
+});
+
+test('the list write: with the switch on and nothing sent, the log says why - no key, a refused key, a press on a list that matches', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true }, keys: { w3b: '' } });
+    await r.ready();
+    await r.go(10 * MIN);
+    assert.equal(listPuts(r).length, 0);
+    const none = r.said.filter((s) => s.what === QUIET);
+    assert.equal(none.length, 1, 'once, not at every step: ' + JSON.stringify(none.map((s) => s.detail)));
+    assert.match(none[0].detail, /^the key you registered on TornW3B is not set, or TornW3B refuses it/);
+
+    // A list that matches, and your own press: said, nothing sent.
+    const k = rig(t, { settings: { w3bSync: true } });
+    await k.ready();
+    await k.go(10 * MIN);
+    const had = listPuts(k).length;
+    k.engine.act('w3b', 'send');
+    await k.go(MIN);
+    assert.equal(listPuts(k).length, had);
+    assert.ok(k.said.some((s) => s.what === 'Your list was not written to TornW3B' && s.detail === 'your press · it already matches your rate'));
+
+    // The switch off: no line about keeping it.
+    const off = rig(t);
+    await off.ready();
+    await off.go(10 * MIN);
+    assert.equal(off.said.filter((s) => s.what === QUIET).length, 0);
+});
+
+// ---- what you pay your sellers, fixed for the hour (the owner, 2026-10-12: "maybe it checks the points every hour") ----
+
+const FIXED = 'Your prices fixed for an hour';
+const CAME_DOWN = 'Your prices came down inside the hour';
+const STANDS = 'Your prices stand still while a trade is open';
+/** The made-up world with no trade open: an open trade holds the hour's prices (its own test is below). */
+const noTrades = (w, fake) => { fake.cancelTrade(7001); fake.cancelTrade(7002); };
+const pointsBy = (w, d) => { for (const l of w.pointsMarket) l.cost += d; };
+/** A set's ceiling worked out apart from src/: ten points at `price`, less the least profit, against its market value - down to a tenth. */
+const capOf = (w, key, price, least = 2) => { const set = w.sets.find((s) => s.key === key); return Math.floor(set.points * price / (1 + least / 100) / setMv(w, set) * 1000) / 10; };
+/** The cautious points price of a view: the lower of today's and what you usually sell for. */
+const cautOf = (v) => (v.buy.usual.price > 0 ? Math.min(v.points.price, v.buy.usual.price) : v.points.price);
+const onW3b = (w, id) => { const e = w.w3b.priceList.find((x) => x.itemID === Number(id)); return e ? e.pricingValue : null; };
+const fixes = (r) => r.said.filter((s) => s.what === FIXED).length;
+const setOfView = (v, key) => v.prices.sets.find((s) => s.key === key);
+
+test('your prices are fixed once an hour, each set at the lower of your rate and its own ceiling: the TornW3B list is written once an hour, however points move', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true, pct: 103 }, world: (w, fake) => { noTrades(w, fake); pointsBy(w, -500); } });
+    let v = await r.ready();
+    const w = r.world;
+    const caut = cautOf(v);
+    const want = { plushie: Math.min(103, capOf(w, 'plushie', caut)), flower: Math.min(103, capOf(w, 'flower', caut)) };
+    assert.ok(want.flower < 103 && want.plushie !== want.flower, 'in this world the flowers are capped and the two sets differ: ' + JSON.stringify(want));
+    const first = r.engine.state.rate.table;
+    assert.deepEqual([first.sets.plushie.pct, first.sets.flower.pct], [want.plushie, want.flower]);
+    assert.equal(first.until - first.at, HOUR);
+    assert.equal(fixes(r), 1);
+    assert.equal(listPuts(r).length, 1, 'written once, after the fix');
+    assert.equal(v.prices.w3b.waits, true, 'the page knows the prices of this hour were written: a list that differs now waits for the next fix');
+    for (const set of w.sets) for (const id of set.pieces) {
+        assert.equal(piece(v, id).pay, Math.round(mvOf(w, id) * want[set.key] / 100), 'you pay ' + want[set.key] + '% for ' + id);
+        assert.equal(onW3b(w, id), piece(v, id).pay, 'and TornW3B has it');
+    }
+    assert.equal(onW3b(w, 206), 830000, 'what is no set piece is left as it was');
+    // Points rise: for the rest of the hour nothing is fixed, nothing is written, and what you pay stands.
+    pointsBy(w, 300);
+    await r.go(first.until - Date.now() - 2 * MIN);
+    v = r.view();
+    assert.ok(cautOf(v) > caut, 'the points price did rise');
+    assert.equal(r.engine.state.rate.table.at, first.at);
+    assert.equal(fixes(r), 1);
+    assert.equal(listPuts(r).length, 1);
+    assert.equal(piece(v, 264).pay, Math.round(mvOf(w, 264) * want.flower / 100));
+    assert.equal(v.prices.fixed.until, first.until);
+    // The hour is over: fixed anew at the higher ceiling, and written - once.
+    await r.go(6 * MIN);
+    v = r.view();
+    const next = r.engine.state.rate.table;
+    const flower = Math.min(103, capOf(w, 'flower', cautOf(v)));
+    assert.ok(next.at >= first.until && flower > want.flower);
+    assert.equal(next.sets.flower.pct, flower);
+    assert.equal(fixes(r), 2);
+    assert.equal(listPuts(r).length, 2);
+    assert.equal(onW3b(w, 264), Math.round(mvOf(w, 264) * flower / 100));
+    // A whole further hour of steps: one more fix, and no write for it - nothing moved.
+    await r.go(HOUR);
+    assert.equal(fixes(r), 3);
+    assert.equal(listPuts(r).length, 2);
+    assert.match(r.said.find((s) => s.what === FIXED).detail, /^plushie 103% \(the most that keeps your 2%: [\d.]+%\) · flower [\d.]+% \(its ceiling, under your 103%\) · points \$[\d,]+/);
+});
+
+test('the one safety: the points price falls inside the hour so that your least profit is gone - your prices come down at once and are written; never up before the hour ends', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true }, world: (w, fake) => { noTrades(w, fake); pointsBy(w, -500); } });
+    let v = await r.ready();
+    const w = r.world;
+    const first = r.engine.state.rate.table;
+    assert.deepEqual([first.sets.plushie.pct, first.sets.flower.pct], [101, 101], 'at this points price 101% is under both ceilings');
+    assert.equal(listPuts(r).length, 1);
+    pointsBy(w, -1500);
+    await r.go(5 * MIN);
+    v = r.view();
+    const low = { plushie: capOf(w, 'plushie', cautOf(v)), flower: capOf(w, 'flower', cautOf(v)) };
+    assert.ok(low.plushie < 101 && low.flower < 101, JSON.stringify(low));
+    const down = r.engine.state.rate.table;
+    assert.deepEqual([down.sets.plushie.pct, down.sets.flower.pct, down.at], [low.plushie, low.flower, first.at]);
+    assert.equal(down.sets.plushie.down.from, 101);
+    assert.equal(r.said.filter((s) => s.what === CAME_DOWN).length, 1);
+    assert.match(r.said.find((s) => s.what === CAME_DOWN).detail, /^plushie 101% to [\d.]+% · flower 101% to [\d.]+% · points fell to \$[\d,]+/);
+    assert.equal(listPuts(r).length, 2, 'written at once, not at the hour');
+    assert.equal(onW3b(w, 258), Math.round(mvOf(w, 258) * low.plushie / 100));
+    assert.equal(piece(v, 258).pay, onW3b(w, 258));
+    assert.deepEqual([setOfView(v, 'plushie').pct, setOfView(v, 'plushie').capped], [low.plushie, true]);
+    // Points come back inside the hour: nothing moves up.
+    pointsBy(w, 1500);
+    await r.go(first.until - Date.now() - 2 * MIN);
+    assert.equal(r.engine.state.rate.table.sets.plushie.pct, low.plushie);
+    assert.equal(listPuts(r).length, 2);
+    assert.equal(fixes(r), 1);
+    // The hour ends: back at your rate.
+    await r.go(6 * MIN);
+    assert.deepEqual([r.engine.state.rate.table.sets.plushie.pct, r.engine.state.rate.table.sets.plushie.down], [101, undefined]);
+    assert.equal(listPuts(r).length, 3);
+    assert.equal(onW3b(w, 258), payOf(w, 258));
+});
+
+test('shop closed: nothing is fixed, the set pieces come off your TornW3B list once, and the log says closed - never "it already matches your rate"', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true, open: false }, world: noTrades });
+    const v = await r.ready();
+    const w = r.world;
+    assert.equal(r.engine.state.rate.table, null);
+    assert.equal(fixes(r), 0);
+    assert.equal(v.prices.fixed, null);
+    assert.equal(piece(v, 258).pay, payOf(w, 258), 'the Prices page says what you would pay now');
+    // The three set pieces that were on the list are taken off; the Xanax stays.
+    const puts = listPuts(r);
+    assert.equal(puts.length, 1);
+    assert.deepEqual(w.w3b.priceList.map((e) => e.itemID), [206]);
+    const wrote = r.said.filter((s) => s.what === 'Your list written to TornW3B');
+    assert.match(wrote[0].detail, /^by itself · 0 set, 3 taken off · your shop is closed: the set pieces come off your list · it answered: /);
+    await r.go(30 * MIN);
+    assert.equal(listPuts(r).length, 1);
+    const quiet = r.said.filter((s) => s.what === QUIET);
+    // Before the first reads were in it said what it waited for; since then, one line, and it says closed.
+    assert.equal(quiet[quiet.length - 1].detail, 'your shop is closed: no set piece of yours is on your TornW3B list');
+    assert.equal(quiet.filter((s) => /closed/.test(s.detail)).length, 1);
+    assert.ok(quiet.slice(0, -1).every((s) => /not been read yet|not everything is read yet/.test(s.detail)), JSON.stringify(quiet.map((s) => s.detail)));
+    assert.ok(!r.said.some((s) => /matches your rate/.test(String(s.detail))));
+    // You open: fixed at once, and all 24 are written.
+    r.set({ open: true });
+    await r.go(3 * MIN);
+    assert.equal(fixes(r), 1);
+    assert.equal(listPuts(r).length, 2);
+    assert.equal(w.w3b.priceList.length, 25);
+    assert.equal(onW3b(w, 258), payOf(w, 258));
+    // You close: the table is let go and the pieces come off again.
+    r.set({ open: false });
+    await r.go(3 * MIN);
+    assert.equal(r.engine.state.rate.table, null);
+    assert.equal(listPuts(r).length, 3);
+    assert.deepEqual(w.w3b.priceList.map((e) => e.itemID), [206]);
+});
+
+test('a trade with set pieces open: your prices stand still past the hour - only the safety moves them - and are fixed anew when it has ended', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true }, world: noTrades });
+    await r.ready();
+    const w = r.world;
+    const first = r.engine.state.rate.table;
+    const id = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 2 }] }));
+    pointsBy(w, 200);
+    await r.go(first.until - Date.now() + 20 * MIN);
+    let now = r.engine.state.rate.table;
+    assert.deepEqual([now.at, now.held, now.sets.plushie.pct], [first.at, true, 101]);
+    assert.equal(fixes(r), 1);
+    assert.equal(r.said.filter((s) => s.what === STANDS).length, 1);
+    assert.equal(r.view().prices.fixed.held, true);
+    assert.equal(listPuts(r).length, 1);
+    // The points price falls under your least profit: least profit first - down at once, trade or not.
+    pointsBy(w, -1700);
+    await r.go(5 * MIN);
+    now = r.engine.state.rate.table;
+    assert.ok(now.sets.plushie.pct < 101 && now.at === first.at);
+    assert.equal(listPuts(r).length, 2);
+    const open = r.view().trades.open.find((x) => x.id === id);
+    assert.deepEqual(open.rateDown.map((d) => [d.key, d.from, d.to]), [['plushie', 101, now.sets.plushie.pct]]);
+    assert.equal(open.rows[0].each, Math.round(mvOf(w, 384) * now.sets.plushie.pct / 100));
+    // The trade ends: the hour's prices are fixed anew.
+    r.fake.finishTrade(id, { pay: 2 * open.rows[0].each });
+    await r.go(4 * MIN);
+    now = r.engine.state.rate.table;
+    assert.ok(now.at > first.until && now.held === false);
+    assert.equal(fixes(r), 2);
+});
+
+test('a reload keeps the hour, and your own change of rate fixes at once', async (t) => {
+    const r = rig(t, { settings: { w3bSync: true }, world: noTrades });
+    await r.ready();
+    const first = r.engine.state.rate.table;
+    assert.ok(r.saved.includes('rate'));
+    r.engine.flush();
+    r.restart();
+    await r.go(10 * MIN);
+    assert.equal(r.engine.state.rate.table.at, first.at, 'the table that was fixed is the one in use');
+    assert.equal(fixes(r), 1);
+    assert.equal(listPuts(r).length, 1, 'nothing is written again for it');
+    // Your own press: a new rate is fixed and written at once, and the hour begins with it.
+    r.set({ pct: 100.5 });
+    await r.go(3 * MIN);
+    const next = r.engine.state.rate.table;
+    assert.ok(next.at > first.at && next.until - next.at === HOUR);
+    assert.deepEqual([next.sets.plushie.pct, next.sets.flower.pct], [100.5, 100.5]);
+    assert.equal(fixes(r), 2);
+    assert.equal(listPuts(r).length, 2);
+    assert.equal(onW3b(r.world, 258), payOf(r.world, 258, 100.5));
+});
+
+test('the switch on in the middle of an hour: the list is written at once; a list that differs later in the hour waits for the next fix, and the log says so', async (t) => {
+    const r = rig(t, { world: noTrades });
+    await r.ready();
+    assert.equal(listPuts(r).length, 0);
+    await r.go(10 * MIN);
+    r.set({ w3bSync: true });
+    await r.go(3 * MIN);
+    assert.equal(listPuts(r).length, 1);
+    // Someone (you, on TornW3B's page) changes a price there: read at the next look, not written over until the hour.
+    r.world.w3b.priceList.find((e) => e.itemID === 258).pricingValue = 1;
+    await r.go(15 * MIN);
+    assert.equal(listPuts(r).length, 1);
+    assert.ok(r.said.some((s) => s.what === QUIET && /^it differs from your prices of this hour: written when they are next fixed/.test(s.detail)), JSON.stringify(r.said.filter((s) => s.what === QUIET).map((s) => s.detail)));
+    // Your own press sends it now.
+    r.engine.act('w3b', 'send');
+    await r.go(MIN);
+    assert.equal(listPuts(r).length, 2);
+    assert.equal(onW3b(r.world, 258), payOf(r.world, 258));
 });

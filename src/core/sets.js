@@ -315,7 +315,8 @@ const setMoney = (n) => '$' + Math.round(setNum(n)).toLocaleString('en-US');
 /**
  * Someone's items in a trade, priced at your rate.
  * @param items  [{ id, name, qty }] - their side of the trade
- * @param ctx    { settings, stockOf(set) -> setStock result, mv(id), pct }
+ * @param ctx    { settings, stockOf(set) -> setStock result, mv(id), pct, pay(id) } - `pay`, when given, is the
+ *               price of one unit as it stands now; without it a unit is `pct` of its market value
  * Rows of a chosen set get a price and one word: need, ok ("enough for now") or ahead. Anything else gets none.
  * Of a row that holds more than you need, `take` units are the ones you need and `extra` the rest: the total for
  * what you need counts only the first.
@@ -334,7 +335,8 @@ export function tradeOffer(items, ctx) {
             continue;
         }
         const pc = ctx.stockOf(set).pieces.find((p) => String(p.id) === String(it.id));
-        const each = ratePrice(ctx.mv(it.id), ctx.pct);
+        // What you pay for it now (core/sellrate.js: your rate, or the set's ceiling when that is lower).
+        const each = ctx.pay ? setWhole(ctx.pay(it.id)) : ratePrice(ctx.mv(it.id), ctx.pct);
         const take = pc.state === 'need' ? Math.min(qty, pc.need) : 0;
         const row = { id: it.id, name: it.name || pc.name, qty, each, total: each * qty, take, extra: qty - take, state: pc.state, need: pc.need, ahead: pc.ahead, held: pc.held, target: pc.held + pc.need - pc.ahead, top: pc.top };
         rows.push(row);
@@ -413,15 +415,19 @@ export const isBuyingTitle = (title) => /\b(open|closed)\b/i.test(String(title |
 
 /**
  * Does your thread still say what Torn Archive says?
- * @returns { state: 'match' | 'open' | 'closed' | 'rate', says: { open, pct } }
- *   'open' = Torn Archive is open and the title says closed; 'closed' = the other way; 'rate' = the rate moved.
+ * @param paid [{ label, pct }] what you really pay each set today (core/sellrate.js), when it is known
+ * @returns { state: 'match' | 'open' | 'closed' | 'rate' | 'under', says: { open, pct }, paid }
+ *   'open' = Torn Archive is open and the title says closed; 'closed' = the other way; 'rate' = the rate moved;
+ *   'under' = the title names your rate - the most you pay - and today you pay less, to keep your least profit.
  */
-export function threadCheck(title, { open, pct }) {
+export function threadCheck(title, { open, pct, paid = [] }) {
     const says = readThreadTitle(title);
+    const rows = (paid || []).filter((r) => r && r.pct > 0);
     let state = 'match';
     if (says.open !== null && says.open !== !!open) state = open ? 'open' : 'closed';
     else if (open && says.pct !== null && Math.abs(says.pct - setNum(pct)) > 0.049) state = 'rate';
-    return { state, says };
+    else if (open && says.pct !== null && rows.some((r) => says.pct - setNum(r.pct) > 0.049)) state = 'under';
+    return { state, says, paid: rows };
 }
 
 /**

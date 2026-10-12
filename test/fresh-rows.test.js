@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import { engineEmpty, foldListings, foldShop, offersOf, notePage, noteSeenBuy, COUNT_MS } from '../src/engine/state.js';
 import { fillPlan, fewerStops, fillList, stopsOf } from '../src/core/shopping.js';
-import { archiveView, viewPiece } from '../src/core/view.js';
+import { archiveView, viewPiece, listPieces } from '../src/core/view.js';
 import { shopSeen } from '../src/ui/torn-page.js';
 import { fixtureInput } from './fixture-view.js';
 
@@ -86,8 +86,11 @@ test('what a bazaar\'s page shows in your Torn tab is the newest look: its price
     // Torn's read after the page wins over it; an older note is not taken over a newer one.
     notePage(S, { t: NOW - 500, whoId: '501', items: [{ id: String(SHEEP), price: 615, qty: 3 }] }, NOW);
     assert.equal(notePage(S, { t: NOW - 800, whoId: '501', items: [{ id: String(SHEEP), price: 1, qty: 9 }] }, NOW), false);
+    // Torn's API is 20 to 40 seconds behind the page: a read of it made a moment after the page does not win (1.3.0).
     foldShop(S, '501', { bazaar: [{ ID: SHEEP, price: 620, quantity: 2 }] }, NOW + 2000);
-    assert.deepEqual([who(S, 501, NOW + 3000).qty, who(S, 501, NOW + 3000).from], [2, 'torn']);
+    assert.deepEqual([who(S, 501, NOW + 3000).qty, who(S, 501, NOW + 3000).from], [3, 'page']);
+    foldShop(S, '501', { bazaar: [{ ID: SHEEP, price: 620, quantity: 2 }] }, NOW + 70000);
+    assert.deepEqual([who(S, 501, NOW + 71000).qty, who(S, 501, NOW + 71000).from], [2, 'torn']);
     // A bazaar known from its page alone is a row too. Your own bazaar, and a page with no piece on it, are not.
     notePage(S, { t: NOW, whoId: '777', items: [{ id: String(SHEEP), price: 590, qty: 8 }] }, NOW);
     assert.deepEqual([who(S, 777).price, who(S, 777).from], [590, 'page']);
@@ -145,13 +148,15 @@ test('a list gathers at the bazaars that hold a lot of what you need: a stop is 
 test('the made-up desk: the list as made has no more stops than the cheapest way, the same pieces, each under its worth', () => {
     const base = fixtureInput(NOW);
     const v = archiveView(base);
-    const cheapest = fillPlan(v.pieces, base.offers);
-    const list = fillList(v.pieces, base.offers);
+    // A list takes what the view judged on the whole set (1.3.0): `take` units of a piece, each under `takeLine`.
+    const lp = listPieces(v.pieces);
+    const cheapest = fillPlan(lp, base.offers);
+    const list = fillList(lp, base.offers);
     const units = (cart) => cart.reduce((s, l) => s + l.q, 0);
     assert.equal(units(list), units(cheapest));
     assert.ok(stopsOf(list, () => 0).length <= stopsOf(cheapest, () => 0).length);
     for (const p of v.pieces) assert.equal(list.filter((l) => l.id === p.id).reduce((s, l) => s + l.q, 0), cheapest.filter((l) => l.id === p.id).reduce((s, l) => s + l.q, 0), p.name);
-    assert.ok(list.every((l) => l.price < viewPiece(v, l.id).worth));
+    assert.ok(list.every((l) => l.price < viewPiece(v, l.id).takeLine));
     // No bazaar is asked for more of a piece than it lists.
     for (const l of list.filter((x) => !x.im)) assert.ok(l.q <= base.offers(l.id).find((o) => o.src !== 'market' && 'b:' + String(o.whoId ?? o.who) === l.place).qty, l.name);
     assert.equal(v.buy.plan.units, units(list));

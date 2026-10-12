@@ -9,6 +9,9 @@
     ?one=1     only the plushie set    ?w3b=match | differ | error
     ?server=ok | old | update | password | down | saved
     ?todo=hot | hot,sell | trades | swap | sell   only these things under "Do now"
+    ?list=1    the shopping list made at once      ?run=1  and its run started (Start is a link to Torn: not pressed here)
+    ?w3bkey=refused   TornW3B refuses the key      ?back=1 a buy that Torn's log did not have, taken back
+  Measured, not looked at: test/harness/measure.js (measureHub walks every page and tab at the window's size).
 -->
 <script type="module">
 import { mountHub } from '../../src/ui/hub.js';
@@ -19,12 +22,17 @@ import { desiredList, parseOwnList } from '../../src/core/tw3b-list.js';
 import { tradeNotice } from '../../src/core/trades.js';
 import { fixtureInput } from '../fixture-view.js';
 import { serverLines } from '../../src/core/server.js';
+import { fixTable, rateKey } from '../../src/core/sellrate.js';
 
 const q = new URLSearchParams(location.search);
 const now = Date.now();
 let input = fixtureInput(now);
 // ?old: the rows not looked at in the last 5 minutes are marked as the engine marks them (state.js COUNT_MS).
 if (q.has('old')) { const all = input.offers; input.offers = (id) => all(id).map((o) => ({ ...o, ok: now - o.at <= 5 * 60000 })); }
+// ?fixed=1: your prices were fixed for the hour 20 minutes ago (before any &fell: they then came down inside it);
+// ?fixed=held: their hour is over and a trade holds them. Without it the page shows what a fix would take now.
+const fixedFrom = q.has('fixed') ? fixTable(archiveView(input).prices.live, rateKey(input.settings), now - 20 * 60000) : null;
+if (fixedFrom) input.rate = q.get('fixed') === 'held' ? { ...fixedFrom, at: now - 70 * 60000, until: now - 10 * 60000, held: true } : fixedFrom;
 if (q.has('fell')) input.listings = input.listings.map((l) => ({ ...l, cost: l.cost - (Number(q.get('fell')) || 400) }));
 if (q.has('closed')) input.settings = archiveSettings({ ...input.settings, open: false });
 if (q.has('one')) input.settings = archiveSettings({ ...input.settings, which: { plushie: true, flower: false } });
@@ -126,6 +134,13 @@ const hub = mountHub(document, {
     usageExport() { console.log('export'); },
     notifyTest() { const t = desk().view.trades.open[2]; if (t) { notice = tradeNotice(t, t.items, t.total); hub.toast({ ...notice, tradeId: t.id }); show(); } },
 });
+if (q.has('list') || q.has('run')) {
+    const v = archiveView(input);
+    input.cart = fillList(v.pieces, (id) => input.offers(id).filter((o) => o.ok !== false && buysFrom(input.settings)(o)));
+    input.run = q.has('run') ? runStart(stops()) : { ...RUN_IDLE };
+}
+if (q.get('w3bkey') === 'refused') keys.w3b = { set: true, ok: true, error: 'TornW3B refuses this key for your Torn id: it is not the one registered there' };
+if (q.has('back')) input.back = [{ id: '258', qty: 3, whoId: '11', im: false, t: now - 90000 }];
 show();
 window.hub = hub;
 window.deskNow = desk;

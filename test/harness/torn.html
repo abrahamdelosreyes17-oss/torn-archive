@@ -16,6 +16,8 @@
   .buyMenu___h { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 14px 10px 10px; background: #232323; }
   .buyMenu___h p { margin: 0 0 4px; width: 100%; }
   .buyMenu___h input { width: 70px; background: #1b1b1b; border: 1px solid #444; color: #ccc; padding: 3px 6px; }
+  .confirm___h { padding: 14px 10px 10px; background: #232323; } .confirm___h p { margin: 0 0 6px; }
+  .standin { margin: 14px 0 0; padding: 8px 10px; border: 1px dashed #444; color: #888; } .standin button { margin-left: 6px; }
   button, .btn { background: #555; color: #eee; border: 0; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
   .trade-cont { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .trade-cont ul { list-style: none; margin: 0; padding: 0; }
@@ -41,7 +43,13 @@
   Torn Archive's box and marks on stand-in Torn pages (made-up desk, test/fixture-view.js). Nothing is asked of Torn.
     ?page=bazaar&userId=N   a bazaar (the first stop of a made list when userId is left out)   &run=1  a run started
                             &away=1  one listing of the list is not on the page (further down, or sold)
-    ?page=bazaar&im=1       stands in for the Item Market
+                            &step=1  between Buy and the sale the tile holds neither card nor buy form: "Are you
+                                     sure? Yes No" (a stand-in: Torn's own step was never read on a real page)
+                            &empty=1 a bazaar with no listing at all
+                            The dashed strip under the listings is the stand-in's own: someone else buys out the last
+                            listing; the list is drawn anew (every tile replaced by a new one, nothing sold).
+    ?page=bazaar&im=1       stands in for the Item Market (the address gets Torn's own sid=ItemMarket: the box tells
+                            the Item Market by that word in the address, as on Torn)
     ?page=trade#step=view&ID=N   a trade (&money=1: the add-money step; &more=1: ten more of its first piece on the page than the hub read)
     &late=N   the hub last answered N minutes ago
     ?page=museum   ?page=pmarket   ?page=forum#/p=threads&t=N
@@ -58,11 +66,15 @@ import { SETS } from '../../src/core/sets.js';
 import { gmSet, gmGet } from '../../src/platform/gm.js';
 import { mountTornPage, SHARED_VIEW_KEY, SHARED_NOTES_KEY } from '../../src/ui/torn-page.js';
 import { fixtureInput } from '../fixture-view.js';
+import { fixTable, rateKey } from '../../src/core/sellrate.js';
 
 const q = new URLSearchParams(location.search);
 const page = q.get('page') || 'bazaar';
 const now = Date.now();
 const input = fixtureInput(now);
+// &fixed=1: your prices fixed for the hour 20 minutes ago; with &fell=N the points price fell since (they came down).
+if (q.has('fixed')) input.rate = fixTable(archiveView(input).prices.live, rateKey(input.settings), now - 20 * 60000);
+if (q.has('fell')) input.listings = input.listings.map((l) => ({ ...l, cost: l.cost - (Number(q.get('fell')) || 400) }));
 let view = archiveView(input);
 if (page === 'bazaar' || q.has('list')) {
     input.cart = fillList(view.pieces, (id) => input.offers(id).filter((o) => o.ok !== false));
@@ -79,34 +91,46 @@ if (page === 'bazaar') {
     const stops = view.buy.run.stops;
     const stop = q.get('userId') ? stops.find((s) => String(s.whoId) === q.get('userId')) : stops.find((s) => !s.im);
     if (!q.get('userId') && stop && !q.has('im')) { q.set('userId', stop.whoId); history.replaceState(null, '', '?' + q.toString() + location.hash); }
+    if (q.has('im') && !q.has('sid')) { q.set('sid', 'ItemMarket'); history.replaceState(null, '', '?' + q.toString() + location.hash); }
     // The stop's own lines, two pieces that are not on the list, and one item that is no set piece.
     // The first line is the whole listing (buying it takes the listing off the page), the others have more.
     const lines = stop ? stop.lines.slice(q.has('away') ? 1 : 0).map((l, i) => ({ id: l.id, name: l.name, price: l.price, qty: i === 0 ? l.q : l.q + 3 })) : [];
     const extra = view.pieces.filter((p) => !lines.some((l) => String(l.id) === String(p.id))).slice(0, 3).map((p, i) => ({ id: p.id, name: p.name, price: Math.round(p.worth * (i === 0 ? 0.9 : 1.2)), qty: 5 }));
-    const cards = [...lines, ...extra, { id: 206, name: 'Xanax', price: 830000, qty: 2 }];
+    const cards = q.has('empty') ? [] : [...lines, ...extra, { id: 206, name: 'Xanax', price: 830000, qty: 2 }];
     main.innerHTML = `<h1>${q.has('im') ? 'Item Market' : esc((stop && stop.who) || 'Someone') + "'s Bazaar"}</h1><div class="tiles">` + cards.map((c) =>
-        `<div class="item___h" data-id="${c.id}" data-name="${esc(c.name)}" data-price="${c.price}" data-qty="${c.qty}"></div>`).join('') + '</div>';
+        `<div class="item___h" data-id="${c.id}" data-name="${esc(c.name)}" data-price="${c.price}" data-qty="${c.qty}"></div>`).join('') + '</div>'
+        + (cards.length ? '<p class="standin">Stand-in only:<button id="sold">someone else buys out the last set piece</button><button id="anew">the list is drawn anew</button></p>' : '<p>This bazaar is empty.</p>');
     const cardOf = (t) => `<div class="itemDescription___h" data-testid="item-description">${pic(t.dataset.id)}<p class="name___x">${esc(t.dataset.name)}</p><p>${money(Number(t.dataset.price))}</p><p class="stock">(${t.dataset.qty} in stock)</p><button class="open" aria-label="Buy: ${esc(t.dataset.name)}">Open the buy menu</button></div>`;
     const formOf = (t) => `<div class="buyMenu___h overPanelContainer___h"><p><span class="name___h infoLine___h">${esc(t.dataset.name)}</span> <span class="price___h infoLine___h">${money(Number(t.dataset.price))}</span> <span class="amount___h infoLine___h">(${t.dataset.qty} in stock)</span> <button class="close___h" aria-label="Close">x</button></p><input class="numberInput___h buyAmountInput___h" type="text" value="1"> <button class="buy___h" aria-label="Buy: ${esc(t.dataset.name)}">Buy</button></div>`;
     for (const t of main.querySelectorAll('.item___h')) t.innerHTML = cardOf(t);
     // The stand-in's own buttons: the menu opens, and "Buy" takes what is typed off the stock, as Torn's page would
     // after the purchase (a listing bought out leaves the page).
+    // Bought: Torn's own words stand in the tile for a moment (no price, no stock), then the card is back with
+    // what is left - or the tile is gone when the listing was bought out. (&slow=1: the words stay 3 s.)
+    const sell = (tile, typed) => {
+        const left = Number(tile.dataset.qty) - typed;
+        tile.dataset.qty = String(left);
+        tile.innerHTML = `<div class="buyMenu___h"><p>You bought ${typed} x ${esc(tile.dataset.name)}.</p></div>`;
+        setTimeout(() => { if (left <= 0) tile.remove(); else tile.innerHTML = cardOf(tile); }, q.has('slow') ? 3000 : 700);
+    };
     main.addEventListener('click', (e) => {
+        // The stand-in's own strip: what other players and Torn's page do without you.
+        if (e.target.closest('#sold')) { const all = [...main.querySelectorAll('.item___h')].filter((t) => view.pieces.some((p) => String(p.id) === t.dataset.id)); if (all.length) all[all.length - 1].remove(); return; }
+        if (e.target.closest('#anew')) { for (const t of [...main.querySelectorAll('.item___h')]) { const n = t.cloneNode(true); t.replaceWith(n); } return; }
         const tile = e.target.closest('.item___h');
         if (!tile) return;
         // Opened: the buy form takes the card's place. Closed: the card is back.
         if (e.target.closest('button.open')) { tile.innerHTML = formOf(tile); return; }
         if (e.target.closest('button.close___h')) { tile.innerHTML = cardOf(tile); return; }
+        // &step=1, the question: Yes sells, No puts the card back with the stock it had.
+        if (e.target.closest('button.yes')) { sell(tile, Number(tile.dataset.sure)); return; }
+        if (e.target.closest('button.no')) { tile.innerHTML = cardOf(tile); return; }
         if (!e.target.closest('button.buy___h')) return;
         const input = tile.querySelector('input');
         const typed = Number(input.value.replace(/\D/g, '')) || 0;
-        const left = Number(tile.dataset.qty) - typed;
-        if (typed <= 0 || left < 0) return;
-        // Bought: Torn's own words stand in the tile for a moment (no price, no stock), then the card is back with
-        // what is left - or the tile is gone when the listing was bought out. (&slow=1: the words stay 3 s.)
-        tile.dataset.qty = String(left);
-        tile.innerHTML = `<div class="buyMenu___h"><p>You bought ${typed} x ${esc(tile.dataset.name)}.</p></div>`;
-        setTimeout(() => { if (left <= 0) tile.remove(); else tile.innerHTML = cardOf(tile); }, q.has('slow') ? 3000 : 700);
+        if (typed <= 0 || Number(tile.dataset.qty) - typed < 0) return;
+        if (q.has('step')) { tile.dataset.sure = String(typed); tile.innerHTML = `<div class="confirm___h"><p>Are you sure you want to buy ${typed} x ${esc(tile.dataset.name)}?</p><button class="yes">Yes</button> <button class="no">No</button></div>`; return; }
+        sell(tile, typed);
     });
 } else if (page === 'trade') {
     const id = (location.hash.match(/ID=(\d+)/) || [])[1];

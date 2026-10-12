@@ -49,8 +49,11 @@ test('a bazaar on your list: its lines with Fill, the next stop on the Next butt
     assert.equal(over.marks[0].state, 'over');
     // No box on the card yet: no Fill button that could do nothing.
     assert.ok(!boxBazaar(v, [{ ...cards[0], hasBox: false }], stop.place).html.includes('fill-card'));
-    // Not a set piece anywhere on the page, at a bazaar that is not on the list: no box at all.
-    assert.equal(boxBazaar(v, [cards[cards.length - 1]], 'b:424242'), null);
+    // Not a set piece anywhere on the page, at a bazaar that is not on the list: no box at all - unless a run is
+    // on (1.3.0: the way on is offered wherever you stand), and then nothing of the page is marked.
+    assert.equal(boxBazaar(shared(fixtureInput(NOW)), [cards[cards.length - 1]], 'b:424242'), null);
+    const off = boxBazaar(v, [cards[cards.length - 1]], 'b:424242');
+    assert.ok(off.html.includes('data-act="run-go"') && off.marks.length === 0 && off.fill.length === 0);
     assert.ok(/You press Buy\./.test(out.html));
     // The listings are ringed as Torn Trading rings one, and Fill all has every line's own number.
     assert.ok(out.marks.every((m) => m.ring === 'top'));
@@ -106,12 +109,29 @@ test('Fill all: said as on, each number typed is "press Buy", and a listing not 
     assert.ok(shut.html.includes(`0 of ${cards.length} typed.`));
 });
 
-test('a run is on and this bazaar is not its stop: one button back to the stop, the run not moved', () => {
+test('a run is on and this bazaar is not on your list: back to the run\'s stop, or on past it', () => {
     const v = withRun();
     const p = v.pieces.find((x) => x.need > 0);
     const out = boxBazaar(v, [{ itemId: p.id, price: Math.round(p.worth * 1.2), qty: 3, typed: 0, hasBox: false }], 'b:424242');
-    assert.ok(out.html.includes('data-act="run-go"'));
-    assert.ok(!out.html.includes('data-act="run-next"'));
+    const stops = v.buy.run.stops;
+    const cur = stops.findIndex((s) => s.state === 'cur');
+    // The purple button is the way back; "i didnt follow the list, it still wouldnt let me go to next bazaar":
+    // a plain one beside it goes on past that stop, and names where to.
+    assert.match(out.html, /class="btn sm go" data-act="run-go"[^>]*>Your stop: /);
+    assert.match(out.html, new RegExp('class="btn sm " data-act="run-next"[^>]*>Skip it: on to ' + (stops[cur + 1].im ? 'the Item Market' : stops[cur + 1].who)));
+    assert.ok(out.html.includes('data-act="run-stop"'));
+});
+
+test('a run is on and this bazaar is on your list but not the stop the run is on: Next goes on from here', () => {
+    const v = withRun();
+    const stops = v.buy.run.stops;
+    const at = stops.findIndex((s, i) => s.state !== 'cur' && !s.im && i < stops.length - 1);
+    assert.ok(at > 0, 'the made-up list has a later bazaar with a stop after it');
+    const stop = stops[at];
+    const out = boxBazaar(v, stop.lines.map((l) => ({ itemId: l.id, price: l.price, qty: l.q, typed: 0, hasBox: true })), stop.place);
+    assert.ok(out.html.includes(`stop ${at + 1} of ${stops.length}`));
+    assert.ok(!out.html.includes('data-act="run-go"'), 'no "back to your stop": you are at a stop of the list');
+    assert.match(out.html, new RegExp('data-act="run-next"[^>]*>Next' + (stops[at + 1].im ? ': the Item Market' : ' bazaar: ' + stops[at + 1].who)));
 });
 
 test('a bazaar off your list: only what is under its worth, and no run buttons', () => {
@@ -137,7 +157,8 @@ test('a trade: each row priced, the margin said once, money typed only on the ad
     const out = boxTrade(v, t, rows, 'view', false);
     assert.equal(out.marks.length, rows.length);
     assert.ok(out.marks.every((m) => m.where === 'right'));
-    assert.equal((out.html.match(/before any fee/g) || []).length, 1);
+    assert.equal((out.html.match(/Everything in it/g) || []).length, 1);
+    assert.ok(!/fee/.test(out.html), 'the points market takes no fee: none is spoken of');
     assert.ok(!out.html.includes('fill-money'));
     assert.ok(out.html.includes('data-act="copy"'));
     const pay = boxTrade(v, t, rows, 'addmoney', true);

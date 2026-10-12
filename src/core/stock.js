@@ -32,7 +32,8 @@ export const STOCK_EMPTY = Object.freeze({ held: {}, last: {}, pool: {}, done: [
  * @param events [{ key, t, id, d, paid }]            units of one item in (d > 0, `paid` for all of them) or out (d < 0)
  *            or [{ key, t, swap: setKey, sets }]      sets swapped at the museum
  * @param eachOf id -> what a unit with no cost on record stands at (Torn's market value)
- * @returns { state, made: [{ key, t, set, sets, points, cost }] } - made = the swaps, with what their pieces cost
+ * @returns { state, made: [{ key, t, set, sets, points, cost, est }], out: [{ key, t, id, units, cost, est }] }
+ *   made = the swaps, with what their pieces cost; out = units that left as themselves, with what they had cost
  */
 export function stockApply(state, events, eachOf = () => 0) {
     const s = state && state.held ? state : STOCK_EMPTY;
@@ -41,6 +42,7 @@ export function stockApply(state, events, eachOf = () => 0) {
     let last = s.last;
     let pool = s.pool;
     const made = [];
+    const out = [];
     const fresh = [];
     const base = s.base || {};
     const move = (id, d, t) => {
@@ -58,6 +60,7 @@ export function stockApply(state, events, eachOf = () => 0) {
             const n = skWhole(e.sets);
             if (!set || !n) continue;
             let cost = 0;
+            let est = 0;
             for (const p of set.pieces) {
                 const id = String(p.id);
                 // Units the pool never saw bought stand at the market value: a set's cost is never left at nothing.
@@ -66,23 +69,30 @@ export function stockApply(state, events, eachOf = () => 0) {
                 const took = poolTake(pool, id, n);
                 pool = took.pool;
                 cost += took.cost;
+                est += took.cost * took.est;
                 move(id, -n, e.t);
             }
-            made.push({ key: e.key, t: e.t, set: set.key, sets: n, points: n * set.points, cost: Math.round(cost) });
+            // `est`: the share of that cost that rests on an estimate (units never seen bought).
+            made.push({ key: e.key, t: e.t, set: set.key, sets: n, points: n * set.points, cost: Math.round(cost), est: cost > 0 ? Math.round(est / cost * 1000) / 1000 : 0 });
             continue;
         }
         const id = String(e.id);
         const d = Math.trunc(skNum(e.d));
         if (!d) continue;
         if (d > 0) pool = poolAdd(pool, id, d, Math.max(0, skNum(e.paid)));
-        else pool = poolTake(pool, id, -d).pool;
+        else {
+            // Units that left as themselves (sold or given away): what they cost you goes with them (state.js books it).
+            const took = poolTake(pool, id, -d);
+            pool = took.pool;
+            out.push({ key: e.key, t: e.t, id, units: took.units, cost: Math.round(took.cost), est: took.est });
+        }
         move(id, d, e.t);
     }
-    if (!fresh.length) return { state: s, made };
+    if (!fresh.length) return { state: s, made, out };
     // The keys kept are the newest; the engine hands in only rows it has not handed in before, and `floor` (set
     // when the books are started over) shuts out everything older.
     const list = [...s.done, ...fresh].slice(-SK_KEYS);
-    return { state: { ...s, held, last, pool, done: list }, made };
+    return { state: { ...s, held, last, pool, done: list }, made, out };
 }
 
 /**
@@ -155,7 +165,8 @@ export function stockHeld(state, seen, swaps, until = 0) {
 export function seenWaiting(list, until = 0) {
     // `counted`: already in the count itself (stockApply), with no log to wait for.
     // `logged`: its row in Torn's log is in the count - the same buy, not a second one.
-    return (list || []).filter((x) => x && x.t > 0 && !x.counted && !x.logged && !(until > 0 && x.t + SK_LAG_MS < until));
+    // `no`: Torn's log, read past it, has no such buy: it was not one (state.js judgeSeen).
+    return (list || []).filter((x) => x && x.t > 0 && !x.counted && !x.logged && !x.no && !(until > 0 && x.t + SK_LAG_MS < until));
 }
 
 /** A buy seen on the page as a stock event, for when no log is read: [{ key, t, id, d, paid }]. */

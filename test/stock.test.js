@@ -49,7 +49,8 @@ test('a set swapped takes one of each piece and says what they cost', () => {
     let s = stockInventory(STOCK_EMPTY, inv, T0, ids, mv);
     const r = stockApply(s, [{ key: 'log:9', t: T0 + MIN, swap: 'flower', sets: 3 }], mv);
     s = r.state;
-    assert.deepEqual(r.made, [{ key: 'log:9', t: T0 + MIN, set: 'flower', sets: 3, points: 30, cost: 3 * 11 * 20000 }]);
+    // `est`: every unit of it was counted by Torn's inventory, never seen bought - the whole cost is an estimate.
+    assert.deepEqual(r.made, [{ key: 'log:9', t: T0 + MIN, set: 'flower', sets: 3, points: 30, cost: 3 * 11 * 20000, est: 1 }]);
     assert.equal(s.held[263], 1);
     assert.equal(s.pool[263].n, 1);
     // More sets than the pool ever saw: the missing units stand at the market value.

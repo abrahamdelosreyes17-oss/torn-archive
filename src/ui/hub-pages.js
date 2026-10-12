@@ -15,6 +15,8 @@ import { bazaarUrl } from '../core/feed.js';
 import { itemMarketUrl, MUSEUM_URL, POINTS_MARKET_URL, tradeViewUrl } from '../sources/route.js';
 import { TORN_PER_MINUTE_ALONE, W3B_PER_MINUTE_ALONE } from '../core/turns.js';
 import { READ_CHOICES } from '../core/settings.js';
+import { BOOK_ABOUT } from '../core/books.js';
+import { BID_OLD_MS } from '../core/sellrate.js';
 
 export const HUB_PAGES = [
     { key: 'dashboard', title: 'Dashboard', icon: 'dash', group: 'Desk' },
@@ -32,7 +34,7 @@ export function hubTabs(page, d) {
     const v = d.view;
     if (page === 'buy') return ['Pieces I need', `All ${v.pieces.length} pieces`, v.buy.units ? `Shopping list · ${hNum(v.buy.units)}` : 'Shopping list'];
     if (page === 'points') return ['Market', 'Points book'];
-    if (page === 'ledger') return ['Profit', 'Points sold', 'Buys', 'Receipts', 'Sellers', 'Mugged'];
+    if (page === 'ledger') return ['Profit', 'Points sold', 'Buys', 'Receipts', 'Sellers', 'Mugged', 'Pieces sold'];
     if (page === 'settings') return ['Keys and API use', 'Sets, points and notifications'];
     return [];
 }
@@ -47,8 +49,16 @@ const pgPlace = (s) => (s.im ? 'the Item Market' : hEsc(s.who || 'a bazaar') + "
 const pgStopUrl = (s) => (s.im ? itemMarketUrl(s.lines[0].id, s.lines[0].name) : bazaarUrl(s.whoId, s.lines[0].id, s.lines[0].price));
 const pgSeg = (key, value, choices) => `<span class="seg">${choices.map(([v, label]) => `<button data-act="set" data-id="${key}" data-v="${hEsc(v)}"${String(v) === String(value) ? ' class="on"' : ''}>${label}</button>`).join('')}</span>`;
 const pgInput = (key, value, width = 64, after = '') => `<input class="inp" data-set="${key}" value="${hEsc(value)}" inputmode="decimal" autocomplete="off" style="width:${width}px">${after ? `<span class="t-muted">${after}</span>` : ''}`;
-// Every "leaves" is worked out before any fee the points market may take: said once on a screen that shows one.
-const PG_FEE = 'before any fee';
+// The two points prices a listing is judged at (view.buy.usual): Buy pays at the lower of today's price and the one
+// you usually sell for, a Stretch only at the higher.
+const pgUsualFor = (u) => (u.from === 'sales' ? 'you usually sell points for' : 'points usually sell for');
+const pgLowPrice = (u) => (u.by === 'usual' ? `the ${hMoney(u.low)} ${pgUsualFor(u)}` : `today's ${hMoney(u.low)} a point`);
+const pgHighPrice = (u) => (u.by === 'usual' ? `today's ${hMoney(u.high)} a point` : `the ${hMoney(u.high)} ${pgUsualFor(u)}`);
+/**
+ * What you hold of a piece against what you build, in the owner's three colours (2026-10-11: "red for we have too
+ * much, orange we still need more, and green we have enough exactly"): 'need', 'even' or 'over'.
+ */
+const pgStockCls = (p) => (p.state === 'need' ? 'need' : p.state === 'ahead' ? 'over' : 'even');
 
 // ---- Dashboard ---------------------------------------------------------------------------------------------------
 
@@ -102,7 +112,10 @@ function pgTodoMore(v, t) {
     const line = (a, b, c) => `<div class="nm"><span class="nm-a">${a}</span><span class="nm-b num">${b}</span><span class="nm-c num">${c}</span></div>`;
     const head = (a, b, c) => `<div class="nm h"><span class="nm-a">${a}</span><span class="nm-b">${b}</span><span class="nm-c">${c}</span></div>`;
     if (t.kind === 'trades') return head('Open with you', 'Pieces', 'You pay') + v.trades.open.slice(0, PG_TODO_LINES).map((o) => line(`<b>${hEsc(o.who)}</b> · ${TURN_WORDS[o.state]}`, hNum(o.units), o.total ? hMoney(o.total) : '')).join('');
-    if (t.kind === 'hot' || t.kind === 'buy') return head(t.kind === 'hot' ? 'Where' : 'The first stops', 'Pieces', t.kind === 'hot' ? 'Under your sellers' : 'Under their worth') + (t.first || []).map((s) => line(`<b>${s.im ? 'Item Market' : hEsc(s.who || 'Bazaar ' + (s.whoId ?? ''))}</b>`, hNum(s.units), `<span class="t-good">${hSigned(s.gain)}</span>`)).join('');
+    // A list's stop may hold pieces bought over their own share, on the room of their set (1.3.0, setjudge.js): in
+    // sum it is then not under its pieces' worth, and says so - never a minus in green. (Short: the column is 124px.)
+    const under = (s) => (s.gain < 0 ? `<span class="t-muted" title="These pieces are over their own share of the set by this much: the set carries it - it still pays at today's points price, with your least profit">${hMoney(-s.gain)} over</span>` : `<span class="t-good">${hSigned(s.gain)}</span>`);
+    if (t.kind === 'hot' || t.kind === 'buy') return head(t.kind === 'hot' ? 'Where' : 'The first stops', 'Pieces', t.kind === 'hot' ? 'Under your sellers' : 'Under their worth') + (t.first || []).map((s) => line(`<b>${s.im ? 'Item Market' : hEsc(s.who || 'Bazaar ' + (s.whoId ?? ''))}</b>`, hNum(s.units), under(s))).join('');
     if (t.kind === 'swap') return head('Full sets', 'Sets', 'Points') + v.sets.filter((s) => s.full).map((s) => line(`<b>${hEsc(s.label)} Set</b>`, hNum(s.full), hNum(s.full * s.points))).join('');
     if (t.kind === 'hold') return '';
     const sell = v.points.sell;
@@ -123,7 +136,7 @@ function pgSky(v) {
     return v.sets.map((s) => {
         const max = Math.max(...s.pieces.map((p) => p.held), s.target, 1) * 1.08;
         const first = s.pieces[0];
-        return `<div class="sky"><div class="sky-h"><b>${s.label} Set</b>${s.full} full</div><div class="sky-b">${s.pieces.map((p, i) => `<i class="sky-c ${p.state === 'ok' ? '' : p.state}" style="--h:${p.held / max * 100}%;--n:${i}" title="${hEsc(p.name)}: ${p.held}${p.need ? ', need ' + p.need : p.ahead ? ', ' + p.ahead + ' ahead' : ', enough'}"></i>`).join('')}<div class="sky-l" style="--at:${s.target / max * 100}%"><span>${s.target}</span></div></div><div class="sky-f">Shortest: <b>${hEsc(first.short)} ${first.held}</b></div></div>`;
+        return `<div class="sky"><div class="sky-h"><b>${s.label} Set</b>${s.full} full</div><div class="sky-b">${s.pieces.map((p, i) => `<i class="sky-c ${pgStockCls(p)}" style="--h:${p.held / max * 100}%;--n:${i}" title="${hEsc(p.name)}: ${p.held}${p.need ? ', need ' + p.need : p.ahead ? ', ' + p.ahead + ' ahead' : ', enough'}"></i>`).join('')}<div class="sky-l" style="--at:${s.target / max * 100}%"><span>${s.target}</span></div></div><div class="sky-f">Shortest: <b>${hEsc(first.short)} ${first.held}</b></div></div>`;
     }).join('');
 }
 
@@ -158,11 +171,11 @@ function pgDashboard(d, ui) {
       <div class="pb todo">${pgTodoList(v)}</div>
     </div>
     <div class="panel s4" data-k="margin">
-      <div class="ph"><h2>What a set pays</h2><div class="legend">${pgSetKeys(v)}</div><span class="sp"></span><span class="sub">${PG_FEE}</span></div>
+      <div class="ph"><h2>What a set pays</h2><div class="legend">${pgSetKeys(v)}</div></div>
       <div class="pb"><div class="chart" data-chart="margin"></div></div>
     </div>
     <div class="panel s4" data-k="sky">
-      <div class="ph"><h2>Stock</h2><div class="legend">${pgKey('Need', 'var(--need)', 1)}${pgKey('Enough', '#4a5263', 1)}${pgKey('Ahead', 'var(--warn)', 1)}</div><span class="sp"></span><button class="btn sm" data-go="stock">Stock</button></div>
+      <div class="ph"><h2>Stock</h2><div class="legend">${pgKey('Need', 'var(--st-need)', 1)}${pgKey('Enough', 'var(--st-even)', 1)}${pgKey('Ahead', 'var(--st-over)', 1)}</div><span class="sp"></span><button class="btn sm" data-go="stock">Stock</button></div>
       <div class="pb"><div class="sky2"${v.sets.length === 1 ? ' style="grid-template-columns:1fr"' : ''}>${pgSky(v)}</div></div>
     </div>
     <div class="panel s4" data-k="ladder">
@@ -178,26 +191,30 @@ function pgStockSet(v, s) {
     const tiles = s.pieces.map((p, i) => {
         const low = p.low;
         const gap = low ? p.worth - low.price : 0;
-        return `<div class="pc ${p.state === 'ok' ? '' : p.state} ${i === 0 && p.need ? 'first' : ''}" style="--n:${i}" data-act="pick" data-id="${p.id}" title="Where to buy ${hEsc(p.name)}"><div class="pc-in"><div class="pc-h">${pgIco(p, 'xl')}<span class="pc-s">${p.need ? 'need ' + p.need : p.ahead ? p.ahead + ' ahead' : 'enough'}</span></div><div class="pc-n">${hEsc(p.short)}</div><div class="pc-q"><b class="num">${p.held}</b>of ${p.target}</div>
-      <div class="pc-x"><div class="pc-k"><span><span class="w">Cheapest now</span><span class="n">Cheapest</span></span><b class="num ${low && low.price < p.pay ? 't-brand' : ''}">${low ? hMoney(low.price) : 'none'}</b></div><div class="pc-k"><span><span class="w">Worth to you</span><span class="n">Worth</span></span><b class="num">${hMoney(p.worth)}</b></div>${low ? `<div class="pc-k"><span><span class="w">${gap > 0 ? 'Under its worth' : 'Over its worth'}</span><span class="n">${gap > 0 ? 'Under worth' : 'Over worth'}</span></span><b class="num ${gap > 0 ? 't-good' : 't-muted'}">${gap > 0 ? hSigned(gap) : hMoney(-gap)}</b></div>` : ''}</div>
+        // Every tile always shows the three lines (1.3.0): what a tile shows no longer depends on its size. Until
+        // then they were hidden on a tile under 136 x 158 px, so they came and went with the window.
+        return `<div class="pc ${pgStockCls(p)} ${i === 0 && p.need ? 'first' : ''}" style="--n:${i}" data-act="pick" data-id="${p.id}" title="Where to buy ${hEsc(p.name)}"><div class="pc-in"><div class="pc-h">${pgIco(p, 'xl')}<span class="pc-s">${p.need ? 'need ' + p.need : p.ahead ? p.ahead + ' ahead' : 'enough'}</span></div><div class="pc-n">${hEsc(p.short)}</div><div class="pc-q"><b class="num">${p.held}</b>of ${p.target}</div>
+      <div class="pc-x"><div class="pc-k"><span><span class="w">Cheapest now</span><span class="n">Cheapest</span></span><b class="num ${low && low.price < p.pay ? 't-brand' : ''}">${low ? hMoney(low.price) : 'none'}</b></div><div class="pc-k"><span><span class="w">Worth to you</span><span class="n">Worth</span></span><b class="num">${hMoney(p.worth)}</b></div><div class="pc-k"><span><span class="w">${!low || gap > 0 ? 'Under its worth' : 'Over its worth'}</span><span class="n">${!low || gap > 0 ? 'Under worth' : 'Over worth'}</span></span><b class="num ${low && gap > 0 ? 't-good' : 't-muted'}">${!low ? 'no listing' : gap > 0 ? hSigned(gap) : hMoney(-gap)}</b></div></div>
       <div class="pc-bar"><i style="--w:${Math.min(100, p.target ? p.held / p.target * 100 : 0)}%"></i></div></div></div>`;
     }).join('');
     const act = `<div class="pc act"><div class="pc-in"><span><b class="pc-big num">${s.full}</b><b style="color:var(--text)">full ${s.full === 1 ? 'set' : 'sets'}</b> · ${hNum(s.full * s.points)} points</span>${hOut(MUSEUM_URL, 'Museum', 'btn sm go out')}</div></div>`;
-    return `<div class="panel grow" data-k="set-${s.key}"><div class="ph"><h2>${hEsc(s.name)}</h2><span class="sub"><b>${s.full}</b> full · building <b>${s.target}</b> · <b>${hMoney(s.cost)}</b> a set${s.costKnown ? '' : ' at your rate'}</span></div>
-        <div class="pb"><div class="pgrid" style="grid-template-columns:repeat(${Math.ceil((s.pieces.length + 1) / 2)},minmax(0,1fr))">${tiles}${act}</div></div></div>`;
+    // As many across as fit, never more than half the tiles (two rows on a wide window); a tile is never smaller
+    // than what it shows, and a window too short scrolls the page (hub-css.js .pgrid).
+    return `<div class="panel grow setp" data-k="set-${s.key}"><div class="ph"><h2>${hEsc(s.name)}</h2><span class="sub"><b>${s.full}</b> full · building <b>${s.target}</b> · <b>${hMoney(s.cost)}</b> a set${s.costKnown ? '' : ' at your rate'}</span></div>
+        <div class="pb"><div class="pgrid" style="--cols:${Math.ceil((s.pieces.length + 1) / 2)}">${tiles}${act}</div></div></div>`;
 }
 
 function pgStock(d) {
     const v = d.view;
-    return `<section class="page g2 on">
+    return `<section class="page g2 p-stock on">
     <div class="col">${v.sets.map((s) => pgStockSet(v, s)).join('')}</div>
     <div class="col">
-      <div class="panel" data-k="flow"><div class="ph"><h2>From pieces to money</h2></div><div class="pb"><div class="flow">
+      <div class="panel" data-k="flow"><div class="ph"><h2>From pieces to money</h2><span class="sp"></span><button class="btn sm" data-act="read-stock" title="Your items and your log are asked of Torn now, ahead of everything else. Nothing else is read.">Read my stock</button></div><div class="pb"><div class="flow">
         <div class="fl"><div class="k-l">Pieces held</div><div class="k-v">${hNum(v.stock.units)}</div><div class="k-s">${v.stock.est ? 'about ' : ''}${hShort(v.stock.cost)} paid</div></div>
         <div class="fl"><div class="k-l">Full sets</div><div class="k-v">${hNum(v.nav.full)}</div></div>
         <div class="fl"><div class="k-l">Points held, made from sets</div><div class="k-v">${hNum(v.stock.made)}</div></div>
         <div class="fl"><div class="k-l">Points sold, 14 days</div><div class="k-v">${hNum(v.stock.sold14)}</div></div>
-      </div></div></div>
+      </div><div class="wl-s foot" style="margin-top:10px;padding:9px 0 0">${pgStockAge(v)}</div></div></div>
       <div class="panel grow minc" style="min-height:160px" data-k="swapped"><div class="ph"><h2>Sets swapped</h2><div class="legend">${pgSetKeys(v, 1)}</div></div><div class="pb"><div class="chart" data-chart="swapped"></div></div></div>
     </div>
   </section>`;
@@ -205,9 +222,22 @@ function pgStock(d) {
 
 // ---- Buy ---------------------------------------------------------------------------------------------------------
 
-const pgNeedBadge = (p) => (p.need ? `<span class="badge need">need ${p.need}</span>` : p.ahead ? `<span class="badge ahead">${p.ahead} ahead</span>` : '<span class="badge">enough</span>');
+const pgNeedBadge = (p) => (p.need ? `<span class="badge st-need">need ${p.need}</span>` : p.ahead ? `<span class="badge st-over">${p.ahead} ahead</span>` : '<span class="badge st-even">enough</span>');
+/**
+ * A listing against its piece, as the SET judges it (core/setjudge.js), in dollars a point of the set: under the
+ * piece's own share, or over it and Buy (the set still pays at today's points price with your least profit),
+ * Stretch (only at the price you usually sell points for) or No thanks.
+ */
+function pgJudged(v, p, price) {
+    if (price < p.worth) return `<span class="t-good">${hSigned(p.worth - price)}</span>`;
+    const pts = (v.sets.find((s) => s.key === p.set) || {}).points || 0;
+    const a = pts ? `${hMoney(Math.ceil((price - p.worth) / pts))} a point` : hMoney(price - p.worth);
+    if (price < p.line) return `<span title="Over this piece's own share by ${hMoney(price - p.worth)}. Its set still pays at ${pgLowPrice(v.buy.usual)}, with your least profit">Buy · ${a} over</span>`;
+    if (price < p.lineS) return `<span class="t-warn" title="Over this piece's own share by ${hMoney(price - p.worth)}. Its set pays only at ${pgHighPrice(v.buy.usual)}">Stretch · ${a} over</span>`;
+    return `<span class="t-muted" title="Over this piece's own share by ${hMoney(price - p.worth)}: its set would not pay even at ${pgHighPrice(v.buy.usual)}">No thanks · ${a} over</span>`;
+}
 const pgFullWords = (v, full) => v.sets.map((s) => `${pgLow(s.label)} <b>${s.full}</b> to <b>${full[s.key]}</b>`).join(' · ');
-const pgGap = (gap) => (gap > 0 ? `<span class="t-good">${hSigned(gap)}</span>` : `<span class="t-muted">${hMoney(-gap)} over</span>`);
+
 /** "Buy from": the places a list may send you to. Both lit until you press one off. */
 const pgFrom = (v) => `<span class="from"><span class="t-muted">Buy from</span><span class="seg"><button data-act="from" data-v="bazaar"${v.buy.from.bazaar ? ' class="on"' : ''}>Bazaars</button><button data-act="from" data-v="market"${v.buy.from.market ? ' class="on"' : ''}>Item Market</button></span></span>`;
 const pgSeller = (p, o) => (o.src === 'market' ? hOut(itemMarketUrl(p.id, p.name), 'Item Market') : hOut(bazaarUrl(o.whoId, p.id, o.price), `<b>${hEsc(o.who || 'Bazaar ' + (o.whoId ?? ''))}</b>`));
@@ -224,33 +254,42 @@ function pgWhere(v, p, lines) {
     // The Item Market is one line for all its rows: each row says its own part of it, cheapest first.
     const imLine = lines.get(lineKey(p.id, IM_PLACE));
     const want = Math.max(0, p.need - p.listed);
-    const imPart = imShares(shown.map((o) => (o.src === 'market' ? o : { price: 0, qty: 0 })), p.worth, imLine ? imLine.q : want);
+    const imPart = imShares(shown.map((o) => (o.src === 'market' ? o : { price: 0, qty: 0 })), p.lineS, imLine ? imLine.q : want);
     const rows = shown.map((o, k) => {
         const im = o.src === 'market';
         const key = lineKey(p.id, placeOf(o));
         const on = im ? (imLine && imPart[k] ? { q: imPart[k] } : null) : lines.get(key);
         const q = im ? (imLine ? 0 : imPart[k]) : Math.min(o.qty, want);
-        const btn = on ? `<button class="btn sm" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}" title="Take it off the list">${on.q} on list ✓</button>` : o.out ? '' : o.price < p.worth && q ? `<button class="btn sm go" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}">Add ${q}</button>` : '';
+        // Add: any listing the set can carry, a Stretch too (it says so on its row). Never a "No thanks".
+        const btn = on ? `<button class="btn sm" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}" title="Take it off the list">${on.q} on list ✓</button>` : o.out ? '' : o.price < p.lineS && q ? `<button class="btn sm go" data-act="cart" data-id="${p.id}" data-v="${hEsc(placeOf(o))}">Add ${q}</button>` : '';
         // Torn's own answer, or TornW3B's older copy of that bazaar: said on the row, with its age.
         const how = o.from === 'w3b' ? "TornW3B's copy of this bazaar: Torn itself has not been asked yet" : o.from === 'page' ? 'Seen on its own page, in your Torn tab' : 'Read from Torn itself';
         const age = o.at ? `<span class="n num ${o.ok === false || o.from === 'w3b' ? 't-warn' : 't-muted'}" title="${how}">${o.from === 'w3b' ? 'TornW3B · ' : ''}${hAge(o.at, v.at).replace(' ago', '')}</span>` : '<span></span>';
         const split = k === firstOld ? `<div class="wl-s old-h">Not checked in the last 5 minutes${firstOld ? '' : ': nothing here is'}. These are not counted until Torn has been asked${v.buy.check && v.buy.check.length ? ': it is being asked now' : ''}.</div>` : '';
         const left = k === firstOut ? `<div class="wl-s old-h">${im ? 'The Item Market' : 'Bazaars'}: not where you buy now, so not counted. "Buy from" switches ${im ? 'it' : 'them'} back on.</div>` : '';
-        return `${left}${split}<div class="wl ${o.ok === false || o.out ? 'old' : ''} ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgGap(p.worth - o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
+        return `${left}${split}<div class="wl ${o.ok === false || o.out ? 'old' : ''} ${o.price < p.pay ? 'cheap' : ''} ${on ? 'on' : ''}"><span>${pgSeller(p, o)}</span><span class="n num">×${hNum(o.qty)}</span><b class="n num">${hMoney(o.price)}</b><span class="n num">${pgJudged(v, p, o.price)}</span>${age}<span class="wl-a">${btn}</span></div>`;
     }).join('');
     const u = p.under.units;
+    // What the set carries over the piece's own share: counted with it, as a list counts it.
+    const g = Math.max(u, p.good.units);
+    // What the shortlist leaves out of the table (core/shortlist.js), said once.
+    const L = p.left;
+    const cut = p.offers.length - shown.length;
+    const out = [L.over ? `${hPlural(L.over, 'listing')} over the line: No thanks` : '', L.more + cut > 0 ? `${hPlural(L.more + cut, 'more listing')} than you can use` : '', L.old ? `${hNum(L.old)} not checked lately` : '', L.out ? `${hNum(L.out)} where you do not buy` : ''].filter(Boolean);
     const foot = (under.length ? `<b>${hNum(u)}</b> under its worth in ${hPlural(p.under.places, 'place')}` : 'Nowhere under its worth now')
-        + (!p.need ? '. You have enough of it.' : !under.length ? '.' : u >= p.need ? `: covers the ${p.need} you need.` : `. The other ${p.need - u} come from your sellers.`)
-        + (p.offers.some((o) => o.price < p.pay) ? ' Violet: cheaper than you pay sellers.' : '');
+        + (g > u ? `, ${hNum(g - u)} more its set carries` : '')
+        + (!p.need ? '. You have enough of it.' : !g ? '.' : g >= p.need ? `: covers the ${p.need} you need.` : `. The other ${p.need - g} come from your sellers.`)
+        + (p.offers.some((o) => o.price < p.pay) ? ' Violet: cheaper than you pay sellers.' : '')
+        + (out.length ? ` Not shown: ${out.join(' · ')}.` : '');
     // One press for the whole piece: everything counted above, cheapest first. With all of it on, the press takes it off.
     const all = p.more ? `<button class="btn sm go" data-act="cart-all" data-id="${p.id}" title="Every listing of it under its worth, cheapest first">Add all ${hNum(p.more)}</button>` : p.listed ? `<button class="btn sm" data-act="cart-all" data-id="${p.id}" title="Take ${hEsc(p.name)} off the list">Take all ${hNum(p.listed)} off</button>` : '';
     // A list of this piece alone (the owner, 2026-10-11: "where is the button that says make list here? so its only
     // kitten plushies for example?"): what "Add all" would put on an empty list, in place of the list on hand.
-    const only = Math.min(p.need, u);
+    const only = p.take;
     const make = only > 0 ? `<button class="btn sm go" data-act="list-only" data-id="${p.id}" title="${hNum(only)} of them, cheapest first, and nothing else: it takes the place of the list you have">Make the list: only ${hEsc(p.name)}</button>` : '';
     return `<div class="ph">${pgIco(p, 'lg')}<h2>${hEsc(p.name)}</h2>${pgNeedBadge(p)}<span class="sp"></span>${make}${hist ? `<span class="sub">7 days</span>${hist}` : ''}</div><div class="pb flush">
-    <div class="wl-s">Worth <b>${hMoney(p.worth)}</b> to you · you pay sellers <b>${hMoney(p.pay)}</b></div>
-    ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Under its worth</span><span class="n">Checked</span><span class="wl-a">${all}</span></div>${rows}` : pgNone('Nobody lists it now.')}
+    <div class="wl-s">Worth <b>${hMoney(p.worth)}</b> to you · you pay sellers <b>${hMoney(p.pay)}</b>${p.line > p.worth ? ` · its set carries it up to <b>${hMoney(p.line - 1)}</b>` : ''}${p.lineS > p.line ? ` · a Stretch up to <b>${hMoney(p.lineS - 1)}</b>${p.needs ? `: that needs points at ${hMoney(p.needs)}` : ''}` : ''}</div>
+    ${p.offers.length ? `<div class="wl h"><span>Sold by</span><span class="n">Stock</span><span class="n">Price</span><span class="n">Against its worth</span><span class="n">Checked</span><span class="wl-a">${all}</span></div>${rows}` : pgNone('Nobody lists it now.')}
     <div class="wl-s foot">${foot}</div></div>`;
 }
 
@@ -294,7 +333,7 @@ function pgStockAge(v) {
     const from = st.log ? 'your log and the pages you buy on' : 'the pages you buy on';
     const since = st.since ? ` ${hPlural(st.since, 'piece')} changed since: counted from ${from}.` : '';
     const key = st.log ? '' : ` <span class="t-warn">No Full key: a buy made where Torn Archive is not on the page shows only at Torn's next count.</span>`;
-    if (st.tornAt) return `<b>Torn counted your items at ${hClock(st.tornAt)}</b> (${hAge(st.tornAt, now)}) and counts again at ${hClock(st.nextAt)}: it is asked then.${since}${key}`;
+    if (st.tornAt) return `<b>Torn counts your items once an hour:</b> last at ${hClock(st.tornAt)} (${hAge(st.tornAt, now)}), again at ${hClock(st.nextAt)}, and it is asked then.${since}${key}`;
     return `Your items were read from Torn ${hAge(st.readAt, now)}. Torn counts them once an hour; what you buy in between is counted from ${from}.${key}`;
 }
 
@@ -311,19 +350,36 @@ function pgBuy(d, ui) {
         const S = v.buy.run.stops;
         const paid = S.reduce((a, s) => a + s.margin.paid, 0);
         const leaves = S.reduce((a, s) => a + s.margin.leaves, 0);
+        // A line over its piece's own share says what it is: a Stretch, or dear now (it leaves at the next read).
+        const tag = (l) => (l.g === 'stretch' ? '<span class="tg">Stretch</span>' : l.g === 'no' ? '<span class="tg">dear now</span>' : '');
         const list = !S.length ? pgNone('Nothing on the list. Press Add on a listing, or Fill my stock.') : S.map((s, i) => {
             const cls = s.state === 'part' ? 'done' : s.state;
-            return `<div class="stop ${cls}"><span class="stop-n">${s.state === 'done' ? '✓' : i + 1}</span><div class="stop-m"><div class="stop-h">${hOut(pgStopUrl(s), `<b>${s.im ? 'Item Market' : hEsc(s.who || 'A bazaar') + "'s bazaar"}</b>`)}<span class="stop-st">${s.state ? PG_STOP_WORDS[s.state](s) : ''}</span><span class="sp"></span><b class="num">${hMoney(s.cost)}</b><span class="${s.margin.ok ? 't-good' : 't-warn'} num">${marginWords(s.margin)}</span></div><div class="chips">${s.lines.map((l) => `<span class="chip">${pgItem(v, l.id, l.name)}<span><b>${hEsc((viewPiece(v, l.id) || {}).short || l.name)}</b> ×${l.q}</span><span class="num t-muted">${hMoney(l.price)}</span><button class="x" data-act="drop" data-v="${hEsc(l.key)}" title="Take it off the list">×</button></span>`).join('')}</div></div></div>`;
+            // A stop judged by itself may be under your least profit while its set carries it (setjudge.js).
+            const carried = !s.margin.ok && s.lines.some((l) => l.g === 'room' || l.g === 'stretch');
+            return `<div class="stop ${cls}"><span class="stop-n">${s.state === 'done' ? '✓' : i + 1}</span><div class="stop-m"><div class="stop-h">${hOut(pgStopUrl(s), `<b>${s.im ? 'Item Market' : hEsc(s.who || 'A bazaar') + "'s bazaar"}</b>`)}<span class="stop-st">${s.state ? PG_STOP_WORDS[s.state](s) : ''}</span><span class="sp"></span><b class="num">${hMoney(s.cost)}</b><span class="${s.margin.ok ? 't-good' : carried ? 't-muted' : 't-warn'} num">${marginWords(s.margin)}${carried ? ' by itself: its set carries it' : ''}</span></div><div class="chips">${s.lines.map((l) => `<span class="chip">${pgItem(v, l.id, l.name)}<span><b>${hEsc((viewPiece(v, l.id) || {}).short || l.name)}</b> ×${l.q}</span><span class="num t-muted">${hMoney(l.price)}</span>${tag(l)}<button class="x" data-act="drop" data-v="${hEsc(l.key)}" title="Take it off the list">×</button></span>`).join('')}</div></div></div>`;
         }).join('');
-        const vault = v.buy.vault == null ? '' : v.buy.vault > 0 ? `<span class="grow1 t-warn">On hand ${hMoney(v.top.onHand)}: take ${hMoney(v.buy.vault)} out of the vault first. <span class="t-muted">You press Buy yourself.</span></span>` : `<span class="grow1 t-muted">On hand ${hMoney(v.top.onHand)} covers it. You press Buy yourself.</span>`;
+        // The list's capital, once, beside what you have on hand (the owner, 2026-10-11: "can it say how much
+        // capital i need to buy that list").
+        const cash = v.buy.cash;
+        const have = cash.onHand == null ? '' : ` <span class="t-muted">· on hand ${hMoney(cash.onHand)}${cash.vault ? ` · vault ${hMoney(cash.vault)}` : ''}</span>`;
+        const vault = v.buy.vault == null || !v.buy.units ? '' : v.buy.vault > 0 ? `<span class="grow1 t-warn">Take ${hMoney(v.buy.vault)} out of the vault first. <span class="t-muted">You press Buy yourself.</span></span>` : '<span class="grow1 t-muted">What you have on hand covers it. You press Buy yourself.</span>';
+        // What the list does to what a set costs you a point: under that price, selling the points is a loss.
+        const even = v.buy.even.filter((e) => e.to > 0).map((e) => `<div class="row"><span class="grow1">Your break-even on a ${pgLow(e.label)} set, a point</span><b class="num" style="font-weight:500">${e.from ? `<b>${hMoney(e.from)}</b> to ` : ''}<b>${hMoney(e.to)}</b></b></div>`).join('');
+        const st = v.buy.stretch;
+        const stretch = st.units ? `<div class="row"><span class="grow1 t-warn">${hPlural(st.units, 'piece')} on it ${st.units === 1 ? 'is' : 'are'} a Stretch: ${st.units === 1 ? 'it finishes' : 'they finish'} a set that pays only with points at ${hMoney(st.needs)} or more.${v.buy.usual.by === 'usual' ? ` <span class="t-muted">Points are at ${hMoney(v.buy.usual.high)} today; you usually sell at ${hMoney(v.buy.usual.low)}.</span>` : v.buy.usual.price ? ` <span class="t-muted">You usually sell at ${hMoney(v.buy.usual.price)}.</span>` : ''}</span></div>` : '';
+        // A buy a Torn page told of that Torn's log does not have: taken back, and said here for a few minutes.
+        const back = v.buy.back.map((b) => `<div class="row"><span class="grow1 t-warn"><b>Not a buy after all:</b> ${hNum(b.qty)} × ${hEsc(b.name)} ${b.im ? 'on the Item Market' : 'at ' + hEsc(b.who || 'bazaar ' + b.whoId) + "'s bazaar"}, seen at ${hClock(b.t)}. Torn's log has no such buy, so it is taken back: off your stock, the run and the list.</span></div>`).join('');
         const onList = v.pieces.filter((p) => p.listed);
         return `<section class="page p-buy on"><div class="pane gbuy stk on">
       <div class="panel grow" data-k="list"><div class="ph"><h2>Shopping list</h2><span class="sub">${v.buy.units ? `${hPlural(v.buy.units, 'piece')} · ${hPlural(S.length, 'stop')}` : 'empty'}</span><span class="sp"></span>${pgFrom(v)}<button class="btn sm" data-act="make-list">Fill my stock</button><button class="btn sm" data-act="clear-list">Clear</button></div><div class="pb flush">${list}</div></div>
       <div class="col">
         <div class="panel tint" data-k="run"><div class="ph"><h2>The run</h2><span class="sub">Next counts only what you took</span></div><div class="pb"><div class="rows">${pgRunBar(v, ui)}
-          <div class="row"><span class="grow1">${hPlural(v.buy.units, 'piece')} at ${hPlural(S.length, 'stop')}</span><b class="num">${hMoney(v.buy.cost)}</b>${paid ? `<span class="num t-good">leaves ${hSigned(leaves)}, ${hPct(leaves / paid * 100)} ${PG_FEE}</span>` : ''}</div>
-          <div class="row"><span class="grow1">Full sets after</span><b class="num" style="font-weight:500">${pgFullWords(v, v.buy.full)}</b></div>
+          ${back}
+          <div class="row"><span class="grow1"><b>This list costs</b>${have}</span><b class="num">${hMoney(v.buy.cost)}</b></div>
           ${vault ? `<div class="row">${vault}</div>` : ''}
+          ${paid ? `<div class="row"><span class="grow1">What it leaves</span><span class="num ${leaves < 0 ? 't-warn' : 't-good'}">${hSigned(leaves)} · ${hPct(leaves / paid * 100)}</span></div>` : ''}
+          <div class="row"><span class="grow1">Full sets after</span><b class="num" style="font-weight:500">${pgFullWords(v, v.buy.full)}</b></div>
+          ${even}${stretch}
           <div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div></div></div></div>
         <div class="panel grow" data-k="list-after"><div class="ph"><h2>Your stock after the list</h2><div class="legend">${pgKey('You hold', '#4a5263', 1)}${pgKey('On the list', 'var(--need)', 1)}</div></div><div class="pb flush"><div class="after">${onList.length ? onList.map((p, i) => pgAfterRow(v, p, p.listed, p.listed, 0, i)).join('') : '<div class="af" style="grid-template-columns:minmax(0,1fr);color:var(--muted)"><span>Nothing on the list.</span></div>'}</div></div></div>
       </div></div></section>`;
@@ -334,15 +390,21 @@ function pgBuy(d, ui) {
     // Read by the hub after the draw: the piece whose sellers are shown.
     ui.shown = sel ? String(sel.id) : '';
     const plan = v.buy.plan;
-    const table = rows.length ? '<thead><tr><th>Piece</th><th class="n">Need</th><th class="n">Cheapest</th><th>Where</th><th class="n">Under its worth</th><th class="n">On your list</th></tr></thead><tbody>' + rows.map((p) => {
+    const table = rows.length ? '<thead><tr><th>Piece</th><th class="n">Need</th><th class="n">Cheapest</th><th>Where</th><th class="n">Against its worth</th><th class="n">On your list</th></tr></thead><tbody>' + rows.map((p) => {
         const low = p.low;
-        return `<tr class="pick ${sel && p.id === sel.id ? 'sel' : ''}" data-act="sel" data-id="${p.id}"><td>${pgIco(p)}<b>${hEsc(p.name)}</b></td><td class="n">${p.need ? `<span class="t-need">${p.need}</span>` : p.ahead ? `<span class="t-warn">${p.ahead} ahead</span>` : '<span class="t-muted">enough</span>'}</td><td class="n">${low ? `<b class="${low.price < p.pay ? 't-brand' : ''}">${hMoney(low.price)}</b> <span class="t-muted">×${hNum(low.qty)}</span>` : `<span class="t-muted">${p.lowAll ? 'none where you buy' : 'none listed'}</span>`}</td><td>${low ? (low.src === 'market' ? 'Item Market' : hEsc(low.who || 'Bazaar ' + (low.whoId ?? ''))) : ''}</td><td class="n">${low ? pgGap(p.worth - low.price) : ''}</td><td class="n">${p.listed ? `<b>${p.listed}</b> <span class="t-muted">of ${p.need}</span>` : '<span class="t-muted">none</span>'}</td></tr>`;
+        return `<tr class="pick ${sel && p.id === sel.id ? 'sel' : ''}" data-act="sel" data-id="${p.id}"><td>${pgIco(p)}<b>${hEsc(p.name)}</b></td><td class="n">${p.need ? `<span class="t-stn">${p.need}</span>` : p.ahead ? `<span class="t-sto">${p.ahead} ahead</span>` : '<span class="t-ste">enough</span>'}</td><td class="n">${low ? `<b class="${low.price < p.pay ? 't-brand' : ''}">${hMoney(low.price)}</b> <span class="t-muted">×${hNum(low.qty)}</span>` : `<span class="t-muted">${p.lowAll ? 'none where you buy' : 'none listed'}</span>`}</td><td>${low ? (low.src === 'market' ? 'Item Market' : hEsc(low.who || 'Bazaar ' + (low.whoId ?? ''))) : ''}</td><td class="n">${low ? pgJudged(v, p, low.price) : ''}</td><td class="n">${p.listed ? `<b>${p.listed}</b> <span class="t-muted">of ${p.need}</span>` : '<span class="t-muted">none</span>'}</td></tr>`;
     }).join('') + '</tbody>' : '';
+    // The three groups (the owner, 2026-10-11: "yes whole set is how i think about it"): every listing judged on
+    // the set it would finish, in dollars a point. Said once here; each row of "Sold by" says its own.
+    const grp = v.pieces.reduce((a, p) => ({ buy: a.buy + p.buyUnits, stretch: a.stretch + p.stretchUnits, fin: a.fin + p.fin, no: a.no + p.left.over, needs: Math.max(a.needs, p.needs) }), { buy: 0, stretch: 0, fin: 0, no: 0, needs: 0 });
+    const usual = v.buy.usual;
+    const spare = v.sets.filter((s) => s.next && s.next.room > 0).map((s) => `the next ${pgLow(s.label)} set has <b>${hMoney(s.next.room)}</b> to spare over its listings, ${hMoney(s.next.perPoint)} a point`).join(' · ');
+    const groups = !v.top.points ? '' : `<div class="row"><span class="grow1"><span class="grp"><span><b>Buy ${hNum(grp.buy)}</b>the set still pays at ${pgLowPrice(usual)}, with your least profit</span><span><b class="${grp.stretch ? 't-warn' : ''}">Stretch ${hNum(grp.stretch)}</b>${usual.high > usual.low ? `pays only at ${pgHighPrice(usual)}${grp.fin ? `; ${hNum(grp.fin)} finish a set and go on a list` : ''}` : usual.price ? 'none: points are at what you usually sell for' : 'none: what points usually sell for is not known yet'}</span><span><b>No thanks ${hNum(grp.no)}</b>${grp.no === 1 ? 'listing' : 'listings'} over even that, left out</span></span></span></div>${spare ? `<div class="row"><span class="grow1 t-muted">${spare[0].toUpperCase() + spare.slice(1)}.</span></div>` : ''}`;
     return `<section class="page p-buy on"><div class="pane gbuy stk on">
       <div class="col">
         <div class="panel tint" data-k="rec"><div class="ph"><h2>Fill my stock</h2></div><div class="pb">
-          <div class="rec"><div class="hero">${hNum(plan.units)}<small>of the ${hPlural(plan.need, 'piece')} you need ${plan.units === 1 ? 'is' : 'are'} under ${plan.units === 1 ? 'its' : 'their'} worth</small></div><div class="rec-t"><b>${hPlural(plan.stops, 'stop')}</b> · ${hMoney(plan.cost)}<br>${pgFullWords(v, plan.full)}</div><div class="rec-b">${pgFrom(v)}<button class="btn go" data-act="make-list"${plan.units ? '' : ' disabled'}>Make the list</button></div></div>
-          <div class="rows"><div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div>${v.buy.unsure ? `<div class="row"><span class="grow1 t-muted">${hPlural(v.buy.unsure, 'more piece')} in ${hPlural(v.buy.check.length, 'bazaar')} not checked in the last 5 minutes: not counted until Torn has been asked, which it is being now.</span></div>` : ''}</div>
+          <div class="rec"><div class="hero">${hNum(plan.units)}<small>of the ${hPlural(plan.need, 'piece')} you need ${plan.units === 1 ? 'is' : 'are'} worth buying now</small></div><div class="rec-t"><b>${hPlural(plan.stops, 'stop')}</b> · ${hMoney(plan.cost)}<br>${pgFullWords(v, plan.full)}</div><div class="rec-b">${pgFrom(v)}<button class="btn go" data-act="make-list"${plan.units ? '' : ' disabled'}>Make the list</button></div></div>
+          <div class="rows">${groups}<div class="row"><span class="grow1 t-muted">${pgStockAge(v)}</span></div>${v.buy.unsure ? `<div class="row"><span class="grow1 t-muted">${hPlural(v.buy.unsure, 'more piece')} in ${hPlural(v.buy.check.length, 'bazaar')} not checked in the last 5 minutes: not counted until Torn has been asked, which it is being now.</span></div>` : ''}</div>
         </div></div>
         <div class="panel grow" data-k="buy-t"><div class="ph"><h2>Where each piece is cheapest</h2><span class="sub">press a piece to see every place that sells it</span></div>
           <div class="pb flush">${rows.length ? `<table class="t wrapth">${table}</table>` : pgNone('You need nothing: every set is at its target. "All pieces" lists them anyway.')}</div></div>
@@ -359,11 +421,13 @@ function pgBuy(d, ui) {
 function pgMargin(t) {
     const m = t.margin;
     const out = [];
-    if (m.state === 'ok') out.push(`Everything in it <b class="t-good">${marginWords(m.all)}</b> ${PG_FEE}.`);
+    if (m.state === 'ok') out.push(`Everything in it <b class="t-good">${marginWords(m.all)}</b>.`);
     else if (m.state === 'under') out.push(`<b class="t-warn">Everything in it ${marginWords(m.all)}: under your least profit since the points price fell.</b>${m.mend ? ` Paying ${hRate(m.mend)}% would keep it.` : ''}`);
     else if (m.state === 'loss') out.push(`<b class="t-bad">Everything in it ${marginWords(m.all)}: a loss at the points price now.</b>${m.mend ? ` Paying ${hRate(m.mend)}% would keep your least profit.` : ''}`);
     if (m.held > 0 && m.state !== 'none') out.push(`${hMoney(m.held)} of it buys pieces you do not need yet: they pay when the rest of their set arrives.`);
     if (m.others.length) out.push(`<span class="t-warn">${m.others.map(hEsc).join(', ')}: not a set piece, not priced.</span> The total does not cover ${m.others.length === 1 ? 'it' : 'them'}.`);
+    // What you pay came down inside its hour (core/sellrate.js safeTable): the seller may have counted on more.
+    for (const r of t.rateDown || []) out.push(`<span class="t-warn">Your ${pgLow(r.label)} price came down from ${hRate(r.from)}% to ${hRate(r.to)}% at ${hClock(r.at)} TCT as points fell to ${hMoney(r.price)}.</span>`);
     return out.length ? `<div class="wl-s" style="padding-top:9px;border-top:1px solid var(--line)">${out.join(' ')}</div>` : '';
 }
 
@@ -446,8 +510,25 @@ function pgPoints(d, ui) {
           ${sell.quick ? `<div class="row"><span class="grow1"><b>Quickest:</b> ${lotsWords(sell.quick.lots)}</span><b class="num">${about(sell.quick.wait)}</b></div>` : ''}
           <div class="row"><span class="grow1">${sell.quick ? '' : '<b>Quickest:</b> '}One lot of ${hNum(sell.points)}</span><b class="num">${about(sell.one.wait)}</b></div>
           <div class="row"><span class="grow1">Profit over what they cost</span><b class="num ${sell.profit < 0 ? 't-bad' : 't-good'}">${hSigned(sell.profit)}</b></div>
-          <div class="row"><span class="grow1 t-muted">Bank each lot as it sells. ${PG_FEE[0].toUpperCase() + PG_FEE.slice(1)}.</span></div>`;
+          <div class="row"><span class="grow1 t-muted">Bank each lot as it sells.</span></div>`;
     const seg = `<div class="seg">${[7, 30, 40].map((n) => `<button data-act="range" data-id="pts2" data-v="${n}"${ui.range.pts2 === n ? ' class="on"' : ''}>${n} days</button>`).join('')}</div>`;
+    // The break-even (the owner, 2026-10-11: "give me something visual to warn ... if i sell lower than this i
+    // would lose money"): what a point you hold cost you against the price now, on one bar.
+    const ev = pt.even;
+    const marks = [['Your cost a point', ev.each, 'var(--text2)'], ['Price now', ev.now, ev.each && ev.now < ev.each ? 'var(--bad)' : 'var(--good)'], [ev.usualFrom === 'sales' ? 'You usually sell at' : 'Points usually sell at', ev.usual, 'var(--s-gold)']].filter((m) => m[1] > 0);
+    const lo = Math.min(...marks.map((m) => m[1]));
+    const hi = Math.max(...marks.map((m) => m[1]));
+    const pad = Math.max(1, (hi - lo) * 0.2, hi * 0.002);
+    const at = (x) => ((x - lo + pad) / (hi - lo + 2 * pad) * 100).toFixed(1) + '%';
+    const under = ev.each > 0 && ev.now > 0 && ev.now < ev.each;
+    const evSets = ev.sets.filter((e) => e.from > 0).map((e) => `a ${pgLow(e.label)} set costs you <b>${hMoney(e.from)}</b> a point${e.to && e.to !== e.from ? `, <b>${hMoney(e.to)}</b> with your list bought` : ''}`).join(' · ');
+    const evWords = !ev.each ? 'You hold no points made from sets: the bar shows your cost a point once a set is swapped.'
+        : !ev.now ? 'The points market has not been read yet.'
+        : under ? `<b class="t-bad">Selling now loses ${hMoney(ev.loss || sell.points * (ev.each - ev.now))}.</b> Every point you hold cost you ${hMoney(ev.each)}; the price to type is ${hMoney(ev.now)}.`
+        : `A point sold now leaves <b class="t-good">${hSigned(ev.now - ev.each)}</b> over what it cost you. Under ${hMoney(ev.each)} a point, selling is a loss.`;
+    const evPanel = `<div class="panel ${under ? 'hold' : ''}" data-k="even"><div class="ph"><h2>Your break-even</h2><span class="sp"></span>${under ? '<span class="badge bad">under your cost</span>' : ''}</div><div class="pb">
+          ${marks.length > 1 && ev.each ? `<div class="even-b ${under ? 'bad' : ''}">${ev.now ? `<i style="--a:${at(Math.min(ev.each, ev.now))};--w:calc(${at(Math.max(ev.each, ev.now))} - ${at(Math.min(ev.each, ev.now))})"></i>` : ''}${marks.map((m) => `<u style="--at:${at(m[1])};--c:${m[2]}"></u>`).join('')}</div><div class="even-k">${marks.map((m) => `<span><i class="key box" style="--c:${m[2]}"></i>${m[0]}<b class="num">${hMoney(m[1])}</b></span>`).join('')}</div>` : ''}
+          <div class="rows"><div class="row"><span class="grow1">${evWords}</span></div>${evSets ? `<div class="row"><span class="grow1 t-muted">${evSets[0].toUpperCase() + evSets.slice(1)}.</span></div>` : ''}</div></div></div>`;
     return `<section class="page p-tabs on"><div class="pane g2 on">
       <div class="col">
         <div class="panel grow minc" data-k="pts2"><div class="ph"><h2>Points price</h2><div class="legend">${pgKey('First wall', 'var(--s-gold)')}${pgKey('Lowest listing', 'var(--s-violet)')}</div><span class="sp"></span>${seg}</div>
@@ -456,6 +537,7 @@ function pgPoints(d, ui) {
       </div>
       <div class="col">
         <div class="panel grow" data-k="ladder"><div class="ph"><h2>The market now</h2><span class="sub">lowest first</span><span class="sp"></span>${hOut(POINTS_MARKET_URL, 'Points market', 'btn sm out')}</div><div class="pb flush"><div class="ladder">${pgLadder(v, 9)}</div></div></div>
+        ${evPanel}
         <div class="panel ${pt.hold && sell.points ? 'hold' : ''}" data-k="sell"><div class="ph"><h2>Selling your ${hNum(sell.points)} points</h2><span class="sp"></span>${pt.hold && sell.points ? '<span class="badge ahead">cheap today: hold</span>' : pt.cheap && sell.points ? '<span class="badge ahead">cheap today</span>' : ''}</div><div class="pb"><div class="rows">${sellRows}</div></div></div>
       </div></div></section>`;
 }
@@ -466,12 +548,14 @@ function pgVerdict(v) {
     const vd = v.prices.verdict;
     const c = vd.checks;
     const ck = (ok, html) => `<div class="chk ${ok ? '' : 'no'}"><span>${html}</span></div>`;
-    const btn = { 'buy-first': '<button class="btn sm" data-act="make-list">The list</button>', 'stay-buy': '<button class="btn sm" data-act="make-list">The list</button>', 'open-now': '<button class="btn sm go" data-act="set" data-id="open" data-v="1">Open the shop</button>', low: c.leaves.cap > 0 ? `<button class="btn sm" data-act="set" data-id="pct" data-v="${c.leaves.cap}">Set ${hRate(c.leaves.cap)}%</button>` : '' }[vd.state] || '';
+    const btn = { 'buy-first': '<button class="btn sm" data-act="make-list">The list</button>', 'stay-buy': '<button class="btn sm" data-act="make-list">The list</button>', 'open-now': '<button class="btn sm go" data-act="set" data-id="open" data-v="1">Open the shop</button>' }[vd.state] || '';
+    // The set that leaves least, at the rate it is paid today (its own ceiling when that is under your rate).
+    const worst = v.prices.sets.find((s) => s.label === c.leaves.name);
     const cheaper = c.cheaper.ok
         ? (c.cheaper.listings ? `${hPlural(c.cheaper.listings, 'listing')} under your price ${c.cheaper.listed >= c.cheaper.listings ? `${c.cheaper.listings === 1 ? 'is' : 'are'} <b>on your list</b>` : 'can go on your list'}. A new listing never closes the shop` : 'Nothing you need is cheaper in a bazaar')
         : `<b>${hPlural(c.cheaper.units, 'piece')}</b> you need ${c.cheaper.units === 1 ? 'is' : 'are'} cheaper in a bazaar than from your sellers${v.prices.open ? ', and have sat unbought for 10 minutes' : ''}`;
     return `<div class="verdict"><span class="lamp ${vd.lamp === 'ok' ? '' : 'warn'}"${vd.lamp === 'bad' ? ' style="background:var(--bad);box-shadow:0 0 0 4px rgba(240,96,93,.16)"' : ''}></span><b>${VERDICT_WORDS[vd.state]}</b><span class="sp"></span>${btn}</div>`
-        + (vd.state === 'no-price' ? '' : ck(c.leaves.ok, `A ${pgLow(c.leaves.name)} set bought at ${hRate(v.prices.pct)}% leaves <b>${hSigned(c.leaves.profit)}</b>${c.leaves.ok ? '' : `: under your least ${hRate(v.prices.least)}%`}`)
+        + (vd.state === 'no-price' ? '' : ck(c.leaves.ok, `A ${pgLow(c.leaves.name)} set bought at ${hRate(worst ? worst.pct : v.prices.pct)}% leaves <b>${hSigned(c.leaves.profit)}</b>${c.leaves.ok ? '' : `: under your least ${hRate(v.prices.least)}%`}`)
             + ck(c.cheaper.ok, cheaper)
             + ck(c.need.ok, c.need.ok ? `You still need <b>${hPlural(c.need.units, 'piece')}</b>` : 'You need nothing: every set is at its target')
             + ck(c.share.ok, c.share.sets == null ? 'No limit set on your share of money in sets' : c.share.ok ? `Your ${v.share.max}% share covers <b>${hPlural(c.share.sets, 'more set')}</b>` : `Your ${v.share.max}% share of money in sets and points is full`));
@@ -491,10 +575,10 @@ function pgW3b(d) {
     if (!key.set) body = '<div class="row"><span class="grow1">Paste the key you registered on TornW3B to keep your price list there at your rate, and to make a receipt for a trade.</span><button class="btn sm" data-go="settings">Settings</button></div>';
     else if (w.error) { badge = '<span class="badge bad">not read</span>'; body = `<div class="row"><span class="grow1 t-bad">${hEsc(w.error)}</span><button class="btn sm" data-act="w3b" data-v="read">Read again</button></div>`; }
     else if (!w.known) { badge = '<span class="badge">reading</span>'; body = '<div class="row"><span class="grow1 t-muted">Your list on TornW3B has not been read yet.</span></div>'; }
-    else if (w.matches) { badge = '<span class="badge ok">matches your rate</span>'; body = `<div class="row"><span class="grow1">${d.view.prices.open ? `Every piece is on it at ${hRate(d.view.prices.pct)}%.` : 'No set piece is on it: your shop is closed.'}</span></div>`; }
+    else if (w.matches) { badge = '<span class="badge ok">matches your prices</span>'; body = `<div class="row"><span class="grow1">${d.view.prices.open ? `Every piece is on it at ${d.view.prices.paid || hRate(d.view.prices.pct) + '%'}.` : 'No set piece is on it: your shop is closed.'}</span></div>`; }
     else {
         badge = `<span class="badge ahead">${hPlural(w.diff.set.length + w.diff.remove.length, 'price')} differ</span>`;
-        body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.</span>${w.sync ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
+        body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${w.waits ? ' <span class="t-muted">Written by itself when your prices are next fixed.</span>' : ''}</span>${w.sync && !w.waits ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
     }
     const listed = !key.set ? '' : w.listedUntil > d.view.at ? `Buyers see your list until ${hDay(w.listedUntil)}: TornW3B shows it for 7 days after a receipt.` : 'Buyers do not see your list: TornW3B shows it for 7 days after a receipt.';
     return `<div class="panel" data-k="w3b"><div class="ph"><h2>Your price list on TornW3B</h2><span class="sp"></span>${badge}</div><div class="pb"><div class="rows">${body}
@@ -502,21 +586,59 @@ function pgW3b(d) {
         <div class="row"><span class="grow1 t-muted">Open and Closed on TornW3B's own page is yours to press there.</span></div></div></div></div>`;
 }
 
+/**
+ * One set on "What you pay sellers": the rate it is paid today and why it is not your own (its ceiling, or a fall
+ * inside the hour), what a set costs and leaves, and - quieter - how far the ceiling is and what the other buyers
+ * pay for the whole set. The piece holding the set back is named only when its best other buyer pays over your
+ * ceiling: said, never chased.
+ */
+function pgRateRow(v, s) {
+    const pr = v.prices;
+    const why = s.down ? `, down from ${hRate(s.down.from)}% at ${hClock(s.down.at)} TCT as points fell to ${hMoney(s.down.price)},` : s.capped ? `, its ceiling under your ${hRate(s.typed)}%,` : '';
+    const o = s.others;
+    const more = [
+        s.cap > 0 && s.pct < s.cap ? `the most that keeps your ${hRate(pr.least)}% is ${hRate(s.cap)}%` : '',
+        o ? `others pay ${hRate(o.pct)}% for the set${o.pieces < o.of ? `, on the ${o.pieces} of ${o.of} pieces with a buyer seen` : ''}${v.at - o.at >= BID_OLD_MS ? `, read ${hAge(o.at, v.at)}` : ''}` : '',
+        s.short ? `${hEsc(s.short.name)}: others pay ${hPct(s.short.pct)}, over your ceiling` : '',
+    ].filter(Boolean).join(' · ');
+    return `<div class="row"><span class="grow1">A ${pgLow(s.label)} set at <b>${hRate(s.pct)}%</b>${why} costs you <b>${hMoney(s.cost)}</b> and makes ${s.points} points${more ? ` <span class="t-muted">· ${more}</span>` : ''}</span><b class="num ${s.ok ? 't-good' : s.profit < 0 ? 't-bad' : 't-warn'}">${hSigned(s.profit)} a set</b></div>`;
+}
+
+/** The hour your prices are fixed for, or why they are not, and the points price they are counted at - one row. */
+function pgRateHour(pr) {
+    const pt = pr.points;
+    const state = !pr.open ? 'Your shop is closed: this is <b>what you would pay if you opened now</b>.'
+        : !pr.fixed ? (pr.live.ok ? 'Your prices are being fixed for the hour.' : 'Not fixed yet.')
+        : pr.fixed.held ? `Your prices <b>stand still while a trade with set pieces is open</b>: their hour ended at ${hClock(pr.fixed.until)} TCT.`
+        : `<b>Fixed until ${hClock(pr.fixed.until)} TCT</b>: points moving changes nothing before then, unless your least profit would be gone.`;
+    const from = pt.from === 'usual' ? (pt.usualFrom === 'sales' ? 'what you usually sell for' : 'what points usually sell for') : pr.fixed ? 'the price when they were fixed' : "today's price";
+    const counted = !pt.price ? 'The points price has not been read yet: you pay your rate until it is.'
+        : `Counted at ${hMoney(pt.price)} a point, ${from}${pt.today && pt.today !== pt.price ? ` · ${hMoney(pt.today)} now` : ''}.`;
+    return `<div class="row"><span class="grow1">${state} <span class="t-muted">${counted}</span></span></div>`;
+}
+
 function pgPrices(d) {
     const v = d.view;
     const pr = v.prices;
     const at = (r) => Math.max(0, Math.min(100, (r - 99) / 5 * 100));
+    const paid = pr.paid || hRate(pr.pct) + '%';
     const th = pr.thread;
-    const [tcls, twords] = !th ? ['', 'no buying thread of yours found'] : th.check.state === 'rate' ? ['ahead', `the title on Torn says ${hRate(th.check.says.pct)}%`] : PG_THREAD[th.check.state];
-    const table = '<thead><tr><th>Piece</th><th class="n">Market value</th><th class="n">You pay, ' + hRate(pr.pct) + '%</th><th class="n">Best other buyer</th><th class="n">Cheapest bazaar</th></tr></thead><tbody>' + v.pieces.map((p) => `<tr><td>${pgIco(p)}<b>${hEsc(p.name)}</b></td><td class="n">${hMoney(p.mv)}</td><td class="n"><b>${hMoney(p.pay)}</b></td><td class="n">${p.other ? `<span class="${p.other.pct > pr.pct ? 't-warn' : 't-muted'}" title="${hEsc(p.other.name)}">${hPct(p.other.pct)}</span>` : '<span class="t-muted">none seen</span>'}</td><td class="n">${!p.lowBazaar ? '<span class="t-muted">none</span>' : p.lowBazaar < p.pay ? `<span class="t-warn">cheaper than you</span> <b class="t-warn">${hMoney(p.lowBazaar)}</b>` : hMoney(p.lowBazaar)}</td></tr>`).join('') + '</tbody>';
+    const [tcls, twords] = !th ? ['', 'no buying thread of yours found']
+        : th.check.state === 'rate' ? ['ahead', `the title on Torn says ${hRate(th.check.says.pct)}%`]
+        : th.check.state === 'under' ? ['ahead', `the title says ${hRate(th.check.says.pct)}%, you pay ${paid} today`]
+        : PG_THREAD[th.check.state];
+    const capOf = (p) => (pr.sets.find((s) => s.key === p.set) || {}).cap || 0;
+    const mkAt = at(pr.cap);
+    const table = '<thead><tr><th>Piece</th><th class="n">Market value</th><th class="n">You pay, ' + paid + '</th><th class="n">Best other buyer</th><th class="n">Cheapest bazaar</th></tr></thead><tbody>' + v.pieces.map((p) => `<tr><td>${pgIco(p)}<b>${hEsc(p.name)}</b></td><td class="n">${hMoney(p.mv)}</td><td class="n"><b>${hMoney(p.pay)}</b></td><td class="n">${p.other ? `<span class="${p.pay > 0 && p.other.price > p.pay ? 't-warn' : 't-muted'}" title="${hEsc(p.other.name)}${capOf(p) > 0 && p.other.pct > capOf(p) ? ' · over your ceiling' : ''}">${hPct(p.other.pct)}</span>` : '<span class="t-muted">none seen</span>'}</td><td class="n">${!p.lowBazaar ? '<span class="t-muted">none</span>' : p.lowBazaar < p.pay ? `<span class="t-warn">cheaper than you</span> <b class="t-warn">${hMoney(p.lowBazaar)}</b>` : hMoney(p.lowBazaar)}</td></tr>`).join('') + '</tbody>';
     return `<section class="page g57 stackable wide on">
     <div class="col">
       <div class="panel tint" data-k="rate"><div class="ph"><h2>What you pay sellers</h2><span class="sp"></span><span class="toggle" data-act="set" data-id="open" data-v="${pr.open ? 0 : 1}" style="cursor:pointer" title="${pr.open ? 'Close the shop' : 'Open the shop'}"><span class="sw-t"${pr.open ? '' : ' style="background:var(--faint)"'}></span><b class="${pr.open ? 't-good' : 't-muted'}">${pr.open ? 'Shop open' : 'Shop closed'}</b></span></div><div class="pb">
-        <div class="hero">${hRate(pr.pct)}%<small>of market value, every piece</small></div>
-        <div class="track" style="--w:${at(pr.pct)}%;--at:${at(pr.cap)}%"><i></i><span class="knob"></span>${pr.cap ? `<span class="mk"><span>${hRate(pr.cap)}% is the most that keeps your least profit</span></span>` : ''}<span class="lo">99%</span><span class="hi">104%</span></div>
+        <div class="hero">${paid}<small>of market value, ${pr.sets.some((s) => s.pct !== pr.sets[0].pct) ? 'each set its own' : 'every piece'}</small></div>
+        <div class="track" style="--w:${at(pr.pct)}%;--at:${mkAt}%"><i></i><span class="knob"></span>${pr.cap ? `<span class="mk${mkAt > 80 ? ' r' : mkAt < 20 ? ' l' : ''}"><span>${pr.sets.length > 1 ? 'the lower ceiling' : 'the ceiling'}</span></span>` : ''}<span class="lo">99%</span><span class="hi">104%</span></div>
         <div class="rows">
-          ${pr.sets.map((s) => `<div class="row"><span class="grow1">A ${pgLow(s.label)} set at ${hRate(pr.pct)}% costs you <b>${hMoney(s.cost)}</b> and makes ${s.points} points</span><b class="num ${s.ok ? 't-good' : s.profit < 0 ? 't-bad' : 't-warn'}">${hSigned(s.profit)} a set</b></div>`).join('')}
-          <div class="row"><span class="grow1">Your rate <span class="t-muted">· every figure ${PG_FEE} the points market may take</span></span>${pgInput('pct', hRate(pr.pct), 64, '%')}${pr.cap && pr.cap !== pr.pct ? `<button class="btn sm" data-act="set" data-id="pct" data-v="${pr.cap}">Set ${hRate(pr.cap)}%</button>` : ''}</div>
+          ${pr.sets.map((s) => pgRateRow(v, s)).join('')}
+          ${pgRateHour(pr)}
+          <div class="row"><span class="grow1">Your rate, the most you pay <span class="t-muted">· a set is paid the lower of it and its own ceiling</span></span>${pgInput('pct', hRate(pr.pct), 64, '%')}</div>
         </div>
       </div></div>
       <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
@@ -543,10 +665,25 @@ function pgLedger(d, ui) {
     const wrap = (cls, body, style = '') => `<section class="page p-tabs on"><div class="pane ${cls} on"${style ? ` style="${style}"` : ''}>${body}</div></section>`;
     const one = (k, head, sub, table, none) => wrap('g1', `<div class="panel grow" data-k="${k}"><div class="ph"><h2>${head}</h2>${sub ? `<span class="sub">${sub}</span>` : ''}</div><div class="pb flush">${table || pgNone(none)}</div></div>`);
     if (ui.pane === 1) {
-        const rows = lg.sold.map((s) => `<tr><td>${hWhen(s.t)}</td><td class="n"><b>${hNum(s.points)}</b></td><td class="n">${hMoney(s.each)}</td><td class="n">${hMoney(s.got)}</td><td class="n">${hMoney(s.cost)}</td><td class="n"><span class="${s.gain < 0 ? 't-bad' : 't-good'}">${hSigned(s.gain)}</span></td><td>${s.mug ? `<span class="t-bad">mugged ${waitWords(s.mug.after)} later: -${hMoney(s.mug.counted)}</span>` : ''}</td></tr>`).join('');
-        const all = lg.sold.reduce((a, s) => ({ points: a.points + s.points, got: a.got + s.got, gain: a.gain + s.gain }), { points: 0, got: 0, gain: 0 });
-        const foot = all.points ? `<tr class="sum"><td>Every lot</td><td class="n">${hNum(all.points)}</td><td class="n">${hMoney(all.got / all.points)}</td><td class="n">${hMoney(all.got)}</td><td class="n">${hMoney((all.got - all.gain) / all.points)}</td><td class="n">${hSigned(all.gain)}</td><td>${lg.mugs.counted ? `less buy-mugs: ${hSigned(all.gain - lg.mugs.counted)}` : ''}</td></tr>` : '';
-        return one('sold', 'Every lot of points you sold', 'the only place profit is counted', rows && `<table class="t"><thead><tr><th>When</th><th class="n">Lot</th><th class="n">Price each</th><th class="n">You got</th><th class="n">Cost a point then</th><th class="n">Profit</th><th>Then</th></tr></thead><tbody>${rows}${foot}</tbody></table>`, 'No points sold yet.');
+        // `about`: a part of the lot's cost was an estimate (pieces never seen bought). `before`: points of the lot
+        // that were yours before the book began - sold, and counted for nothing: shown, so the page adds up to
+        // what you received.
+        const then = (s) => [s.before ? `<span class="t-muted">+ ${hNum(s.before)} held before: ${hMoney(s.beforeGot)}, not counted</span>` : '', s.mug ? `<span class="t-bad">mugged ${waitWords(s.mug.after)} later: -${hMoney(s.mug.counted)}</span>` : ''].filter(Boolean).join(' · ');
+        const rows = lg.sold.map((s) => `<tr><td>${hWhen(s.t)}</td><td class="n"><b>${hNum(s.points)}</b></td><td class="n">${hMoney(s.each)}</td><td class="n">${hMoney(s.got)}</td><td class="n">${s.points ? (s.about ? '<span class="t-muted">about</span> ' : '') + hMoney(s.cost) : ''}</td><td class="n">${s.points ? `<span class="${s.gain < 0 ? 't-bad' : 't-good'}">${s.about ? 'about ' : ''}${hSigned(s.gain)}</span>` : ''}</td><td>${then(s)}</td></tr>`).join('');
+        const all = lg.sold.reduce((a, s) => ({ points: a.points + s.points, got: a.got + s.got, gain: a.gain + s.gain, about: a.about || s.about }), { points: 0, got: 0, gain: 0, about: false });
+        const bf = lg.before;
+        const foot = (all.points ? `<tr class="sum"><td>Every lot</td><td class="n">${hNum(all.points)}</td><td class="n">${hMoney(all.got / all.points)}</td><td class="n">${hMoney(all.got)}</td><td class="n">${hMoney((all.got - all.gain) / all.points)}</td><td class="n">${all.about ? 'about ' : ''}${hSigned(all.gain)}</td><td>${lg.mugs.counted ? `less buy-mugs: ${hSigned(all.gain - lg.mugs.counted)}` : ''}</td></tr>` : '')
+            + (bf.points ? `<tr><td class="t-muted">Held before, not counted</td><td class="n t-muted">${hNum(bf.points)}</td><td></td><td class="n t-muted">${hMoney(bf.got)}</td><td></td><td></td><td></td></tr><tr class="sum"><td>You received in all</td><td class="n">${hNum(all.points + bf.points)}</td><td></td><td class="n">${hMoney(all.got + bf.got)}</td><td></td><td></td><td></td></tr>` : '');
+        return one('sold', 'Every lot of points you sold', `profit is counted on the points made from sets${all.about ? ' · "about": a part of their cost was an estimate' : ''}`, rows && `<table class="t"><thead><tr><th>When</th><th class="n">Lot</th><th class="n">Price each</th><th class="n">You got</th><th class="n">Cost a point then</th><th class="n">Profit</th><th>Then</th></tr></thead><tbody>${rows}${foot}</tbody></table>`, 'No points sold yet.');
+    }
+    if (ui.pane === 6) {
+        // Pieces that left as themselves: each its own profit or loss against what it had cost you (1.3.0; until
+        // then such a piece left your stock at its average cost and the money was nowhere).
+        const where = { bazaar: 'Your bazaar', market: 'Item Market', trade: 'A trade' };
+        const dr = lg.direct;
+        const rows = dr.rows.map((r) => `<tr><td>${hWhen(r.t)}</td><td>${pgItem(v, r.itemId, r.name)}<b>${hEsc(r.name)}</b></td><td>${r.give ? 'Given away' : where[r.venue] || hEsc(r.venue || '')}</td><td class="n">${hNum(r.qty)}</td><td class="n">${r.give ? '' : hMoney(r.got)}</td><td class="n">${r.est >= BOOK_ABOUT ? '<span class="t-muted">about</span> ' : ''}${hMoney(r.cost)}</td><td class="n">${r.give ? '<span class="t-muted">not counted</span>' : `<span class="${r.gain < 0 ? 't-bad' : 't-good'}">${r.est >= BOOK_ABOUT ? 'about ' : ''}${hSigned(r.gain)}</span>`}</td></tr>`).join('');
+        const foot = dr.units ? `<tr class="sum"><td colspan="3">Every piece sold</td><td class="n">${hNum(dr.units)}</td><td class="n">${hMoney(dr.got)}</td><td class="n">${hMoney(dr.cost)}</td><td class="n">${hSigned(dr.gain)}</td></tr>` : '';
+        return one('direct', 'Pieces sold as themselves', `each against what it had cost you${dr.given ? ` · ${hPlural(dr.given, 'piece')} given away, ${hMoney(dr.givenCost)} of cost: shown, not counted` : ''}`, rows && `<table class="t"><thead><tr><th>When</th><th>Piece</th><th>Where</th><th class="n">Units</th><th class="n">You got</th><th class="n">It had cost</th><th class="n">Profit</th></tr></thead><tbody>${rows}${foot}</tbody></table>`, 'No set piece sold or given away as itself yet. One sold in your bazaar, on the Item Market or in a trade shows here, with its own profit or loss.');
     }
     if (ui.pane === 2) {
         const rows = lg.buys.slice(0, 120).map((b) => `<tr><td>${hWhen(b.t)}</td><td>${pgItem(v, b.itemId, b.name)}<b>${hEsc(b.name)}</b></td><td>${b.venue === 'trade' ? 'Trade with ' + hEsc(b.who || 'a seller') : (PG_VENUE[b.venue] || hEsc(b.venue)) + (b.venue === 'bazaar' && b.who ? ' · ' + hEsc(b.who) : '')}</td><td class="n">${hNum(b.qty)}</td><td class="n">${hMoney(b.each)}</td><td class="n"><b>${hMoney(b.paid)}</b></td><td><span class="t-muted">${b.rate ? hPct(b.rate) : ''}</span></td></tr>`).join('');
@@ -573,11 +710,11 @@ function pgLedger(d, ui) {
         <div class="panel tile"><div class="k-l">Points sold</div><div class="k-v">${hMoney(sum.got)}</div><div class="k-s">${sum.points ? `${hNum(sum.points)} points · average ${hMoney(sum.got / sum.points)}` : 'none in 14 days'}</div></div>
         <div class="panel tile"><div class="k-l">less what they cost you</div><div class="k-v">${hMoney(sum.cost)}</div><div class="k-s">${sum.points ? `average ${hMoney(sum.cost / sum.points)} a point` : ''}</div></div>
         <div class="panel tile"><div class="k-l">less buy-mugs</div><div class="k-v"${sum.mug ? ' style="color:#ff8a87"' : ''}>${hMoney(-sum.mug)}</div><div class="k-s"><b>${lg.mugs.rows.length - lg.mugs.left}</b> counted · ${lg.mugs.left} left out</div></div>
-        <div class="panel tile tint"><div class="k-l">Profit, 14 days</div><div class="k-v ${sum.profit >= 0 ? 'good' : ''}"${sum.profit < 0 ? ' style="color:#ff8a87"' : ''}>${hSigned(sum.profit)}</div><div class="k-s">counted only when points sell</div></div>
-        <div class="panel tile"><div class="k-l">Not sold yet</div><div class="k-v">${hMoney(lg.notSold)}</div><div class="k-s">pieces, sets and ${hNum(lg.notSoldPoints)} points, at ${lg.poolEst ? 'about their ' : ''}cost</div></div>
+        <div class="panel tile tint"><div class="k-l">Profit, 14 days</div><div class="k-v ${sum.profit >= 0 ? 'good' : ''}"${sum.profit < 0 ? ' style="color:#ff8a87"' : ''}>${sum.about ? '<small>about</small> ' : ''}${hSigned(sum.profit)}</div><div class="k-s">${sum.direct ? `of it <b>${hSigned(sum.direct)}</b> from pieces sold as themselves` : 'counted when points sell'}${sum.about ? ' · about: a part of the cost behind it is an estimate' : ''}</div></div>
+        <div class="panel tile"><div class="k-l">Not sold yet, at ${lg.poolEst || lg.estLeft >= BOOK_ABOUT ? 'about its ' : ''}cost</div><div class="k-v">${hMoney(lg.notSold)}</div><div class="k-s">${hNum(lg.poolUnits)} pieces and ${hNum(lg.notSoldPoints)} points${lg.notSoldWorth ? ` · worth <b>${hMoney(lg.notSoldWorth)}</b> today: <b class="${lg.notSoldDiff < 0 ? 't-bad' : 't-good'}">${hSigned(lg.notSoldDiff)}</b>` : ''}</div></div>
       </div>
       <div class="g2" style="display:grid;gap:12px;min-height:0">
-        <div class="panel grow minc" data-k="profit"><div class="ph"><h2>Profit by ${ui.unit}</h2><div class="legend">${pgKey('Points sold', 'var(--good)', 1)}${pgKey('Buy-mug', 'var(--bad)', 1)}</div><span class="sp"></span><div class="seg">${PG_UNITS.map(([u, label]) => `<button data-act="unit" data-v="${u}"${ui.unit === u ? ' class="on"' : ''}>${label}</button>`).join('')}</div></div><div class="pb"><div class="chart" data-chart="profit"></div></div></div>
+        <div class="panel grow minc" data-k="profit"><div class="ph"><h2>Profit by ${ui.unit}</h2><div class="legend">${pgKey('Points sold', 'var(--good)', 1)}${lg.direct.rows.length ? pgKey('Pieces sold', 'var(--s-violet)', 1) : ''}${pgKey('Buy-mug', 'var(--bad)', 1)}</div><span class="sp"></span><div class="seg">${PG_UNITS.map(([u, label]) => `<button data-act="unit" data-v="${u}"${ui.unit === u ? ' class="on"' : ''}>${label}</button>`).join('')}</div></div><div class="pb"><div class="chart" data-chart="profit"></div></div></div>
         <div class="col">
           <div class="panel grow minc" data-k="cum"><div class="ph"><h2>Running total</h2><span class="sp"></span><span class="sub">14 days</span></div><div class="pb"><div class="chart" data-chart="cum"></div></div></div>
         </div>
@@ -612,12 +749,15 @@ const PG_KEYS = [
 
 function pgKeyBox([kind, title, rows], d) {
     const k = (d.keys && d.keys[kind]) || {};
-    const badge = !k.set ? '<span class="badge">not set</span>' : k.error ? `<span class="badge bad">${hEsc(k.error)}</span>` : k.ok ? '<span class="badge ok">working</span>' : '<span class="badge">checking</span>';
+    // What a key's owner said against it stands on a line of its own: in the badge it was cut off under the next
+    // panel. The badge never says "working" while the key is refused (1.3.0, TornW3B's 403).
+    const badge = !k.set ? '<span class="badge">not set</span>' : k.error ? '<span class="badge bad">not working</span>' : k.ok ? '<span class="badge ok">working</span>' : '<span class="badge">checking</span>';
     const box = k.set
         ? `<span class="inp key"${k.shown ? ' style="letter-spacing:0;color:var(--text)"' : ''}>${k.shown ? hEsc(k.shown) : '••••••••••••••••'}</span><button class="btn" data-act="key-show" data-v="${kind}">${k.shown ? 'Hide' : 'Show'}</button><button class="btn" data-act="key-forget" data-v="${kind}">Forget</button>`
         : `<input class="inp key" type="password" data-key="${kind}" placeholder="Paste it here" autocomplete="off" spellcheck="false" style="letter-spacing:0"><button class="btn go" data-act="key-save" data-v="${kind}">Save</button>`;
     return `<div class="panel" data-k="key-${kind}"><div class="ph"><h2>${title}</h2><span class="sp"></span>${badge}</div><div class="pb">
           <div style="display:flex;gap:8px">${box}</div>
+          ${k.set && k.error ? `<div class="wl-s t-bad" style="padding:8px 0 0">${hEsc(k.error[0].toUpperCase() + k.error.slice(1))}.${kind === 'w3b' ? ' TornW3B is not asked with it again until you change it.' : ''}</div>` : ''}
           <table class="t kv" style="margin-top:10px">${rows.map(([th, td]) => `<tr><th>${th}</th><td>${td}</td></tr>`).join('')}</table>
         </div></div>`;
 }
@@ -680,7 +820,7 @@ function pgSettings(d, ui) {
     </div></section>`;
     }
     return `<section class="page p-tabs on"><div class="pane g1 on" style="grid-template-rows:auto minmax(0,1fr)">
-      <div class="tiles" style="--n:5">
+      <div class="tiles five">
         ${PG_KEYS.map((k) => pgKeyBox(k, d)).join('')}
         ${pgServer(d)}
         <div class="panel" data-k="help"><div class="ph"><h2>Help</h2><span class="sp"></span><span class="sub">${d.version ? 'Torn Archive ' + hEsc(d.version) : ''}</span></div><div class="pb"><div class="rows">
@@ -748,7 +888,8 @@ export function hubChart(name, d, ui) {
     if (name === 'profit') {
         const b = ui.unit === 'week' ? v.ledger.weeks : ui.unit === 'month' ? v.ledger.months : v.ledger.days;
         const x = b.map((k) => (ui.unit === 'month' ? PG_MONTH[new Date(k.start).getUTCMonth()] : ui.unit === 'week' ? pgWeek(k) : hDay(k.day)));
-        return col({ x, yfmt: hShort, none: 'Profit is counted when points sell: none sold yet.', series: [{ name: 'Points sold', color: 'var(--good)', data: b.map((k) => k.sold) }, { name: 'Buy-mug', color: 'var(--bad)', data: b.map((k) => k.mug) }] });
+        const direct = v.ledger.direct.rows.length ? [{ name: 'Pieces sold', color: 'var(--s-violet)', data: b.map((k) => k.direct) }] : [];
+        return col({ x, yfmt: hShort, none: 'Profit is counted when points sell: none sold yet.', series: [{ name: 'Points sold', color: 'var(--good)', data: b.map((k) => k.sold) }, ...direct, { name: 'Buy-mug', color: 'var(--bad)', data: b.map((k) => k.mug) }] });
     }
     if (name === 'cum') return line({ x: v.ledger.days.map((k) => hDay(k.day)), zero: true, yfmt: hShort, right: 62, series: [{ name: 'Running total', color: 'var(--s-aqua)', data: v.ledger.cum, area: true }] });
     if (name === 'held') return line({ x: v.points.heldDays.map((k) => hDay(k.day)), zero: true, yfmt: count, left: 44, right: 44, series: [{ name: 'Points held', color: 'var(--s-gold)', data: v.points.heldDays.map((k) => k.left), area: true }] });

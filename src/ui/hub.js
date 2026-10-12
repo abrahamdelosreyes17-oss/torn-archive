@@ -24,6 +24,8 @@ a.btn { text-decoration: none; }
 const HUB_BOOL = new Set(['open', 'fillMuseum', 'fillPoints', 'sound', 'w3bSync']);
 const HUB_NUM = new Set(['pct', 'least', 'target', 'shareMax', 'readMin', 'beforeEach']);
 const HUB_PIN_KEY = 'tarc-pin';
+/** The piece open on "Sold by" is named to the engine when it changes, and again this often while it stays open. */
+const HUB_LOOK_EVERY_MS = 60 * 1000;
 const HUB_TITLE = 'Torn Archive';
 
 function hubShell() {
@@ -62,7 +64,7 @@ function hubShell() {
  * Put the hub on a document and return its handle.
  * @param doc     the document to take over
  * @param actions what a press asks of the engine: set(patch), cart(itemId, place), drop(lineKey), makeList(),
- *                clearList(), run('start' | 'next' | 'stop'), read(), copy(text), keySave(kind, value), keyForget(kind),
+ *                clearList(), run('start' | 'next' | 'stop'), read(), readStock(), copy(text), keySave(kind, value), keyForget(kind),
  *                keyShow(kind), zip(), w3b('send' | 'read'), receipt(tradeId), usageExport(), notifyTest(), here()
  * @returns { show(desk), toast({ title, body, tradeId }), go(page, pane) }
  */
@@ -81,6 +83,7 @@ export function mountHub(doc, actions) {
     let tabsShown = '';
     let toastTrade = null;
     let toastT = 0;
+    let looked = { id: '', at: 0 };
     const view = $('#view');
     const app = $('#app');
     const side = $('#side');
@@ -168,7 +171,7 @@ export function mountHub(doc, actions) {
         cnt('trades', v.nav.trades ? v.nav.trades + ' open' : '', true);
         $('#nav-pip').hidden = !v.nav.hot;
         $('#shop').classList.toggle('shut', !v.shop.open);
-        $('#shop-l').innerHTML = `Shop <b>${v.shop.open ? 'Open' : 'Closed'}</b> · ${hRate(v.shop.pct)}%`;
+        $('#shop-l').innerHTML = `Shop <b>${v.shop.open ? 'Open' : 'Closed'}</b> · ${v.shop.paid || hRate(v.shop.pct) + '%'}`;
         const pts = $('#pill-pts');
         const ptsHtml = v.top.points ? `Points <b class="num">${hMoney(v.top.points)}</b>${v.top.cheap ? '<span class="dn">▼ under its usual level</span>' : ''}` : 'Points <b>not read</b>';
         if (pts._src !== ptsHtml) {
@@ -222,8 +225,13 @@ export function mountHub(doc, actions) {
         if (!desk) return;
         drawShell();
         const html = hubPage(desk, ui);
-        // The piece whose sellers are on the screen: its bazaars are checked with Torn itself (told at most once a minute).
-        if (ui.page === 'buy' && ui.shown) act('look', ui.shown);
+        // The piece whose sellers are on the screen: its bazaars are checked with Torn itself. Told when the piece
+        // changes and once a minute while it stays - never on every draw: until 1.3.0 the telling asked for a draw,
+        // and the Buy page drew itself without end.
+        if (ui.page === 'buy' && ui.shown) {
+            const t = Date.now();
+            if (looked.id !== ui.shown || t - looked.at >= HUB_LOOK_EVERY_MS) { looked = { id: ui.shown, at: t }; act('look', ui.shown); }
+        } else looked = { id: '', at: 0 };
         if (!fresh && html === shown) { drawCharts(false); return; }
         shown = html;
         const whole = patch(html, fresh);
@@ -274,7 +282,7 @@ export function mountHub(doc, actions) {
         if (a === 'set') act('set', { [id]: setValue(id, v) });
         else if (a === 'which') { const which = { ...desk.view.settings.which }; which[v] = !which[v]; act('set', { which }); }
         else if (a === 'pick') { ui.sel = id; const p = desk.view.pieces.find((x) => String(x.id) === id); go('buy', p && p.need ? 0 : 1); }
-        else if (a === 'sel') { ui.sel = id; act('look', id); draw(false); }
+        else if (a === 'sel') { ui.sel = id; draw(false); }
         else if (a === 'trade') { ui.trade = id; draw(false); }
         else if (a === 'range') { ui.range[id] = Number(v); draw(false); }
         else if (a === 'unit') { ui.unit = v; draw(false); }
@@ -303,6 +311,7 @@ export function mountHub(doc, actions) {
         else if (a === 'usage-export') act('usageExport');
         else if (a === 'notify-test') act('notifyTest');
         else if (a === 'read') act('read');
+        else if (a === 'read-stock') { act('readStock'); const was = el.textContent; el.textContent = 'Asked ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
         else if (a === 'here') act('here');
         if (el.tagName !== 'A') e.preventDefault();
     }

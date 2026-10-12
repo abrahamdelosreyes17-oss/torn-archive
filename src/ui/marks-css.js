@@ -253,8 +253,12 @@ export const MARKS_CSS = `
 }
 
 /*
- * The listing a link of ours named (the hub's "Sold by", a stop of your run): it pulses until you press anything.
- * An outline, so it takes no room and leaves the ring's own paint alone.
+ * A listing that pulses: an outline, so it takes no room, catches no click and leaves the ring's own paint alone.
+ *   data-tarc-pulse="link"  the listing a link of ours named (the hub's "Sold by", a stop of your run), until you
+ *                           press anything
+ *   data-tarc-pulse="buy"   a listing still to buy here, once you pressed Fill or Fill all (1.3.0: "can it
+ *                           pulsate a bit? on the items i need to buy"), until it is bought
+ *   data-tarc-pulse="aim"   the listing the Down key, or a buy, brought you to: for a few seconds
  */
 [data-tarc-pulse] { outline: 2px solid rgba(90, 167, 255, 0.95); outline-offset: 1px; animation: tarc-pulse 1.1s ease-in-out infinite; }
 @keyframes tarc-pulse { 0%, 100% { outline-color: rgba(90, 167, 255, 0.95); outline-offset: 1px; } 50% { outline-color: rgba(90, 167, 255, 0.25); outline-offset: 5px; } }

@@ -138,7 +138,7 @@ export function fixtureInput(now = Date.UTC(2026, 9, 10, 14, 30), over = {}) {
         held: (id) => HELD[id] || 0, stockAt: now - 20 * MIN,
         mv: (id) => MV[id] || 0,
         offers: (id) => offers[id] || [], pricesAt: now - 12000,
-        topBid: (id) => ({ pct: 97 + Math.round(R2() * 45) / 10, name: SELLERS[id % 9][0] }),
+        topBid: (id) => { const p = 97 + Math.round(R2() * 45) / 10; return { pct: p, name: SELLERS[id % 9][0], price: Math.round((MV[id] || 0) * p / 100), at: now - 20 * MIN }; },
         listings, pointsAt: now - 12000, days, wallDays,
         lots, mineLots: [{ points: 150, wait: 17 * MIN }, { points: 100, wait: 6 * MIN }, { points: 150, wait: 14 * MIN }, { points: 100, wait: 8 * MIN }, { points: 200, wait: 22 * MIN }, { points: 200, wait: 19 * MIN }, { points: 250, wait: 34 * MIN }],
         pool, book, mugs, outs,

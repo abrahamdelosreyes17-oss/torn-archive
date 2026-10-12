@@ -17,8 +17,22 @@
 // On a bazaar the box is a checklist: what to buy here, what you hold of each piece, and a tick the moment you
 // buy. The listings to buy are ringed as Torn Trading rings one. "Fill all" is one press of yours: from then on,
 // on that page, each listing's number is typed into its own quantity box - the ones that are open now, and each
-// other one as you open it or scroll to it (Torn draws only the listings near the screen, and the script never
-// scrolls for you). You press Buy on each. Typing sends nothing to Torn.
+// other one as you open it or scroll to it (Torn draws only the listings near the screen). You press Buy on each.
+// Typing sends nothing to Torn.
+//
+// 1.3.0. The page is moved for you in two cases only, and only within what Torn has drawn: after a buy of yours
+// the next listing to buy here is brought into view ("automatically puts me to the next item"), and the Down key
+// does the same on your press. The listings still to buy pulse once you have pressed Fill or Fill all. The keys,
+// on a bazaar or the Item Market while something of yours is to buy there, and never while you type: Up = Fill
+// all, Down = the next listing to buy, Right or N = the next bazaar.
+//
+// A buy is never counted at the press of Torn's Buy. It is counted when the page shows the sale: the listing's
+// stock fell (by no more than the number in the box at the press), or the listing left the page and another
+// listing - or the list itself - has stood in its place for a moment. While anything else stands there (a step of
+// Torn's own between Buy and the sale: never read on a real page) nothing is counted, and what stands there is
+// written to the log once, so a zip shows it. With a Full key Torn's own log is the judge either way: it is asked
+// a few seconds after the press (engine.js note 'press'), and a page buy it does not have is taken back
+// (engine/state.js judgeSeen).
 
 import { gmGet, gmSet, gmOnChange, gmCopy, gmOpenTab } from '../platform/gm.js';
 import { MARKS_CSS } from './marks-css.js';
@@ -35,7 +49,7 @@ import { bazaarUrl } from '../core/feed.js';
 import { buildItemIndex, findItemByName } from '../core/items.js';
 import { stockBuys } from '../core/accepted.js';
 import { SETS, threadCheck, isBuyingTitle } from '../core/sets.js';
-import { IM_PLACE } from '../core/shopping.js';
+import { IM_PLACE, runLocal } from '../core/shopping.js';
 import { tradingOnPage, shouldMarkSeen, TRADING_SEEN_KEY, TRADING_LOOK_EVERY_MS, TRADING_HOST_IDS } from '../core/turns.js';
 
 /** What the Archive's own tab shares with Torn's tabs: { at, v } (core/view.js viewForTabs). */
@@ -82,9 +96,56 @@ export function shopSeen(listings) {
 export function pendLeft(pend, taken, viewAt) {
     return (pend || []).filter((p) => !taken.has(p.nid) && !(viewAt - p.t > TP_PEND_MS));
 }
+
+/** The presses of Start, Next and Stop in the box that the hub has not taken yet: [{ nid, op, place, t }]. Every Torn tab reads them. */
+export const BOX_PRESSES_KEY = 'boxPresses';
+/** Such a press not taken after this long is said in the box, with Open. */
+export const TP_LATE_MS = 4000;
+/** A view the hub worked out this long after a press that still does not name it never will: the press is let go. */
+const TP_PRESS_VIEW_MS = 30 * 1000;
+
+/**
+ * The box's presses of the run still waiting for the hub: not named by its view (`taken`), not older than a note is
+ * kept, and not passed over by a view worked out well after them.
+ */
+export function pressesLeft(list, taken, now, viewAt = 0) {
+    return (Array.isArray(list) ? list : []).filter((p) => p && p.nid && !taken.has(p.nid) && now - p.t < NOTES_KEEP_MS && !(viewAt - p.t > TP_PRESS_VIEW_MS));
+}
+
+/** The view with those presses applied to its run, so the box answers a press at once (core/shopping.js runLocal). */
+export function viewWithPresses(v, presses) {
+    if (!v || !presses || !presses.length) return v;
+    let run = v.buy.run;
+    for (const p of presses) run = runLocal(run, p.op, p.place || null);
+    return { ...v, buy: { ...v.buy, run } };
+}
+
+/**
+ * Did exactly one listing leave a page that did not move? `prev` and `cur` are the items on the page in page order
+ * (one id a picture). Yes when `cur` is `prev` without one of them - with, where Torn draws only the listings near
+ * the screen, the next ones drawn at its end. A sort or a filter (the order changes, or many go) proves nothing.
+ * @returns { at, id } the one that left, or null
+ */
+export function oneRemoved(prev, cur) {
+    if (!Array.isArray(prev) || !Array.isArray(cur) || !prev.length || cur.length < prev.length - 1) return null;
+    let i = 0;
+    while (i < prev.length && i < cur.length && prev[i] === cur[i]) i += 1;
+    if (i >= prev.length) return null;
+    for (let k = i + 1; k < prev.length; k += 1) if (prev[k] !== cur[k - 1]) return null;
+    return { at: i, id: prev[i] };
+}
 /** After a press on Torn's page it is looked at again this soon, and once more: Torn redraws in steps. */
 const TP_AFTER_PRESS_MS = [150, 700];
 const TP_SCAN_MS = 250;
+/**
+ * A listing that left the page is called gone when another listing, or the list itself, has stood in its place for
+ * this long: a list Torn draws again in one go is back well within it.
+ */
+const TP_GONE_MS = 800;
+/** A bazaar's page with no item on it at all for this long, fully loaded: told to the hub as empty. */
+const TP_EMPTY_MS = 5000;
+/** The listing the Down key brought you to pulses for this long. */
+const TP_AIM_MS = 4000;
 const TP_DONE_MS = 4000;
 /** Torn Trading's panel is looked at this often while it is on the page: it can be moved, folded, or come later. */
 const TP_OTHER_MS = 1000;
@@ -148,6 +209,15 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         live: null, stockOut: null, stockHtml: '', stockOpen: gmGet('stockOpen', true) !== false, stockPos: gmGet(TS_POS_KEY, null),
         // The listing a link of ours named: brought into view once, pulsing until you press anything.
         arrived: '', pulseOff: '',
+        // The view with the box's own presses of the run applied, and whether one of them still waits for the hub.
+        v: null, late: false,
+        // The items on the page in page order at the last look, and where the page stood then: a listing that
+        // leaves a page that did not move was sold. `goneHere`: the pieces proven gone from this bazaar (or marked
+        // so by you), `goneCand` one that is being confirmed.
+        pics: [], lookAt: 0, lookY: 0, lookW: 0, lookH: 0, goneHere: new Map(), goneCand: null, goneT: 0, backSeen: new Set(),
+        emptyAt: 0, emptySaid: false, searchEl: null, pressSaid: 0,
+        // The listings to buy pulse (Fill or Fill all was pressed here); the one a key or a buy brought you to.
+        pulsing: false, aimKey: '', aimAt: 0, wantNext: false, waits: 0,
         open: gmGet('boxOpen', true) !== false, openAny: gmGet('boxOpenAny', false) === true, pinned: false, room: true, timer: 0,
         content: null, has: false, pos: gmGet(TP_POS_KEY, null), strips: { left: null, right: null }, mid: 0, at: null, other: '', drawn: '',
     };
@@ -440,24 +510,77 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (el.getAttribute('data-tarc-ring') !== ring) el.setAttribute('data-tarc-ring', ring);
     }
 
+    /** What stands in an element, for the log: its class names two deep, its buttons' words, its first words. */
+    function shapeOf(el) {
+        if (!el || !el.tagName) return 'nothing';
+        const cls = (x) => String((x.className && x.className.baseVal != null ? x.className.baseVal : x.className) || '').replace(/\s*tarc-\S+/g, '').trim() || String(x.tagName).toLowerCase();
+        const kids = [...el.children].slice(0, 4).map((k) => cls(k) + (k.children.length ? ' > ' + [...k.children].slice(0, 4).map(cls).join(', ') : '')).join(' | ');
+        const buttons = [...el.querySelectorAll('button, [role="button"], a')].slice(0, 5).map((b) => String(b.getAttribute('aria-label') || b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24)).filter(Boolean).join(', ');
+        const words = String(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        return `${cls(el)}: ${kids || 'no element in it'}${buttons ? ' · buttons: ' + buttons : ''}${words ? ' · words: ' + words : ''}`;
+    }
+
     /**
-     * A listing that is gone was bought by you only when you pressed in its tile a moment ago AND it would still be
-     * on the screen where it stood: Torn takes the listings you scroll away from out of the page itself, and a
-     * filter or a sort takes many out at once.
+     * What stands where a listing you pressed Buy on stood:
+     *   'held'  its own tile, with its card or its buy form: opened, not bought out;
+     *   'gone'  another listing of this page, or the list itself: the listing left;
+     *   'away'  that place is out of the window (you scrolled: Torn takes such listings out of the page itself);
+     *   'step'  anything else - its tile with neither card nor form, a box over the page, a list drawn anew. Torn's
+     *           own step between Buy and the sale was never read on a real page, so nothing is concluded from it.
+     */
+    function standsThere(p) {
+        if (tileHolds(p.tile)) return { state: 'held', el: p.tile };
+        if (p.tile && p.tile.isConnected) {
+            const r = p.tile.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return { state: 'step', el: p.tile };
+        }
+        const x = p.left + p.w / 2 - (win.scrollX - p.x);
+        const y = p.top + p.h / 2 - (win.scrollY - p.y);
+        if (!(x >= 0 && x < win.innerWidth && y >= 0 && y < win.innerHeight)) return { state: 'away', el: null };
+        const stack = doc.elementsFromPoint ? doc.elementsFromPoint(x, y) : [doc.elementFromPoint(x, y)];
+        const at = stack.find((el) => el && el.id !== 'tarc-host' && !(el.classList && el.classList.contains('tarc-setmark'))) || null;
+        // The list it stood in is no longer on the page, or something lies over it: not known.
+        if (!at || !p.list || !p.list.isConnected || !(at === p.list || p.list.contains(at))) return { state: 'step', el: at };
+        const tiles = st.tiles.filter((x2) => x2.tile && x2.tile.isConnected);
+        // Another listing of this page stands there, or the list's own ground while it still holds listings (a list
+        // with none may be one Torn is drawing again: that proves nothing).
+        const other = tiles.some((x2) => x2.tile === at || x2.tile.contains(at));
+        return other || (at === p.list && tiles.length > 0) ? { state: 'gone', el: at } : { state: 'step', el: at };
+    }
+
+    /**
+     * The listings you pressed Torn's Buy on that are gone: key -> the number in the box at the press, the most you
+     * can have taken. Never at the press itself, and never while Torn's own step may still stand there (until 1.3.0
+     * "its tile holds neither card nor form" was read as bought: all 56 buys the page reported on 2026-10-11 came
+     * from that rule, ten of them were in no log of Torn's, one of them four times over). A filter or a sort takes
+     * many listings out at once: nothing is concluded from that either.
      */
     function pressedGone(t, images) {
         const keys = new Map();
         const many = st.images - images > 1;
+        let again = false;
         for (const [k, p] of st.pressed) {
             if (t - p.at > TP_PRESS_MS) { st.pressed.delete(k); continue; }
-            // Its tile is still on the page, with its card or its buy form: opened, not bought out.
-            if (tileHolds(p.tile)) continue;
             // Only Torn's own Buy, pressed in the open form, buys: the number in its box then is the most you took.
             if (!p.buy || !(p.typed > 0)) continue;
-            const top = p.top - (win.scrollY - p.y);
-            if (!many && top > -p.h && top < win.innerHeight) keys.set(k, p.typed);
+            const s = standsThere(p);
+            if (s.state !== 'gone' || many) {
+                p.goneAt = 0;
+                if (s.state === 'step') say('step:' + k, 'After your press of Buy something that is no listing stands in its place: nothing is counted from it', 'what stands there: ' + shapeOf(s.el));
+                else if (s.state === 'held' && !buyBox(p.tile) && !p.tile.querySelector('img[src*="/images/items/"]')) say('held:' + k, 'After your press of Buy its buy form stands without a number box', 'what stands there: ' + shapeOf(p.tile));
+                continue;
+            }
+            if (!p.goneAt) { p.goneAt = t; again = true; continue; }
+            if (t - p.goneAt >= TP_GONE_MS) keys.set(k, p.typed); else again = true;
         }
+        if (again) lookIn(TP_GONE_MS + 60);
         return keys;
+    }
+
+    /** One more look at the page after `ms`, though nothing on it changes meanwhile. One timer for all who ask. */
+    function lookIn(ms) {
+        if (st.goneT) return;
+        st.goneT = win.setTimeout(() => { st.goneT = 0; later(0); }, ms);
     }
 
     /** Fill all, while it is on: each listing's number into its own open box, once (again only when the number changed and you left ours). */
@@ -502,38 +625,105 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         st.tiles = listings.map((c) => { const tile = c.menu ? c.el : listingTile(c.el); return { tile, input: buyBox(tile) }; });
         const t = now();
         // Another place: nothing seen at the last one is carried over, and Fill all is off.
-        if (st.seenPlace !== place) { st.seen = {}; st.seenPlace = place; st.pressed.clear(); st.took = {}; st.said.clear(); st.images = 0; fillAllOff(); }
-        const images = doc.querySelectorAll('img[src*="/images/items/"]').length;
-        // What you took: a listing's stock that dropped while you were here, or a listing you pressed in that is gone.
+        if (st.seenPlace !== place) {
+            st.seen = {}; st.seenPlace = place; st.pressed.clear(); st.took = {}; st.said.clear(); st.images = 0; fillAllOff();
+            st.pics = []; st.lookAt = 0; st.goneHere.clear(); st.goneCand = null; st.emptyAt = 0; st.emptySaid = false; st.searchEl = null;
+            st.pulsing = false; st.aimKey = ''; st.wantNext = false;
+        }
+        const pics = [...doc.querySelectorAll('img[src*="/images/items/"]')].map((img) => (String(img.getAttribute('src') || '').match(/\/images\/items\/(\d+)\//) || [])[1] || '');
+        const images = pics.length;
+        // What you took: a listing's stock that dropped after your press of Buy on it, or a listing you pressed Buy
+        // on that left the page.
         const before = st.seen;
         const goneNow = pressedGone(t, images);
-        const r = stockBuys(before, listings, goneNow, new Set(st.pressed.keys()));
-        // A listing whose tile is still there but says nothing just now (Torn's own words after a buy stand in
-        // it): its last stock is kept, so the buy shows as that stock falling when the card is back.
-        for (const [k, p] of st.pressed) if (!r.seen[k] && before[k] && tileHolds(p.tile)) r.seen[k] = before[k];
+        // A stock that fell is yours only on a listing you pressed Torn's Buy on, and for no more than the number in
+        // its box then: other buyers take from the same listing while you have it open. (The Item Market's buy step
+        // has no form this script knows by name: a press in the listing counts there, as it did.)
+        const pressedIn = new Map();
+        for (const [k, p] of st.pressed) {
+            if (p.buy && p.typed > 0) pressedIn.set(k, p.typed);
+            else if (kind === 'itemmarket') pressedIn.set(k, Infinity);
+        }
+        const r = stockBuys(before, listings, goneNow, pressedIn);
+        // A listing you pressed in that says nothing just now (Torn's own words stand in it, or its step): its last
+        // stock is kept, so the buy shows as that stock falling when the card is back - and a card back with the
+        // stock it had is no buy.
+        for (const k of st.pressed.keys()) if (!r.seen[k] && before[k] && !goneNow.has(k)) r.seen[k] = before[k];
         st.seen = r.seen;
         st.images = images;
+        const onNow = new Set(listings.map((c) => String(c.itemId)));
         for (const b of r.bought) {
             const key = String(b.itemId) + '|' + Number(b.price);
             const gone = !r.seen[key];
+            const typed = (st.pressed.get(key) || {}).typed || 0;
             st.pressed.delete(key);
             const id = String(b.itemId);
             const nid = note('buy', { t, id, qty: b.qty, price: b.price, whoId, im: kind === 'itemmarket' });
             st.pend.push({ nid, id, qty: b.qty, t });
             st.took[id] = (st.took[id] || 0) + b.qty;
-            say('', `A buy seen on the page: ${b.qty} × ${b.name || 'item ' + id} at $${b.price}`, gone ? `the listing was gone after you pressed Buy with ${goneNow.get(key)} in its box` : 'the stock on its listing fell after your press in it');
+            st.wantNext = true;
+            // Bought out: this bazaar has none of it left, which the list is told with the page (below).
+            if (gone && kind === 'bazaar' && !onNow.has(id)) st.goneHere.set(id, t);
+            say('', `A buy seen on the page: ${b.qty} × ${b.name || 'item ' + id} at $${b.price}`, gone ? `the listing left the page after your Buy with ${goneNow.get(key)} in its box, and another listing or the list itself stood in its place for ${TP_GONE_MS} ms` : `the stock on its listing fell after your Buy${typed ? ` with ${typed} in its box` : ''}`);
         }
+        // A listing that leaves a page that did not move was sold (or taken down): "item no longer there". Only
+        // where the page proves it - the same pictures in the same order but one, no scroll and no resize since the
+        // last look, nothing typed in the bazaar's search, not a listing you pressed in (its Buy form takes its
+        // card's place), no other listing of that piece here - and only once that has stood for a moment.
+        const still = st.lookAt > 0 && win.scrollY === st.lookY && win.innerWidth === st.lookW && win.innerHeight === st.lookH;
+        const searching = !!(st.searchEl && st.searchEl.isConnected && String(st.searchEl.value || '').trim());
+        if (kind === 'bazaar') {
+            for (const id of [...st.goneHere.keys()]) if (onNow.has(id)) st.goneHere.delete(id);
+            const cand = st.goneCand;
+            if (cand && (onNow.has(cand.id) || !still || searching)) st.goneCand = null;
+            else if (cand && t - cand.at >= TP_GONE_MS) {
+                st.goneCand = null;
+                st.goneHere.set(cand.id, t);
+                say('gone:' + cand.id, `A listing left the page while you looked at it: ${(v.pieces.find((p) => String(p.id) === cand.id) || {}).name || 'item ' + cand.id}`, 'the page did not move and the other listings stayed in their order: told to the hub as gone from this bazaar');
+            } else if (cand) lookIn(TP_GONE_MS + 60);
+            if (!st.goneCand && still && !searching) {
+                const one = oneRemoved(st.pics, pics);
+                if (one && TP_PIECES.has(one.id) && !onNow.has(one.id) && !st.goneHere.has(one.id) && ![...st.pressed.keys()].some((k) => k.startsWith(one.id + '|'))) {
+                    st.goneCand = { id: one.id, at: t };
+                    lookIn(TP_GONE_MS + 60);
+                }
+            }
+        }
+        st.pics = pics; st.lookAt = t; st.lookY = win.scrollY; st.lookW = win.innerWidth; st.lookH = win.innerHeight;
         // What this bazaar's page shows of your pieces, told to the hub: the page in front of you is the newest look
         // at a bazaar there is (as Torn Trading lets the page correct its list). Told when it changes, and once a
         // minute while you stand here. After the buys above: what it shows is the bazaar after them.
         if (kind === 'bazaar' && whoId) {
             const shop = shopSeen(listings);
-            const sig = whoId + '|' + shop.map((x) => x.id + ':' + x.price + ':' + x.qty).join(',');
-            if (shop.length && (sig !== st.shopSig || t - st.shopAt > TP_SHOP_EVERY_MS)) {
+            const shown = new Set(shop.map((x) => x.id));
+            const items = [...shop, ...[...st.goneHere.keys()].filter((id) => !shown.has(id)).sort().map((id) => ({ id, gone: true }))];
+            const sig = whoId + '|' + items.map((x) => (x.gone ? x.id + ':gone' : x.id + ':' + x.price + ':' + x.qty)).join(',');
+            if (items.length && (sig !== st.shopSig || t - st.shopAt > TP_SHOP_EVERY_MS)) {
                 st.shopSig = sig;
                 st.shopAt = t;
-                note('shop', { t, whoId, items: shop });
+                note('shop', { t, whoId, items });
             }
+            // "that bazaar is empty already, it still shows it": a bazaar's page, fully loaded, with no item on it
+            // at all for a while, and nothing typed in its search. Told once a visit. What such a page holds was
+            // never read on a real one: it is written to the log, so a zip shows it.
+            const content = doc.querySelector('.content-wrapper, #mainContainer, [role="main"]');
+            const none = !images && !menus.length && !searching && doc.readyState === 'complete' && !!content;
+            if (!none) st.emptyAt = 0;
+            else if (!st.emptyAt) { st.emptyAt = t; lookIn(TP_EMPTY_MS + 100); }
+            else if (t - st.emptyAt < TP_EMPTY_MS) lookIn(TP_EMPTY_MS - (t - st.emptyAt) + 100);
+            else if (!st.emptySaid) {
+                st.emptySaid = true;
+                note('shop', { t, whoId, items: [], empty: true });
+                say('empty', 'A bazaar with no item on its page: told to the hub as empty', 'what the page holds: ' + shapeOf(content));
+            }
+        }
+        // A buy the page told of that Torn's log does not have (the hub took it back): off what this tab counted
+        // as taken here, once.
+        for (const b of (v.buy && v.buy.back) || []) {
+            const k = String(b.id) + '|' + b.t;
+            if (st.backSeen.has(k) || (b.im ? IM_PLACE : 'b:' + b.whoId) !== place) continue;
+            st.backSeen.add(k);
+            if (st.took[b.id]) st.took[b.id] = Math.max(0, st.took[b.id] - b.qty);
         }
         // Held by the hub's view now (it names the notes it has taken), or never taken: no longer added here.
         const taken = new Set((st.shared && st.shared.notes) || []);
@@ -550,14 +740,17 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         });
         // The Item Market's page is of one piece: its address names it, also while no listing is drawn yet.
         const itemId = kind === 'itemmarket' ? (st.href.match(/[#&?/]itemID=(\d+)/i) || [])[1] || '' : '';
-        let out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: !!st.fillAll, itemId });
+        const live = { pend, took: st.took, fillAll: !!st.fillAll, itemId, gone: new Set(st.goneHere.keys()), late: st.late };
+        let out = boxBazaar(v, cards, place, live);
         st.fill = out ? out.fill : [];
+        st.waits = out ? out.waits || 0 : 0;
         const typedOf = () => { const by = {}; for (const c of cards) if (c.hasBox && c.typed > 0) by[c.itemId] = (by[c.itemId] || 0) + c.typed; return by; };
         st.live = { pend, typed: typedOf(), here: cards.map((c) => c.itemId) };
         // Fill all is on: the boxes that are open now get their numbers, and the box says so in the same look.
         if (st.fillAll && fillAllNow()) {
             cards.forEach((c, i) => { const input = st.tiles[i].input; c.typed = input ? tpDigits(input.value) : 0; });
-            out = boxBazaar(v, cards, place, { pend, took: st.took, fillAll: true, itemId });
+            out = boxBazaar(v, cards, place, { ...live, fillAll: true });
+            st.fill = out ? out.fill : [];
             st.live.typed = typedOf();
         }
         st.imNext = out ? out.imNext || null : null;
@@ -570,14 +763,22 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         });
         // Opened from a link of ours that names a listing (the hub's "Sold by", a stop of your run): that listing
         // pulses, and the page is brought to it once when it is on the page. A press of yours ends it.
+        // The listings still to buy pulse too, once you pressed Fill or Fill all here ("can it pulsate a bit? on the
+        // items i need to buy"), and so does the one the Down key or a buy brought you to. An outline on Torn's own
+        // card: it takes no room and catches no click; nothing is put on an open buy form.
         const named = (() => { try { const u = new URL(st.href); return { id: u.searchParams.get('ttItem') || '', price: Number(u.searchParams.get('ttPrice')) || 0 }; } catch { return { id: '', price: 0 }; } })();
+        const toBuy = new Set(st.pulsing ? st.fill.map((f) => f.i) : []);
+        const aimed = st.aimKey && t - st.aimAt < TP_AIM_MS ? st.aimKey : '';
         let aim = null;
-        for (const c of listings) {
-            if (c.menu || !c.el) continue;
+        listings.forEach((c, i) => {
+            if (c.menu || !c.el) return;
             const is = !!named.id && st.pulseOff !== st.href && String(c.itemId) === named.id && (!named.price || Number(c.listingPrice) === named.price) && !aim;
             if (is) aim = c.el;
-            if (c.el.hasAttribute('data-tarc-pulse') !== is) c.el.toggleAttribute('data-tarc-pulse', is);
-        }
+            const want = is ? 'link' : aimed === cardKey(c) ? 'aim' : toBuy.has(i) ? 'buy' : '';
+            if ((c.el.getAttribute('data-tarc-pulse') || '') !== want) { if (want) c.el.setAttribute('data-tarc-pulse', want); else c.el.removeAttribute('data-tarc-pulse'); }
+        });
+        // After a buy of yours: the next listing to buy here, brought into view when it is not.
+        if (st.wantNext) { st.wantNext = false; nextListing(true); }
         if (aim && st.arrived !== st.href) {
             st.arrived = st.href;
             const r = aim.getBoundingClientRect();
@@ -702,7 +903,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             st.threadSaid = said;
             note('thread', { id: th.id, title: title.text });
         }
-        const out = boxForum(v, title.text, threadCheck(title.text, { open: pr.open, pct: pr.pct }));
+        const out = boxForum(v, title.text, threadCheck(title.text, { open: pr.open, pct: pr.pct, paid: pr.paidRows }));
         setMark(title.el, out.titleMark.text, out.titleMark.state, 'right');
         return out;
     }
@@ -717,6 +918,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         }
         fillAllOff();
         for (const el of doc.querySelectorAll('[data-tarc-pulse]')) el.removeAttribute('data-tarc-pulse');
+        st.pulsing = false;
+        st.waits = 0;
+        st.goneCand = null;
         st.live = null;
         st.cards = [];
         st.tiles = [];
@@ -745,11 +949,16 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         // A page that is none of ours, or numbers that would be old: the bar alone says which.
         if (!kind || !fresh) {
             if (kind) clear();
+            st.v = null;
             show(null);
             showStock(null);
             return;
         }
-        const v = st.shared.v;
+        // The hub's view, with the presses of Start, Next and Stop made in a box that it has not taken yet.
+        const waiting = pressesLeft(gmGet(BOX_PRESSES_KEY, []), new Set(st.shared.notes || []), t, st.shared.at);
+        st.late = waiting.some((p) => t - p.t > TP_LATE_MS);
+        const v = viewWithPresses(st.shared.v, waiting);
+        st.v = v;
         let out = null;
         st.notesNow = new Set();
         try {
@@ -790,14 +999,67 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         win.location.assign(stop.im ? itemMarketUrl(first.id, first.name) : bazaarUrl(stop.whoId, first.id, first.price));
     };
 
+    /**
+     * A press of Start, Next or Stop: told to the hub, and applied in this box at once (until 1.3.0 the box showed
+     * nothing until the hub answered: "i press stop the run but nothing happens"). Kept until the hub's view names
+     * the note; every Torn tab shows it meanwhile.
+     */
+    function pressRun(op, place = null) {
+        const t = now();
+        const nid = note('act', { name: 'run', args: place ? [op, place] : [op] });
+        gmSet(BOX_PRESSES_KEY, [...pressesLeft(gmGet(BOX_PRESSES_KEY, []), new Set(), t), { nid, op, place, t }].slice(-12));
+        later(0);
+        win.setTimeout(() => later(0), TP_LATE_MS + 100);
+    }
+
+    /**
+     * Next, from wherever you stand ("i didnt follow the list, it still wouldnt let me go to next bazaar"): on a
+     * bazaar of your list the run goes on from that bazaar, anywhere else from the stop it is on. The stops passed
+     * over stay on the list.
+     */
     function goNext(v) {
         // The Item Market, with a piece of your list still unvisited: its page, and the run stays on this stop.
         if (st.kind === 'itemmarket' && st.imNext) { win.location.assign(itemMarketUrl(st.imNext.id, st.imNext.name)); return; }
         const stops = v.buy.run.stops;
-        const at = stops.findIndex((s) => s.place === placeNow());
-        const next = at >= 0 ? stops[at + 1] || null : null;
-        note('act', { name: 'run', args: ['next'] });
+        const cur = stops.findIndex((s) => s.state === 'cur');
+        if (cur < 0) return;
+        const here = stops.findIndex((s) => s.place === placeNow());
+        const next = stops[(here >= 0 ? here : cur) + 1] || null;
+        pressRun('next', here >= 0 ? placeNow() : null);
         if (next) openStop(next);
+    }
+
+    /** Fill all, on: by its button, or the Up key. */
+    function fillAllOn() {
+        if (st.fillAll || (st.kind !== 'bazaar' && st.kind !== 'itemmarket')) return;
+        st.fillAll = { done: new Map() };
+        st.pulsing = true;
+        say('', 'Fill all pressed', `${st.fill.length} listing${st.fill.length === 1 ? '' : 's'} to type into, ${st.tiles.filter((x) => x.input).length} quantity box${st.tiles.filter((x) => x.input).length === 1 ? '' : 'es'} open`);
+        later(0);
+    }
+
+    /**
+     * The next listing to buy on this page, brought into view: on the Down key (each press the one after), and by
+     * itself after a buy of yours. Only among the listings Torn has drawn. With none of them drawn and lines of
+     * your list still waiting, a press of Down goes one step down the page - Torn draws the listings near the
+     * screen only - and from its foot back to its top. Nothing of Torn's is pressed.
+     */
+    function nextListing(auto = false) {
+        const rows = st.fill.map((f) => st.cards[f.i]).filter((c) => c && c.el && c.el.isConnected);
+        if (!rows.length) {
+            if (auto || !st.waits) return;
+            const foot = win.scrollY + win.innerHeight >= doc.documentElement.scrollHeight - 2;
+            win.scrollTo({ top: foot ? 0 : win.scrollY + Math.round(win.innerHeight * 0.8), behavior: 'smooth' });
+            return;
+        }
+        const was = auto ? -1 : rows.findIndex((c) => cardKey(c) === st.aimKey);
+        const c = rows[(was + 1) % rows.length];
+        st.aimKey = cardKey(c);
+        st.aimAt = now();
+        const r = c.el.getBoundingClientRect();
+        if ((r.top < 0 || r.bottom > win.innerHeight) && c.el.scrollIntoView) c.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        win.setTimeout(() => later(0), TP_AIM_MS + 60);
+        later(0);
     }
 
     /** The run's stop, from a page that is not it: opened on your press, and the run stays where it is. */
@@ -810,7 +1072,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         const act = btn.dataset.act;
         const val = btn.dataset.v || '';
         const n = tpDigits(btn.dataset.n);
-        const v = st.shared ? st.shared.v : null;
+        const v = st.v || (st.shared ? st.shared.v : null);
         if (act === 'fold') { if (!(isOpen() && st.at && st.at.bar)) setOpen(!isOpen()); return; }
         if (act === 'unfold') { st.pinned = true; setOpen(true); return; }
         if (act === 'stock-fold') { st.stockOpen = !st.stockOpen; gmSet('stockOpen', st.stockOpen); showStock(st.stockOut); return; }
@@ -830,23 +1092,28 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (act === 'copy') { if (gmCopy(val)) done('copy:' + val); return; }
         if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
         if (!v) return;
-        if (act === 'run-start') { note('act', { name: 'run', args: ['start'] }); done('run-start:'); return; }
-        if (act === 'run-stop') { note('act', { name: 'run', args: ['stop'] }); return; }
+        if (act === 'run-start') { pressRun('start'); return; }
+        if (act === 'run-stop') { pressRun('stop'); return; }
         if (act === 'run-next') { goNext(v); return; }
         if (act === 'run-go') { goStop(v); return; }
+        // "item no longer there": a line of your list that is not on this bazaar's page, marked gone by you. The
+        // hub is told as it is told what the page shows, and makes the list again without it.
+        if (act === 'gone') {
+            if (st.kind !== 'bazaar' || !tpDigits(val)) return;
+            st.goneHere.set(String(tpDigits(val)), now());
+            st.shopSig = '';
+            say('', 'Gone pressed on a line of your list', 'item ' + tpDigits(val) + ': not on the page of this bazaar');
+            later(0);
+            return;
+        }
         // Fill: a number typed into Torn's own box, on this press. Nothing of Torn's is pressed.
         if (act === 'fill-all') {
             // On from this press, on this page only; a second press puts back what was there.
-            if (st.fillAll) fillAllOff();
-            else if (st.kind === 'bazaar' || st.kind === 'itemmarket') {
-                st.fillAll = { done: new Map() };
-                say('', 'Fill all pressed', `${st.fill.length} listing${st.fill.length === 1 ? '' : 's'} to type into, ${st.tiles.filter((x) => x.input).length} quantity box${st.tiles.filter((x) => x.input).length === 1 ? '' : 'es'} open`);
-            }
-            later(0);
+            if (st.fillAll) { fillAllOff(); st.pulsing = false; later(0); } else fillAllOn();
         } else if (act === 'fill-card') {
             const tile = st.tiles[Number(val)];
             const input = tile && tile.input && tile.input.isConnected ? tile.input : null;
-            if (input && n > 0) { writeInputs(boxTwins(input), String(n)); done('fill-card:' + val); later(0); }
+            if (input && n > 0) { writeInputs(boxTwins(input), String(n)); st.pulsing = true; done('fill-card:' + val); later(0); }
         } else if (act === 'fill-money') {
             if (st.moneyBox && st.moneyBox.isConnected && tpDigits(val) > 0) { writeInputs(boxTwins(st.moneyBox), String(tpDigits(val))); done('fill-money:' + val); }
         } else if (act === 'fill-museum') {
@@ -877,7 +1144,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         // because you bought it out.
         if (st.kind === 'bazaar' || st.kind === 'itemmarket') {
             // Any press of yours on the page: the listing a link named stops pulsing.
-            if (st.pulseOff !== st.href) { st.pulseOff = st.href; for (const el of doc.querySelectorAll('[data-tarc-pulse]')) el.removeAttribute('data-tarc-pulse'); }
+            if (st.pulseOff !== st.href) { st.pulseOff = st.href; for (const el of doc.querySelectorAll('[data-tarc-pulse="link"]')) el.removeAttribute('data-tarc-pulse'); }
             pressIn(target);
             for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
             return;
@@ -909,6 +1176,10 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (i < 0) return false;
         const r = (st.tiles[i].tile || st.cards[i].el).getBoundingClientRect();
         const el = st.tiles[i].tile || st.cards[i].el;
+        const tile = (el.closest && el.closest('[class*="item___"]')) || el;
+        // The list this listing stands in: the nearest element around it that holds another listing too.
+        let list = tile.parentElement;
+        while (list && list !== doc.body && !st.tiles.some((x) => x.tile && x.tile !== el && x.tile !== tile && list.contains(x.tile))) list = list.parentElement;
         // Torn's own Buy in the open form (or Enter in its box): the only press that buys, with the number in the box.
         const menu = target.closest ? target.closest('[class*="buyMenu"]') : null;
         const button = target.closest ? target.closest('button') : null;
@@ -918,10 +1189,16 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         const had = st.pressed.get(key);
         let buy = !!(menu && ((button && /^buy\b/i.test(label)) || (enter && box && box.contains(target))));
         let typed = buy && box ? tpDigits(box.value) : 0;
+        // Torn's own Buy, pressed: nothing is counted for it, and the hub is told so that Torn's log is asked a few
+        // seconds from now - what was bought is in it.
+        if (buy && typed > 0 && now() - st.pressSaid > 1500) {
+            st.pressSaid = now();
+            note('press', { t: st.pressSaid, id: String(st.cards[i].itemId), whoId: st.kind === 'itemmarket' ? '' : bazaarOwnerId(st.href), im: st.kind === 'itemmarket' });
+        }
         // A press on Torn's Close takes the buy back; any other press in the tile (a "Yes" Torn may ask for) keeps it.
         if (!buy && had && had.buy && !(button && /^(close|no|cancel)\b/i.test(label))) { buy = true; typed = had.typed; }
         // The tile itself is kept: a listing is gone only when its tile is (a buy form in it is the listing, open).
-        st.pressed.set(key, { at: now(), y: win.scrollY, top: r.top, h: r.height, tile: (el.closest && el.closest('[class*="item___"]')) || el, buy, typed });
+        st.pressed.set(key, { at: now(), x: win.scrollX, y: win.scrollY, left: r.left, top: r.top, w: r.width, h: r.height, tile, list, buy, typed, goneAt: 0 });
         return true;
     }
 
@@ -932,8 +1209,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             if (pressIn(event.target, true)) for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
             return;
         }
-        if (event.key !== 'n' && event.key !== 'N' && event.key !== '`') return;
-        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        const arrow = event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'ArrowRight';
+        if (event.key !== 'n' && event.key !== 'N' && event.key !== '`' && !arrow) return;
+        if (event.ctrlKey || event.metaKey || event.altKey || (arrow && event.shiftKey)) return;
         const el = event.target;
         if (el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName || ''))) return;
         if (event.key === '`') {
@@ -941,10 +1219,22 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             if (!tradingOnPage(doc) && (st.room || st.pinned)) setOpen(!isOpen());
             return;
         }
-        if (!st.shared || (st.kind !== 'bazaar' && st.kind !== 'itemmarket')) return;
-        const v = st.shared.v;
-        const here = v.buy.run.stops.find((s) => s.place === placeNow());
-        if (here && here.state === 'cur') goNext(v);
+        if (!st.v || (st.kind !== 'bazaar' && st.kind !== 'itemmarket')) return;
+        const v = st.v;
+        // Up = Fill all, Down = the next listing to buy here. Only while something of yours is to buy on this page:
+        // then they no longer scroll Torn's page; with nothing to buy here they are Torn's keys as ever.
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+            if (!st.fill.length && !st.waits) return;
+            event.preventDefault();
+            if (event.key === 'ArrowUp') fillAllOn();
+            else nextListing();
+            return;
+        }
+        // Right or N = the next bazaar, while a run is on: from a bazaar of your list, on from it; from anywhere
+        // else, to the stop the run is on.
+        if (!v.buy.run.stops.some((s) => s.state === 'cur')) return;
+        if (arrow) event.preventDefault();
+        if (v.buy.run.stops.some((s) => s.place === placeNow())) goNext(v);
         else goStop(v);
     }
 
@@ -957,7 +1247,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (st.kind !== 'bazaar' && st.kind !== 'itemmarket') return;
         // Typed by you outside every listing (the bazaar's own search): listings that go now were filtered, not bought.
         const el = event.target;
-        if (yours(event) && el && el.closest && !el.closest('#tarc-host') && !st.tiles.some((x) => x.tile && x.tile.contains(el))) st.pressed.clear();
+        if (yours(event) && el && el.closest && !el.closest('#tarc-host') && !st.tiles.some((x) => x.tile && x.tile.contains(el))) { st.pressed.clear(); st.searchEl = el; st.goneCand = null; }
         later(120);
     };
     doc.addEventListener('input', onInput, true);
@@ -983,6 +1273,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
     win.addEventListener('resize', onResize);
     const reload = () => { loadShared(); later(0); };
     gmOnChange(SHARED_VIEW_KEY, reload);
+    gmOnChange(BOX_PRESSES_KEY, () => later(0));
 
     // Torn Trading on this page: said to every tab, so the Archive's own tab shares the limits with it.
     function look() {
@@ -1016,6 +1307,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             win.clearInterval(lookTimer);
             win.clearInterval(otherTimer);
             if (st.timer) win.clearTimeout(st.timer);
+            if (st.goneT) win.clearTimeout(st.goneT);
             mo.disconnect();
             doc.removeEventListener('click', onClick, true);
             doc.removeEventListener('keydown', onKey, true);

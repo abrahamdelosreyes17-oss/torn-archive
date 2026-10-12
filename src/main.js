@@ -44,6 +44,11 @@ const SERVER_HOME = typeof TARC_SERVER_HOME === 'string' ? TARC_SERVER_HOME : ''
 const TRADING_PAGE_URL = 'https://abrahamdelosreyes17-oss.github.io/torn-moneymaker-releases/';
 
 const STEP_MS = 5 * 1000;
+/** The hub in view draws at most this often by itself; your own press is drawn at once (1.3.0, the calm pace). */
+const DRAW_CALM_MS = 1000;
+const DRAW_PRESS_MS = 30;
+/** Presses that change nothing on the screen: no draw follows them. */
+const HUB_QUIET = new Set(['look', 'copy', 'zip', 'usageExport']);
 const USAGE_FLUSH_MS = 15 * 1000;
 const KEY_KINDS = ['limited', 'full', 'w3b'];
 const keyOf = (kind) => String(gmGet('key.' + kind, '') || '').trim();
@@ -124,8 +129,11 @@ function bootHub(tabId) {
     let engine = null;
     let hub = null;
     let drawT = 0;
+    let drawDue = 0;
+    let drawnAt = 0;
     let notice = null;
     let shareAt = 0;
+    let shareTried = 0;
     let shared = '';
     let notesTaken = null;
     let stepping = false;
@@ -188,9 +196,19 @@ function bootHub(tabId) {
         onFailed: (x) => logFailed('w', x),
     });
 
-    function schedule() {
-        if (drawT) return;
-        drawT = setTimeout(() => { drawT = 0; draw(); }, 60);
+    /**
+     * The hub is drawn again. By itself (a read came in) at most once a second; `soon`: your own press, at once.
+     * Out of view nothing is drawn - one draw when you come back - and Torn's tabs still get what changed.
+     * (Until 1.3.0 every read drew the whole page 60 ms later, in view or not.)
+     */
+    function schedule(soon = false) {
+        if (document.visibilityState !== 'visible') { shareView(); return; }
+        const t = now();
+        const at = soon === true ? t + DRAW_PRESS_MS : Math.max(t + 60, drawnAt + DRAW_CALM_MS);
+        if (drawT && drawDue <= at) return;
+        if (drawT) clearTimeout(drawT);
+        drawDue = at;
+        drawT = setTimeout(() => { drawT = 0; draw(); }, Math.max(0, at - t));
     }
 
     // ---- the limits shared with Torn Trading: more for the one you look at ---------------------------------------------
@@ -275,9 +293,11 @@ function bootHub(tabId) {
             hasKey: (kind) => !!keyOf(kind),
             paused: () => false,
             say: (kind, what, detail) => logLine(kind, 'Torn Archive', what, detail),
-            changed: schedule,
+            changed: () => schedule(),
             notify,
             kick: () => { step(); },
+            // The engine's own working-out, in the speed log: it was most of what froze the page and was not timed.
+            timed: perfTimed,
         });
     }
 
@@ -334,10 +354,18 @@ function bootHub(tabId) {
             done.add(n.id);
             any = true;
             try {
-                if (n.kind === 'act') { if (n.what && n.what.name === 'run') engine.act('run', ...(Array.isArray(n.what.args) ? n.what.args.slice(0, 1) : [])); moved = true; }
-                else if (n.kind === 'buy' || n.kind === 'swap' || n.kind === 'thread' || n.kind === 'trade' || n.kind === 'shop') { engine.note(n.kind, n.what); moved = moved || n.kind === 'buy' || n.kind === 'swap'; }
+                // A press in the box on a Torn page. Start, Next and Stop of the run; Next may name the bazaar you
+                // stand in. Written down with how long it waited: a press that seemed dead shows in the zip.
+                if (n.kind === 'act') {
+                    const args = Array.isArray(n.what && n.what.args) ? n.what.args.slice(0, 2) : [];
+                    logLine('note', 'A Torn page', 'A press in the box taken: ' + String((n.what && n.what.name) || '') + ' ' + args.map(String).join(' '), 'it waited ' + Math.max(0, t - n.t) + ' ms');
+                    if (n.what && n.what.name === 'run') engine.act('run', ...args);
+                    moved = true;
+                }
+                // 'press': Torn's own Buy pressed on a listing - counted for nothing, your log is asked soon after.
+                else if (n.kind === 'buy' || n.kind === 'swap' || n.kind === 'thread' || n.kind === 'trade' || n.kind === 'shop' || n.kind === 'press') { engine.note(n.kind, n.what); moved = moved || n.kind === 'buy' || n.kind === 'swap' || n.kind === 'shop'; }
                 // "Read" on your stock, pressed on a Torn page: your items are asked for now, ahead of the rest.
-                else if (n.kind === 'read') { engine.act('readStock'); logLine('note', 'A Torn page', 'Read pressed on your stock', null); }
+                else if (n.kind === 'read') { engine.act('readStock'); logLine('note', 'A Torn page', 'Read pressed on your stock', 'it waited ' + Math.max(0, t - n.t) + ' ms'); moved = true; }
                 // What a Torn tab saw of its page, for the log: it is in the zip.
                 else if (n.kind === 'say' && n.what) logLine('note', 'A Torn page', String(n.what.what || ''), n.what.detail ? String(n.what.detail) : null);
             } catch (error) {
@@ -349,15 +377,16 @@ function bootHub(tabId) {
         gmSet('notesDone', notesTaken);
         // A buy, a swap or a press of the run: Torn's tabs get the new view now, not at the next redraw (a tab out
         // of view redraws once a minute), and it names the notes it holds.
-        if (moved) { shareView(true); schedule(); }
+        if (moved) { shareView(true); schedule(true); }
     }
 
     /** What Torn's tabs show: shared when it changed, and at least once a minute so they know it is alive. */
     function shareView(now_ = false, view = null) {
         if (!leading || !engine) return;
         const t = now();
-        if (!now_ && t - shareAt <= 5000) return;
-        const v = viewForTabs(view || engine.view());
+        if (!now_ && (t - shareAt <= 5000 || t - shareTried <= 5000)) return;
+        shareTried = t;
+        const v = viewForTabs(view || (now_ ? engine.view() : engine.calm()));
         const json = JSON.stringify(v);
         if (!now_ && json === shared && t - shareAt <= 60000) return;
         shared = json;
@@ -405,6 +434,7 @@ function bootHub(tabId) {
 
     function draw() {
         if (!hub || !engine) return;
+        drawnAt = now();
         const d = desk();
         perfTimed('draw', () => hub.show(d));
         shareView(false, d.view);
@@ -500,10 +530,13 @@ function bootHub(tabId) {
         listOnly: (id) => engine.act('listOnly', id),
         makeList: (kind) => engine.act('makeList', kind),
         // The piece open on "Sold by": its bazaars are asked of Torn itself (not connected in 1.2.2: nothing was asked).
-        look: (id) => { engine.act('look', id); schedule(); },
+        // (1.3.0: no draw follows it. The draw sent it, so until then the Buy page drew itself without end.)
+        look: (id) => engine.act('look', id),
         clearList: () => engine.act('clearList'),
-        run: (op) => engine.act('run', op),
-        read: () => { engine.readNow(); step(); },
+        run: (op, place) => engine.act('run', op, place),
+        read: () => { logLine('note', 'Torn Archive', 'Pressed: Read now', null); engine.readNow(); step(); },
+        // "Read my stock": your items and your log, ahead of the rest, and nothing else.
+        readStock: () => { engine.act('readStock'); },
         copy: (text) => gmCopy(text),
         keySave(kind, value) {
             if (!KEY_KINDS.includes(kind) || !value) return;
@@ -534,7 +567,7 @@ function bootHub(tabId) {
             const ask = typeof Notification === 'function' && Notification.permission === 'default' ? Notification.requestPermission() : Promise.resolve();
             const t = engine.view().trades.open[0];
             const n = t ? { ...tradeNotice(t, t.items, t.total), tradeId: t.id } : { title: 'Someone opened a trade with you', body: 'This is how Torn Archive will tell you.', tradeId: null };
-            Promise.resolve(ask).catch(() => {}).then(() => { notify(n); schedule(); });
+            Promise.resolve(ask).catch(() => {}).then(() => { notify(n); schedule(true); });
         },
         here() { lead(true); step(); },
         serverSave(address, pass) {
@@ -545,6 +578,13 @@ function bootHub(tabId) {
         },
         serverForget() { link.forget(); serverMsg = ''; schedule(); },
     };
+
+    // Your own press is drawn at once; what the reads bring, at the calm pace.
+    for (const name of Object.keys(actions)) {
+        if (HUB_QUIET.has(name)) continue;
+        const fn = actions[name];
+        actions[name] = (...args) => { const r = fn(...args); schedule(true); return r; };
+    }
 
     // ---- start ---------------------------------------------------------------------------------------------------
 
@@ -572,7 +612,7 @@ function bootHub(tabId) {
     gmOnChange('settings', () => { if (engine) engine.settingsChanged(); schedule(); });
     // Saved or forgotten in another tab of yours.
     gmOnChange(SERVER_CONFIG_KEY, () => { link.grantKept = undefined; schedule(); });
-    document.addEventListener('visibilitychange', () => { looked(); if (document.visibilityState === 'visible') schedule(); });
+    document.addEventListener('visibilitychange', () => { looked(); if (document.visibilityState === 'visible') schedule(true); });
     window.addEventListener('pagehide', () => {
         flushUsage();
         if (leading && engine) {

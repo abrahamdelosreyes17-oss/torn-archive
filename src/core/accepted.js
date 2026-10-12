@@ -78,7 +78,10 @@ export function takenUnits(line) {
  * @param {object} seen - key ('itemId|price') -> {qty, itemId, price, name}
  * @param {Array<{itemId, name, listingPrice, qty, qtyAssumed}>} cards - this read
  * @param {Set<string>|Map<string, number>} [gone] - listings gone after your press: their keys, or key -> the most you can have taken
- * @param {Set<string>|null} [pressedIn] - keys of the listings you pressed in; null = a fallen stock always counts
+ * Torn Archive 1.3.0: a stock that fell counts for no more than the number in the box when you pressed Torn's Buy
+ * there (`pressedIn` as a Map): someone else buying from the listing you have open is not your buy.
+ *
+ * @param {Set<string>|Map<string, number>|null} [pressedIn] - keys of the listings you pressed in (a Map: key -> the most you can have taken); null = a fallen stock always counts
  * @returns {{bought: Array<{itemId, name, price, qty}>, seen: object}}
  */
 export function stockBuys(seen, cards, gone = new Set(), pressedIn = null) {
@@ -93,7 +96,11 @@ export function stockBuys(seen, cards, gone = new Set(), pressedIn = null) {
     for (const [key, was] of Object.entries(seen || {})) {
         const is = now[key];
         if (is && is.qty < was.qty) {
-            if (!pressedIn || pressedIn.has(key)) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty: was.qty - is.qty });
+            if (!pressedIn || pressedIn.has(key)) {
+                const most = pressedIn instanceof Map ? Math.floor(Number(pressedIn.get(key)) || 0) : Infinity;
+                const qty = Math.min(was.qty - is.qty, most);
+                if (qty > 0) bought.push({ itemId: was.itemId, name: was.name, price: was.price, qty });
+            }
         } else if (!is && gone.has(key)) {
             const most = gone instanceof Map ? Math.floor(Number(gone.get(key)) || 0) : was.qty;
             const qty = Math.min(was.qty, most);

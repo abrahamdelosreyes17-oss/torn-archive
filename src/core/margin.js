@@ -1,7 +1,7 @@
 // Margins: one rule for "safe", used everywhere a price is judged.
 // A buy is safe when it still leaves your least profit at the points price now. A piece's share of that is its
 // market value's share of the set, so a trade of loose pieces and a whole set are judged by the same sum.
-// Pure working-out: no page, no storage. Every "leaves" here is before any fee the points market may take.
+// Pure working-out: no page, no storage. The points market takes no fee: nothing is taken off for one.
 
 import { setOfItem, setMarketValue, setValue } from './sets.js';
 

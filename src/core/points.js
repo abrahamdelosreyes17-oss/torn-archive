@@ -149,7 +149,8 @@ export function bookAdd(entries, entry) {
     const points = ptWhole(entry && entry.points);
     if (!entry || !points || !entry.id) return list;
     if (list.some((e) => e.id === entry.id)) return list;
-    const e = { id: String(entry.id), t: ptNum(entry.t), kind: entry.kind, points, each: ptNum(entry.each), set: entry.set || null, src: entry.src || 'log' };
+    // `est` (made): the share of the cost that rests on an estimate, where it was worked out (stock.js stockApply).
+    const e = { id: String(entry.id), t: ptNum(entry.t), kind: entry.kind, points, each: ptNum(entry.each), set: entry.set || null, src: entry.src || 'log', ...(entry.est != null ? { est: ptNum(entry.est) } : {}) };
     if (e.kind === 'made') {
         const other = e.src === 'log' ? 'page' : 'log';
         const twin = list.find((x) => x.kind === 'made' && x.src === other && x.points === points && Math.abs(x.t - e.t) < PT_MERGE_MS && !x.twin);
@@ -157,7 +158,8 @@ export function bookAdd(entries, entry) {
             // One exchange, seen twice: keep the log's id (so it is not added again) and the page's cost.
             const page = e.src === 'page' ? e : twin;
             const log = e.src === 'log' ? e : twin;
-            const merged = { ...log, each: page.each || log.each, set: page.set || log.set, twin: page.id };
+            const est = log.est != null ? log.est : page.est;
+            const merged = { ...log, each: page.each || log.each, set: page.set || log.set, twin: page.id, ...(est != null ? { est } : {}) };
             return list.map((x) => (x === twin ? merged : x)).sort((a, b) => a.t - b.t);
         }
     }

@@ -6,10 +6,11 @@
 import {
     engineLoad, ENGINE_PARTS, ENGINE_PIECES, BACKFILL_MS, foldItems, foldSummary, foldListings, foldMarket, foldShop, foldBids, foldPoints, foldMoney,
     foldInventory, foldLog, foldLogTypes, outLogTypes, logTypeGroups, foldTradeList, foldTradeOpen, foldTradeFinished, tradeHasPieces, foldThreads,
-    foldOwnList, foldReceipt, recordDay, engineInput, offersOf, notePage, noteSeenBuy, noteSwap, noteThread, mvOf, foldServer, serverEmpty, settleMugs,
+    foldOwnList, foldReceipt, recordDay, engineInput, pileOf, notePage, noteSeenBuy, noteSwap, noteThread, mvOf, foldServer, serverEmpty, settleMugs,
+    judgeSeen, enBump, tradesOdd, foldTradeReprice,
 } from './state.js';
 import { serverShop, serverListReadAt, serverMarketIn, SERVER_QUIET_MS, SERVER_BOUGHT_MS, SERVER_SYNC_MS } from '../core/server.js';
-import { archiveView, viewPiece, setsTraded, ALL_PIECE_IDS } from '../core/view.js';
+import { archiveView, viewPiece, setsTraded, ALL_PIECE_IDS, listPieces, keepPieces } from '../core/view.js';
 import { fillPlan, fillList, toggleLine, dropLine, refreshList, stopsOf, runStart, runNext, runTook, runAt, runView, runOrder, RUN_IDLE, placeOf, lineKey, listAfterRun, IM_PLACE, cheapPieces, addAll, dropPiece, dropPlaces } from '../core/shopping.js';
 import { buysFrom } from '../core/settings.js';
 import { hotSince } from '../core/verdict.js';
@@ -17,6 +18,7 @@ import { stockAge } from '../core/stock.js';
 import { pointsLogTypes } from '../core/points.js';
 import { desiredList, listDiff, listMatches, putBody, receiptBody, readReceipt, receiptsByTrade } from '../core/tw3b-list.js';
 import { tradeNotice } from '../core/trades.js';
+import { rateKey, fixTable, safeTable } from '../core/sellrate.js';
 import { fetchItems, fetchItemMarket, fetchInventory, fetchPointsMarket, fetchMoney, fetchLogTypes } from '../api/torn.js';
 import { fetchLedgerKeyInfo, isFullKey, fetchLogPage, fetchTradesPage, fetchTradesOpen, fetchTrade } from '../api/ledger.js';
 import { fetchW3bSummary, fetchW3bListings, fetchW3bItemTraders } from '../api/w3b.js';
@@ -37,6 +39,17 @@ export const READ_EVERY = Object.freeze({
 // every five minutes besides - two requests each time.
 const EG_INV_AFTER_MS = 5000;
 const EG_INV_AFTER_BUY_MS = 30000;
+/** After a buy seen on a page your log is asked this long after it, each time: Torn's log is the judge of the buy (state.js judgeSeen). */
+const EG_LOG_AFTER_BUY_MS = [5000, 20000, 65000];
+/**
+ * The calm pace (1.3.0; the owner: "calm automatic is fine"). What decides which reads are due is worked out from
+ * a view no older than this, not afresh after every answer: on 2026-10-11 the hub stood frozen 38 minutes of a day
+ * working the view out after each of thousands of reads. A buy, a press, a note from a Torn tab or a read that
+ * concerns your list still works it out at once.
+ */
+export const EG_CALM_MS = 3000;
+/** An old trade that priced a piece oddly is read again, this many a go (state.js tradesOdd). */
+const EG_REPRICE_AT_ONCE = 3;
 /** "Read" on your stock asks Torn at most this often. */
 const EG_STOCK_PRESS_MS = 10000;
 /** A read that failed is tried again after this long. */
@@ -80,6 +93,19 @@ const EG_SYNC_GAP_MS = 2 * EG_MIN;
 
 const egMsg = (error) => String((error && error.message) || error || '');
 const egLocal = (error) => !!(error && (error.local || error.takingTurns));
+/** The shape of something sent - names and kinds, no value - for the problem log. */
+const egShape = (v) => (Array.isArray(v) ? '[' + (v.length ? egShape(v[0]) : '') + '] x ' + v.length : v && typeof v === 'object' ? '{ ' + Object.entries(v).map(([k, x]) => k + ': ' + egShape(x)).join(', ') + ' }' : typeof v);
+/** Words joined into as few log lines as hold them: a line of the problem log keeps 300 characters. */
+function egLines(words, room = 250) {
+    const out = [];
+    let line = '';
+    for (const w of words) {
+        if (line && line.length + 2 + w.length > room) { out.push(line); line = ''; }
+        line += (line ? ', ' : '') + w;
+    }
+    if (line) out.push(line);
+    return out;
+}
 
 /**
  * @param env {
@@ -111,11 +137,22 @@ export function makeEngine(env) {
     let hour = (env.load('w3bHour') || []).filter((t) => Number.isFinite(t));
     let keyState = { limited: {}, full: {}, w3b: {}, ...(env.load('keyState') || {}) };
     let cache = null;
+    /** The view last worked out, whatever has changed since: what the calm pace reads (calm). */
+    let last = null;
+    /** The list is to be checked against the listings at the next calm pass (tidySoon). */
+    let tidyDue = false;
+    let tidyAt = 0;
+    /** When your log is asked for after a buy seen on a page (EG_LOG_AFTER_BUY_MS). */
+    let logSoon = [];
     /** Finished trades Torn would not hand over, and how often (readFinished). */
     const tradeFails = {};
     /** The piece open on the hub's "Sold by" table (shopsWanted). Not kept: the next look says it again. */
     let looked = { id: '', at: 0 };
     let syncAt = 0;
+    // Why the list was last not written by itself (said when it changes, not every step), and the request TornW3B
+    // called wrong: the same one is not sent by itself again.
+    let syncWhy = '';
+    let listRefused = '';
     const flags = { w3b: false, receipt: null };
 
     const touch = (...parts) => { for (const p of parts) dirty.add(p); cache = null; };
@@ -129,16 +166,26 @@ export function makeEngine(env) {
         dirty.clear();
     }
 
-    /** The view, worked out at most once per change. */
+    /** The view, worked out at most once per change. Timed for the speed log: the next zip shows what it took. */
     function view() {
         const now = env.now();
         if (cache && now - cache.at < 5000) return cache.view;
-        const v = archiveView(engineInput(S, settings(), now, { logRead: logRead() }));
+        const work = () => archiveView(engineInput(S, settings(), now, { logRead: logRead() }));
+        const v = env.timed ? env.timed('engine', work) : work();
         const hot = hotSince(S.hot, v.buy.hot, now);
         if (JSON.stringify(hot) !== JSON.stringify(S.hot)) { S.hot = hot; dirty.add('hot'); }
         if (settleMugs(S, v.ledger.mugs.rows, now)) dirty.add('ledger');
         cache = { at: now, view: v };
+        last = cache;
         return v;
+    }
+
+    /** The view as the calm pace takes it: the one last worked out while it is no older than EG_CALM_MS. */
+    function calm() {
+        const now = env.now();
+        if (cache && now - cache.at < 5000) return cache.view;
+        if (last && now >= last.at && now - last.at < EG_CALM_MS) return last.view;
+        return view();
     }
 
     function setKeyState(kind, patch) {
@@ -182,7 +229,7 @@ export function makeEngine(env) {
     async function readSelf() {
         const info = await fetchLedgerKeyInfo(env.torn);
         if (info.level != null && info.level < 3) { setKeyState('limited', { ok: false, error: 'not a Limited key' }); return; }
-        if (info.userId && info.userId !== S.self.id) { S.self = { ...S.self, id: info.userId }; touch('self'); }
+        if (info.userId && info.userId !== S.self.id) { S.self = { ...S.self, id: info.userId }; enBump(S, null); touch('self'); }
         setKeyState('limited', { ok: true, error: '' });
     }
 
@@ -218,7 +265,7 @@ export function makeEngine(env) {
         const had = S.stock.tornAt || 0;
         foldInventory(S, rows, env.now(), tornAt);
         touch('stock', 'book');
-        tidyList();
+        tidySoon(true);
         // Torn's next count, asked for as it is made.
         const age = stockAge(S.stock);
         if (age.nextAt > env.now()) due.inventory = Math.min(due.inventory || Infinity, age.nextAt + EG_INV_AFTER_MS);
@@ -268,8 +315,6 @@ export function makeEngine(env) {
                 to = res.oldest === res.newest || res.oldest === to ? res.oldest - 1 : res.oldest;
             }
         }
-        // Bought at a stop of the run: counted there.
-        countRun();
         if (left) {
             // More rows in this stretch than one go reads: the next go carries on from here, at once.
             S.log = { ...S.log, gap: { from, to: left.to, g: left.g }, newest, got, at: now };
@@ -278,8 +323,26 @@ export function makeEngine(env) {
             S.log = { ...S.log, gap: null, newest, got, from: newest || from, until: now, at: now, backfilled: true };
             // Once per page load, for the zip: what Torn's log has brought, by sort.
             sayOnce('log-read', 'Your log, read through', groups.map((x) => x.name).filter((n, i, a) => a.indexOf(n) === i).map((n) => n + ': ' + (got[n] || 0) + ' rows').join(' · '));
+            judgeBuys();
         }
-        touch('log', 'book', 'ledger', 'outs', 'stock', 'run');
+        // Bought at a stop of the run: counted there.
+        countRun();
+        // 'seen': a buy tied to its log row is stored so. (Until 1.3.0 it was not, and after a reload the same buy
+        // came off its seller's listing twice.)
+        touch('log', 'book', 'ledger', 'outs', 'stock', 'run', 'seen');
+        tidySoon(true);
+    }
+
+    /**
+     * Torn's log is the judge of what a page saw: a buy it does not have, read a minute past it, is taken back
+     * everywhere - and said, once, in the log and on the screen.
+     */
+    function judgeBuys() {
+        const back = judgeSeen(S, env.now());
+        if (!back.length) return;
+        const nameOf = (id) => (S.items.list[String(id)] || [])[0] || 'item ' + id;
+        for (const b of back) env.say('note', 'Not a buy after all: taken back', b.qty + ' x ' + nameOf(b.id) + (b.im ? ' on the Item Market' : ' at bazaar ' + b.whoId) + ', seen ' + new Date(b.t).toISOString().slice(11, 19) + " UTC. Torn's log, read past it, has no such buy.");
+        touch('seen');
     }
 
     async function readTrades() {
@@ -338,6 +401,19 @@ export function makeEngine(env) {
             newest = Math.max(newest, done);
         }
         if (stuck) newest = Math.min(newest, Math.max(from, stuck - 1));
+        // Once: old trades that priced a piece with a whole trade's money (until 1.3.0 anything in a trade that was
+        // not a set piece took none of the money) are read again and priced as they are now.
+        if (!S.ledger.repriced && !left) {
+            const odd = tradesOdd(S);
+            for (const id of odd.slice(0, EG_REPRICE_AT_ONCE)) {
+                let full = null;
+                try { full = await fetchTrade(env.torn, id, use); } catch { full = null; }
+                const n = foldTradeReprice(S, id, full);
+                if (n) env.say('note', 'An old trade priced again', 'trade ' + id + ': ' + n + ' row(s) - its money is shared over everything that was in it');
+            }
+            if (odd.length <= EG_REPRICE_AT_ONCE) S.ledger = { ...S.ledger, repriced: true };
+            else due.finished = 0;
+        }
         countRun();
         S.ledger = { ...S.ledger, tradesFrom: newest, tradesAt: now, tradesBackfilled: S.ledger.tradesBackfilled || (!left && list.length < 100) };
         touch('ledger', 'trades', 'outs', 'stock', 'names');
@@ -413,7 +489,7 @@ export function makeEngine(env) {
             count();
             foldListings(S, id, r.listings, env.now());
             touch('offers', 'names');
-            tidyList();
+            tidySoon(false);
         }, null);
     }
 
@@ -465,12 +541,17 @@ export function makeEngine(env) {
 
     function readShops(v) {
         const every = settings().readMin * EG_MIN;
-        const cur = v.buy.run.stops.find((s) => s.state === 'cur');
+        const stops = v.buy.run.stops;
+        const cur = stops.find((s) => s.state === 'cur');
+        // While a run is on, the stop you stand on and the one after it go ahead of every other read (A5).
+        const next = cur ? stops[stops.indexOf(cur) + 1] : null;
+        const first = new Set([cur, next].filter((s) => s && !s.im).map((s) => String(s.whoId)));
         each('shops', shopsDue(v), (id) => (cur && String(cur.whoId) === id ? Math.min(every, 30000) : every), async (id) => {
-            const json = await env.torn.get('v2/user', { selections: 'bazaar', id }, { tag: 't.sets', priority: 'normal' });
+            const json = await env.torn.get('v2/user', { selections: 'bazaar', id }, { tag: 't.sets', priority: first.has(id) ? 'high' : 'normal' });
             if (!foldShop(S, id, json, env.now())) { sayOnce('shop-shape', "Torn's answer for a bazaar had no bazaar in it", 'it has: ' + Object.keys(json || {}).slice(0, 8).join(', ')); return; }
             touch('shops');
-            tidyList();
+            // A bazaar of your list: the list follows at once. Any other: at the next calm pass.
+            tidySoon(S.cart.some((l) => String(l.whoId) === String(id)));
         });
     }
 
@@ -487,14 +568,28 @@ export function makeEngine(env) {
      * comes off; nothing is ever added. While a run is on, a line keeps what you took on it until Next.
      */
     function tidyList() {
+        tidyDue = false;
+        tidyAt = env.now();
         if (!S.cart.length) return;
         cache = null;
         const v = view();
         const took = S.run.on ? (key) => (S.run.took || {})[key] : null;
-        const res = refreshList(S.cart, v.pieces, (id) => offersOf(S, id, env.now()), took);
+        // A line stays while its listing is under the Stretch line of its piece (view.js keepPieces). The whole
+        // pile is asked, as the layer keeps it: a line's bazaar may be off the shortlist.
+        const res = refreshList(S.cart, keepPieces(v.pieces), (id) => pileOf(S, id, env.now()), took);
         if (res.dropped.length || JSON.stringify(res.cart) !== JSON.stringify(S.cart)) { S.cart = res.cart; touch('cart'); }
         // Every line gone under a run (sold to someone else, or dear now): there is nowhere left to go.
         if (!S.cart.length && S.run.on) { S.run = { ...RUN_IDLE }; touch('run'); }
+    }
+
+    /**
+     * The list checked after a read. `concerns`: the read was of something the list rests on (a bazaar on it,
+     * your stock, your log, what a page showed) - checked at once. Else at the next calm pass (step): the list
+     * shows nothing wrong meanwhile, only something a few seconds old.
+     */
+    function tidySoon(concerns) {
+        if (!S.cart.length) return;
+        if (concerns) tidyList(); else tidyDue = true;
     }
 
     /**
@@ -533,13 +628,17 @@ export function makeEngine(env) {
         }
         const seen = new Map();
         for (const b of S.seen) {
+            // A buy the log does not have was not one (state.js judgeSeen): it is on no line.
+            if (b.no) continue;
             // A buy seen on the Item Market's page is on its one line; a bazaar's on that bazaar's.
             const key = b.t >= began ? (b.im ? lineKey(b.id, IM_PLACE) : b.whoId ? lineKey(b.id, 'b:' + b.whoId) : null) : null;
             if (key) seen.set(key, (seen.get(key) || 0) + b.qty);
         }
-        let run = S.run;
-        for (const l of S.cart) run = runTook(run, l.key, Math.max(got.get(l.key) || 0, seen.get(l.key) || 0));
-        if (run !== S.run) { S.run = run; touch('run'); }
+        // Counted afresh each time from what is on record since the run began: a buy taken back comes off its line
+        // again. (Until 1.3.0 the larger count ever seen stood - and a false "bought" with it.)
+        const took = {};
+        for (const l of S.cart) { const n = Math.max(got.get(l.key) || 0, seen.get(l.key) || 0); if (n > 0) took[l.key] = n; }
+        if (JSON.stringify(took) !== JSON.stringify(S.run.took || {})) { S.run = { ...S.run, took }; touch('run'); }
     }
 
     // ---- your thread, your TornW3B list ----------------------------------------------------------------------------------
@@ -563,7 +662,7 @@ export function makeEngine(env) {
 
     async function readReceipts() {
         const rows = await env.own.receipts();
-        setKeyState('w3b', { ok: true, error: '' });
+        if (keyState.w3b.ok !== true || keyState.w3b.error) setKeyState('w3b', { ok: true, error: '' });
         if (S.w3b.receiptsError) S.w3b = { ...S.w3b, receiptsError: '' };
         const known = new Set(S.w3b.receipts.map(([, r]) => String(r.id)));
         let read = 0;
@@ -580,23 +679,132 @@ export function makeEngine(env) {
         touch('w3b');
     }
 
-    /** Your list on TornW3B brought to your rate: only the set pieces are set or taken off, nothing else is touched. */
-    async function sendList() {
+    // ---- what you pay your sellers, fixed for the hour --------------------------------------------------------------------
+
+    const egMoney = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+    /** Torn's clock, as the pages say it. */
+    const egClock = (t) => new Date(t).toISOString().slice(11, 16) + ' TCT';
+    /** A trade with a piece of your sets in it is open (and read in full): its total is at the prices of this hour. */
+    const tradeOpen = () => S.trades.open.some((t) => (S.trades.full || {})[t.id] != null && tradeHasPieces(t));
+
+    /**
+     * What you pay your sellers (core/sellrate.js), kept for an hour while the shop is open - the owner, 2026-10-12:
+     * "maybe it checks the points every hour, so we can update every hour if i decide to trade?". Fixed from what
+     * the view says a fix would take now (`prices.live`: each set at the lower of your rate and its ceiling, at
+     * the cautious points price) - no read of its own. Until the hour ends nothing of it is worked out again;
+     * the one thing that moves it is the safety: a points price fallen under your least profit brings it down at
+     * once. A trade with set pieces open holds it past the hour (its receipt on TornW3B is made from your list
+     * when it ends); the safety still applies. Your own change of rate, least profit or sets fixes at once.
+     * Closed: nothing is fixed - the view says what you would pay now.
+     */
+    function rateKeep(now, v) {
+        // The view the calm pace holds was worked out on the table as it stood: after a change the list is compared
+        // (stepOwn) on a view worked out anew, or a list matching the old prices would count as written.
+        const put = (next) => { S.rate = next; touch('rate'); last = null; };
+        const s = settings();
+        // A stored table that is not one (no sets, no hour) counts as none: it is fixed anew.
+        const t = S.rate.table && S.rate.table.sets && S.rate.table.until > 0 ? S.rate.table : null;
+        if (!s.open) {
+            if (t || S.rate.sent) put({ table: null, sent: 0 });
+            return;
+        }
+        const live = v.prices && v.prices.live;
+        // No ceiling can be said yet (no points price, a market value missing), or the view is from before your
+        // press: the next pass decides.
+        if (!v.ready || !live || !live.ok || live.pct !== s.pct || live.least !== s.least) return;
+        const key = rateKey(s);
+        const own = !t || t.key !== key;
+        const held = !own && now >= t.until && tradeOpen();
+        if (own || (now >= t.until && !held)) {
+            const next = fixTable(live, key, now);
+            put({ ...S.rate, table: next });
+            const sets = Object.entries(next.sets).map(([k, r]) => k + ' ' + r.pct + '% (' + (r.pct < next.pct ? 'its ceiling, under your ' + next.pct + '%' : 'the most that keeps your ' + next.least + '%: ' + r.cap + '%') + ')');
+            env.say('note', 'Your prices fixed for an hour', sets.join(' · ') + ' · points ' + egMoney(next.price) + (next.from === 'usual' ? ' (what you usually sell for; ' + egMoney(next.today) + ' today)' : " (today's)") + ' · until ' + egClock(next.until) + (own && t ? ' · your settings changed' : ''));
+            return;
+        }
+        let cur = t;
+        if (held && !t.held) {
+            cur = { ...t, held: true };
+            env.say('note', 'Your prices stand still while a trade is open', 'their hour ended at ' + egClock(t.until) + ': they are fixed anew when no trade with set pieces is open');
+        }
+        const safe = safeTable(cur, setsTraded(s), live.price, now);
+        if (safe !== cur) {
+            const sets = Object.entries(safe.sets).filter(([k, r]) => r.down && (!cur.sets[k] || cur.sets[k].pct !== r.pct)).map(([k, r]) => k + ' ' + cur.sets[k].pct + '% to ' + r.pct + '%');
+            env.say('note', 'Your prices came down inside the hour', sets.join(' · ') + ' · points fell to ' + egMoney(live.price) + ': over that your least ' + safe.least + '% would be gone' + (safe.held ? '' : ' · fixed anew at ' + egClock(safe.until)));
+        }
+        if (safe !== t) put({ ...S.rate, table: safe });
+    }
+
+    /** The request a write of your list would send now, or why there is none. */
+    function listWrite() {
         const v = view();
-        if (!v.ready || !S.w3b.list) throw new Error('Your list on TornW3B has not been read yet.');
+        if (!v.ready || !S.w3b.list) return { why: 'your list on TornW3B has not been read yet', unread: true };
         const diff = listDiff(new Map(S.w3b.list), desiredList(v.pieces, v.settings.open), ALL_PIECE_IDS);
-        if (listMatches(diff)) return;
+        if (listMatches(diff)) return { why: v.settings.open ? 'it already matches your rate' : 'your shop is closed: no set piece of yours is on your TornW3B list' };
+        return { diff, body: putBody(diff), closed: !v.settings.open };
+    }
+
+    /**
+     * Your list on TornW3B brought to your rate: only the set pieces are set or taken off, nothing else is touched.
+     * Every write is in the problem log (the owner, 2026-10-12: if TornW3B refuses it, the zip alone must say why):
+     * what was sent and what TornW3B answered; on a refusal its words, the request's shape and the whole of what
+     * was sent - item ids and prices, which are your public list. Never the key (it rides in a header).
+     * @param by 'your press' | 'by itself'
+     */
+    async function sendList(by = 'your press') {
+        const w = listWrite();
+        if (w.why) {
+            env.say('note', 'Your list was not written to TornW3B', by + ' · ' + w.why);
+            if (w.unread) throw new Error('Your list on TornW3B has not been read yet.');
+            return;
+        }
         syncAt = env.now();
-        await env.own.putList(putBody(diff));
+        const sent = w.diff.set.length + ' set, ' + w.diff.remove.length + ' taken off' + (w.closed ? ' · your shop is closed: the set pieces come off your list' : '');
+        // The prices this write carries: the hour's table as it stands now (rateKeep).
+        const rev = S.rate.table ? S.rate.table.rev : 0;
+        let answer;
+        try {
+            answer = await env.own.putList(w.body);
+        } catch (error) {
+            if (egLocal(error)) env.say('note', 'Your list was not written to TornW3B', by + ' · ' + egMsg(error));
+            else {
+                // A request TornW3B calls wrong (400) is the same request the next time: by itself it is not sent
+                // again until what would be sent changes. Your own press always sends.
+                if (error && error.http === 400) listRefused = JSON.stringify(w.body);
+                env.say('note', 'TornW3B refused the write of your list', by + ' · ' + egMsg(error) + (error && error.said ? ' · it said: ' + error.said : '') + ' · sent: ' + sent);
+                env.say('note', 'TornW3B refused the write of your list: its shape', egShape(w.body) + (w.diff.remove.length ? ' · the last ' + w.diff.remove.length + ' with itemID only' : ''));
+                const parts = [...egLines(w.diff.set.map((s) => s.itemID + ' $' + s.price + (s.was == null ? ' (new)' : ' (was $' + s.was + ')'))).map((l) => 'set: ' + l), ...egLines(w.diff.remove.map((r) => String(r.itemID))).map((l) => 'taken off: ' + l)];
+                parts.forEach((l, k) => env.say('note', 'TornW3B refused the write of your list: what was sent, ' + (k + 1) + ' of ' + parts.length, l));
+            }
+            throw error;
+        }
+        listRefused = '';
+        syncWhy = '';
+        if (rev && S.rate.table && S.rate.table.rev === rev && S.rate.sent !== rev) { S.rate = { ...S.rate, sent: rev }; touch('rate'); }
+        env.say('note', 'Your list written to TornW3B', by + ' · ' + sent + ' · it answered: ' + (answer == null ? 'nothing that could be read' : JSON.stringify(answer).slice(0, 180)));
         setKeyState('w3b', { ok: true, error: '' });
         foldOwnList(S, await env.own.readList(), env.now());
         touch('w3b');
     }
 
-    /** @param what 'list' (your price list: shown on its panel) or 'receipts' (shown with the receipts) */
+    /** "Keep it at my rate by itself" is on and nothing is sent: the reason, said once each time it changes. */
+    function syncQuiet(why) {
+        if (why === syncWhy) return;
+        syncWhy = why;
+        env.say('note', 'Keeping your TornW3B list at your rate: nothing sent', why);
+    }
+
+    /**
+     * @param what 'list' (your price list: shown on its panel) or 'receipts' (shown with the receipts)
+     * TornW3B refusing the key (401, or 403 "The API key must match the API key linked to this user ID in our
+     * database") is said on the key's own box, and nothing of yours is asked of TornW3B again until the key is
+     * changed: on 2026-10-11 the badge said "working" all evening while every read of your trades was refused.
+     */
     function w3bFailed(error, what = 'list') {
         if (egLocal(error)) return;
-        if (error && error.http === 401) setKeyState('w3b', { ok: false, error: 'TornW3B does not know this key' });
+        // A 403 that does not name the key (a block, a page that moved) is no verdict on it: asked again later.
+        const key403 = !!error && error.http === 403 && /api key|invalid key/i.test(String(error.said || ''));
+        if (error && (error.http === 401 || key403)) setKeyState('w3b', { ok: false, error: key403 ? 'TornW3B refuses this key for your Torn id: it is not the one registered there' : 'TornW3B does not know this key' });
         S.w3b = { ...S.w3b, [what === 'receipts' ? 'receiptsError' : 'error']: egMsg(error) };
         touch('w3b');
         // Once for each thing it said: the request itself is in the log every time it fails.
@@ -608,14 +816,24 @@ export function makeEngine(env) {
         const f = S.trades.finished.find((x) => x.id === id);
         if (!f || flags.receipt) return;
         flags.receipt = id;
-        env.own.makeReceipt(receiptBody(id, f.rows || [], f.whoId))
+        const body = receiptBody(id, f.rows || [], f.whoId);
+        env.own.makeReceipt(body)
             .then((json) => {
                 const r = readReceipt(json, f.paid);
                 foldReceipt(S, id, r, env.now());
                 touch('w3b');
                 if (!r.ok) env.say('note', "TornW3B's receipt differs from what you paid", 'trade ' + id + ': theirs ' + r.total + ', yours ' + f.paid + (r.missing.length ? ', not on your list: ' + r.missing.join(', ') : ''));
             })
-            .catch((e) => w3bFailed(e, 'receipts'))
+            .catch((e) => {
+                w3bFailed(e, 'receipts');
+                // A request TornW3B calls wrong (400) is the same request the next time: not sent for this trade
+                // again, and its shape - names and kinds, no value - goes into the log so the cause can be found.
+                if (e && e.http === 400) {
+                    S.w3b = { ...S.w3b, tried: { ...(S.w3b.tried || {}), [id]: { n: EG_RECEIPT_TRIES, at: env.now() } } };
+                    touch('w3b');
+                    env.say('note', 'TornW3B called a receipt request wrong', 'trade ' + id + ' · sent: ' + egShape(body) + ' · it is not sent for this trade again');
+                }
+            })
             .finally(() => { flags.receipt = null; flush(); env.changed(); });
     }
 
@@ -663,6 +881,8 @@ export function makeEngine(env) {
         if (full && keyState.full.ok == null) run('fullKey', READ_EVERY.self, readFullKey, { key: 'full' });
         if (full && keyState.full.ok) {
             if (now - S.types.at > READ_EVERY.types) run('types', RETRY_MS, readTypes);
+            // After a buy seen on a page the log is asked a few seconds, twenty seconds and a minute on.
+            if (logSoon.length && now >= logSoon[0] && !busy.log) { logSoon = logSoon.filter((t) => t > now); due.log = 0; }
             if (S.types.at) run('log', READ_EVERY.log, readLog, { key: 'full' });
         }
         run('finished', READ_EVERY.finished, readFinished);
@@ -671,27 +891,52 @@ export function makeEngine(env) {
         run('trades', READ_EVERY.trades, readTrades);
         run('summary', s.readMin * EG_MIN, readSummary, { key: null });
         run('thread', READ_EVERY.thread, readThread);
-        const v = view();
+        // The list against what was read since the last pass - not after every answer, but never later than this.
+        if (tidyDue && now - tidyAt >= EG_CALM_MS) tidyList();
+        const v = calm();
         readMarkets(v);
         if (S.summary.at) readListings(v);
         readShops(v);
         readBids();
+        rateKeep(now, v);
         stepOwn(now);
         if (v.ready && now - (due.day || 0) > 0) { due.day = now + EG_MIN; recordDay(S, v, now); touch('hist'); }
         flush();
     }
 
     function stepOwn(now) {
-        if (!keyOk('w3b') || !S.self.id) return;
+        const keep = !!settings().w3bSync;
+        if (!keep) syncWhy = '';
+        if (!keyOk('w3b') || !S.self.id) {
+            if (keep) syncQuiet(!S.self.id ? 'your Torn id is not known yet' : 'the key you registered on TornW3B is not set, or TornW3B refuses it (its box in Settings says which)');
+            return;
+        }
         run('ownList', READ_EVERY.ownList, () => readOwnList().catch((e) => { w3bFailed(e); throw e; }), { key: null });
         run('receipts', READ_EVERY.receipts, () => readReceipts().catch((e) => { w3bFailed(e, 'receipts'); throw e; }), { key: null });
         autoReceipt(now);
-        const s = settings();
-        if (!s.w3bSync || !S.w3b.list || flags.w3b || now - syncAt < EG_SYNC_GAP_MS) return;
-        const v = view();
-        if (!v.ready || !v.prices.w3b.diff || v.prices.w3b.matches) return;
+        if (!keep) return;
+        if (!S.w3b.list) { syncQuiet('your list on TornW3B has not been read yet'); return; }
+        if (flags.w3b || now - syncAt < EG_SYNC_GAP_MS) return;
+        const v = calm();
+        if (!v.ready) { syncQuiet('not everything is read yet'); return; }
+        const matches = !v.prices.w3b.diff || v.prices.w3b.matches;
+        if (!v.settings.open) {
+            // Closed: the set pieces come off your list, once. Nothing else is written while you are closed.
+            if (matches) { syncQuiet('your shop is closed: no set piece of yours is on your TornW3B list'); return; }
+        } else {
+            // Open: written once for each fixing of your prices (rateKeep) - at most once an hour, and at once
+            // when the safety brought them down. Your own press sends at any time.
+            const t = S.rate.table;
+            if (!t) { syncQuiet('your prices are not fixed yet: the points price or a market value is not read'); return; }
+            if (S.rate.sent === t.rev) { syncQuiet(matches ? 'it already matches your rate' : 'it differs from your prices of this hour: written when they are next fixed, at ' + egClock(t.until) + (t.held ? ' or when the open trade has ended' : '') + ' - your own press sends it now'); return; }
+            if (matches) { S.rate = { ...S.rate, sent: t.rev }; touch('rate'); syncQuiet('it already matches your rate'); return; }
+        }
+        if (listRefused) {
+            const w = listWrite();
+            if (w.body && JSON.stringify(w.body) === listRefused) { syncQuiet('TornW3B called this same request wrong: it is not sent again by itself until your prices change - your own press still sends it'); return; }
+        }
         flags.w3b = true;
-        sendList().catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
+        sendList('by itself').catch(w3bFailed).finally(() => { flags.w3b = false; flush(); env.changed(); });
     }
 
     // ---- the shared server ------------------------------------------------------------------------------------------------
@@ -703,7 +948,7 @@ export function makeEngine(env) {
      */
     function serverWant() {
         const now = env.now();
-        const v = view();
+        const v = calm();
         const me = String(S.self.id);
         const sellers = new Set();
         const dir = [];
@@ -724,7 +969,7 @@ export function makeEngine(env) {
         const bought = [];
         for (const r of S.ledger.rows) if (r.side === 'buy' && r.venue === 'bazaar' && r.who && now - r.t < SERVER_BOUGHT_MS) bought.push({ whoId: r.who, id: r.itemId, qty: r.qty, price: r.each, t: r.t });
         // Seen on the page and not in the log yet.
-        for (const b of S.seen) if (b.whoId && b.t > S.log.until && now - b.t < SERVER_BOUGHT_MS) bought.push({ whoId: b.whoId, id: b.id, qty: b.qty, price: b.price, t: b.t });
+        for (const b of S.seen) if (b.whoId && !b.no && b.t > S.log.until && now - b.t < SERVER_BOUGHT_MS) bought.push({ whoId: b.whoId, id: b.id, qty: b.qty, price: b.price, t: b.t });
         return { sellers: [...sellers], looking: shopsWanted(v).map(Number), worth, bought, dir, need: v.pieces.filter((p) => p.need > 0).map((p) => Number(p.id)) };
     }
 
@@ -741,7 +986,7 @@ export function makeEngine(env) {
             due.points = Math.max(due.points || 0, theirs.points.at + READ_EVERY.points + slack);
         }
         if (theirs.market.length) {
-            const v = view();
+            const v = calm();
             const every = settings().readMin * EG_MIN;
             for (const m of theirs.market) {
                 const o = S.offers[m.id];
@@ -754,7 +999,10 @@ export function makeEngine(env) {
                 if (!(had && had.busy)) per.market[m.id] = { busy: false, due: Math.max((had && had.due) || 0, next) };
             }
         }
-        tidyList();
+        // A bazaar of your list among what it read: the list follows at once. Else at the next calm pass.
+        const mine = new Set(S.cart.map((l) => String(l.whoId)));
+        const named = [...((answer && Array.isArray(answer.reads) ? answer.reads : []).map((r) => r && r.id)), ...((answer && Array.isArray(answer.seen) ? answer.seen : []).map((p) => (Array.isArray(p) ? p[0] : null)))];
+        tidySoon(named.some((id) => id != null && mine.has(String(id))));
         flush();
         env.changed();
         again();
@@ -791,7 +1039,9 @@ export function makeEngine(env) {
         // Nothing looked at before this press counts until it is looked at again (a read of the last moments is
         // the newest Torn has: it stands). The bazaars of your list and the ones a list would use are asked first.
         S.fresh = { since: env.now() - EG_JUST_READ_MS };
+        enBump(S, null);
         cache = null;
+        last = null;
         for (const k of Object.keys(due)) due[k] = 0;
         for (const kind of Object.keys(per)) if (kind !== 'listings' && kind !== 'bids') for (const id of Object.keys(per[kind])) per[kind][id].due = 0;
         if (looked.id) looked = { ...looked, at: env.now() };
@@ -818,23 +1068,27 @@ export function makeEngine(env) {
 
     const stops = () => { const v = view(); return runOrder(stopsOf(S.cart, (id) => (viewPiece(v, id) || {}).worth || 0), S.run); };
     const idle = () => { S.run = { ...RUN_IDLE }; };
+    /** A piece as a list takes it: `take` units, each under `takeLine` (view.js listPieces), and its rows that count. */
+    const asListed = (p) => listPieces([p])[0];
+    const counting = (p, line) => p.offers.filter((o) => o.ok !== false && !o.out && o.price < line);
 
     const actions = {
         cart(itemId, place) {
             const p = viewPiece(view(), itemId);
             const offer = p && p.offers.find((o) => placeOf(o) === place);
             if (!offer) return;
-            S.cart = toggleLine(S.cart, p, offer);
+            // Your own press: any listing may go on. The Item Market's line is its rows under the Stretch line.
+            S.cart = toggleLine(S.cart, { ...p, worth: p.lineS }, offer);
             idle();
             touch('cart', 'run');
         },
         drop(key) { S.cart = dropLine(S.cart, key); idle(); touch('cart', 'run'); },
-        // One piece, every listing of it that counts (checked, where you buy, under its worth), in one press. With
+        // One piece, every listing of it that counts (checked, where you buy, a Buy on its set), in one press. With
         // nothing more to add, the press takes the piece off the list.
         cartAll(itemId) {
             const p = viewPiece(view(), itemId);
             if (!p) return;
-            const next = addAll(S.cart, p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+            const next = addAll(S.cart, asListed(p), counting(p, p.takeLine));
             S.cart = next.length > S.cart.length ? next : dropPiece(S.cart, itemId);
             idle();
             touch('cart', 'run');
@@ -843,22 +1097,38 @@ export function makeEngine(env) {
         listOnly(itemId) {
             const p = viewPiece(view(), itemId);
             if (!p) return;
-            S.cart = addAll([], p, p.offers.filter((o) => o.ok !== false && !o.out && o.price < p.worth));
+            S.cart = addAll([], asListed(p), counting(p, p.takeLine));
             idle();
             touch('cart', 'run');
             due.inventory = 0;
             if (logRead()) due.log = 0;
         },
         // A list is made from the count as it stands, and Torn is asked for its own at once: the list follows it.
-        // `kind` 'hot': only what "Do now" counted - under what you pay your sellers. Else everything under its worth.
-        makeList(kind) { S.plan = { targets: null, at: 0, key: '' }; touch('plan'); const v = view(); const inPlace = buysFrom(settings()); S.cart = fillList(kind === 'hot' ? cheapPieces(v.pieces) : v.pieces, (id) => offersOf(S, id, env.now()).filter((o) => o.ok !== false && inPlace(o))); idle(); touch('cart', 'run'); due.inventory = 0; if (logRead()) due.log = 0; },
+        // `kind` 'hot': only what "Do now" counted - under what you pay your sellers. Else every Buy, and the
+        // Stretch that finishes a set. Made from the shortlists the view keeps (core/shortlist.js): the same list
+        // the whole pile makes, without sorting it.
+        makeList(kind) {
+            S.plan = { targets: null, at: 0, key: '' };
+            touch('plan');
+            const v = view();
+            const pieces = listPieces(v.pieces);
+            S.cart = fillList(kind === 'hot' ? cheapPieces(pieces) : pieces, (id) => { const p = viewPiece(v, id); return p ? p.offers.filter((o) => o.ok !== false && !o.out) : []; });
+            idle();
+            touch('cart', 'run');
+            due.inventory = 0;
+            if (logRead()) due.log = 0;
+        },
         clearList() { S.cart = []; idle(); touch('cart', 'run'); },
-        run(op) {
+        // `place` (Next pressed on a Torn page): where you stand. A bazaar of the list that is not the stop the run
+        // is on becomes that stop first - you did not follow the order - and Next goes on from there; the stops
+        // passed over stay on the list. (Until 1.3.0 Next was only offered on the current stop.)
+        run(op, place = null) {
             const list = stops();
             if (op === 'start') { S.run = { ...runStart(list), began: env.now() }; due.inventory = 0; if (logRead()) due.log = 0; }
             else if (op === 'stop') idle();
             else {
                 countRun();
+                if (S.run.on && place && place !== S.run.place && list.some((s) => s.place === place)) S.run = { ...S.run, place, at: list.findIndex((s) => s.place === place) };
                 S.run = runNext(S.run, list);
                 // Over: what you took leaves the list, what you skipped stays on it. The run is summed here, once:
                 // its counts are of the lines as they were, and those lines are shorter from now on.
@@ -876,7 +1146,9 @@ export function makeEngine(env) {
         },
         read: readNow,
         readStock,
-        look(itemId) { const id = String(itemId || ''); if (id === looked.id && env.now() - looked.at < EG_MIN) return; looked = { id, at: env.now() }; step(); },
+        // `false`: nothing the screen shows changed - the hub is not drawn again for it (a draw that asked for a
+        // look that asked for a draw went round every 60 ms on the Buy page until 1.3.0).
+        look(itemId) { const id = String(itemId || ''); if (id === looked.id && env.now() - looked.at < EG_MIN) return false; looked = { id, at: env.now() }; step(); return false; },
         w3b(op) {
             if (flags.w3b) return;
             flags.w3b = true;
@@ -887,7 +1159,11 @@ export function makeEngine(env) {
 
     function act(name, ...args) {
         if (!actions[name]) return false;
-        actions[name](...args);
+        // Every press is in the problem log, with when: a press that seemed to do nothing can be found in the zip.
+        if (name !== 'look') env.say('note', 'Pressed: ' + name, args.filter((a) => a != null).map(String).join(' ') || null);
+        if (actions[name](...args) === false) return true;
+        // Your own press is never calm: the next pass decides from a view worked out after it.
+        last = null;
         planKeep();
         flush();
         env.changed();
@@ -895,6 +1171,11 @@ export function makeEngine(env) {
     }
 
     /** What a Torn page saw: a buy on a bazaar, a press of EXCHANGE, your thread's title. */
+    /** Your log, asked a few seconds, twenty seconds and a minute from now (only read with a Full key). */
+    function askLogSoon(now) {
+        if (logRead()) logSoon = [...logSoon.filter((t) => t > now), ...EG_LOG_AFTER_BUY_MS.map((d) => now + d)].sort((a, b) => a - b).slice(-6);
+    }
+
     function note(kind, what) {
         const now = env.now();
         if (kind === 'buy') {
@@ -903,22 +1184,29 @@ export function makeEngine(env) {
                 touch('seen', 'stock');
                 countRun();
                 tidyList();
-                // The log has it within a minute or two: asked for now, not at its next turn.
-                if (logRead()) due.log = Math.min(due.log || 0, now + 20000);
+                // Torn's log is the judge of the buy: asked a few seconds, twenty seconds and a minute after it.
+                askLogSoon(now);
                 due.inventory = Math.min(due.inventory || 0, now + EG_INV_AFTER_BUY_MS);
             }
-        } else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); }
+        // Torn's own Buy pressed on a listing in a Torn tab. Nothing is counted for it - Torn may still ask "are
+        // you sure", or refuse - but its log is asked soon after: what was bought is in it. Nothing on the screen
+        // changes by the press itself.
+        } else if (kind === 'press') { askLogSoon(now); return; }
+        else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); }
         else if (kind === 'thread') { noteThread(S, what, now); touch('thread'); }
         // A Torn tab sees a trade that is not as it was read: read again now, not at the minute.
         else if (kind === 'trade') { due.trades = 0; again(); }
         // A bazaar's own page, in front of you: the newest look at it there is.
+        // (Also a listing the page proved gone, a bazaar with nothing in it, and "Gone" pressed on a line.)
         else if (kind === 'shop') { if (notePage(S, what, now)) { cache = null; tidyList(); } }
+        // What a Torn tab saw is never calm either.
+        last = null;
         flush();
         env.changed();
     }
 
     return {
-        state: S, step, view, act, note, readNow, keyChanged, flush, serverWant, serverTook, serverForget,
+        state: S, step, view, calm, act, note, readNow, keyChanged, flush, serverWant, serverTook, serverForget,
         serverMark: () => ({ seq: S.server.seq, seenAt: S.server.seenAt }),
         keys: () => keyState,
         busy: () => ({ ...flags }),
@@ -926,6 +1214,8 @@ export function makeEngine(env) {
         /** Whether the settings changed something the reads depend on. */
         settingsChanged() {
             cache = null;
+            // Your own press is never calm: what you pay is fixed from a view worked out after it (rateKeep).
+            last = null;
             syncAt = 0;
             // A place switched off ("Buy from") leaves the list at once - but never a line you already took from.
             const left = dropPlaces(S.cart, buysFrom(settings()), (l) => S.run.on && S.run.took && S.run.took[l.key] > 0);

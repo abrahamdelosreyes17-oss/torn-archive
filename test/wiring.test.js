@@ -105,3 +105,87 @@ test('the hub gone quiet: a Torn tab says since when, first in its box, and says
     // And the Torn tab puts it in front of whatever it shows from the hub.
     assert.match(read('../src/ui/torn-page.js'), /boxLate\(st\.shared\.at, now\(\)\) : ''\) \+ said\.html/);
 });
+
+// ---- 1.3.0 ------------------------------------------------------------------------------------------------------------
+
+const between = (text, from, to) => { const at = text.indexOf(from); assert.ok(at >= 0, 'not found: ' + from); return text.slice(at, text.indexOf(to, at + from.length)); };
+
+test('every button a hub page draws is one the hub answers', () => {
+    const pages = read('../src/ui/hub-pages.js');
+    const hub = read('../src/ui/hub.js');
+    const drawn = new Set([...pages.matchAll(/data-act="([a-z-]+)"/g)].map((m) => m[1]));
+    assert.ok(drawn.has('read-stock') && drawn.has('make-list') && drawn.size > 20, 'the pages\' buttons were found: ' + drawn.size);
+    const press = between(hub, 'function press(el, e) {', '\n    }\n');
+    assert.deepEqual([...drawn].filter((a) => !press.includes(`a === '${a}'`)), [], 'drawn on a page, answered by nothing');
+});
+
+test('every button the box draws on a Torn page is one the Torn tab answers', () => {
+    const box = read('../src/ui/box-pages.js');
+    const page = read('../src/ui/torn-page.js');
+    const drawn = new Set([...box.matchAll(/data-act="([a-z-]+)"/g), ...box.matchAll(/bxBtn\('([a-z-]+)'/g), ...page.matchAll(/data-act="([a-z-]+)"/g)].map((m) => m[1]));
+    for (const a of ['run-start', 'run-next', 'run-stop', 'run-go', 'gone', 'hub', 'fill-all', 'fill-card', 'stock-read']) assert.ok(drawn.has(a), 'the box draws ' + a);
+    const press = between(page, '    function press(btn) {', '\n    root.addEventListener(');
+    assert.deepEqual([...drawn].filter((a) => !press.includes(`act === '${a}'`)), [], 'drawn in the box, answered by nothing');
+});
+
+test('every press the app hands to the engine is one the engine knows, and every note it passes on is one the engine takes', () => {
+    const main = read('../src/main.js');
+    const engine = read('../src/engine/engine.js');
+    const acts = between(engine, '    const actions = {', '\n    };');
+    const known = new Set([...acts.matchAll(/^ {8}([A-Za-z0-9]+)\s*[:(,]/gm)].map((m) => m[1]));
+    const sent = new Set([...main.matchAll(/engine\.act\('([A-Za-z0-9]+)'/g)].map((m) => m[1]));
+    assert.ok(sent.has('run') && sent.has('readStock') && sent.has('look'), 'the app\'s presses were found: ' + [...sent].join(', '));
+    assert.deepEqual([...sent].filter((n) => !known.has(n)), [], 'handed to the engine, known to nothing');
+
+    // The kinds main.js passes straight to engine.note, on the one line that does it.
+    const line = main.split('\n').find((l) => l.includes('engine.note(n.kind, n.what)'));
+    assert.ok(line, 'main.js passes notes on to the engine');
+    const kinds = [...line.matchAll(/n\.kind === '([a-z]+)'/g)].map((m) => m[1]);
+    assert.ok(kinds.includes('press') && kinds.includes('shop') && kinds.includes('buy'), 'kinds passed on: ' + kinds.join(', '));
+    const note = between(engine, '    function note(kind, what) {', '\n    return {');
+    assert.deepEqual([...new Set(kinds)].filter((k) => !note.includes(`kind === '${k}'`)), [], 'passed on, taken by nothing');
+});
+
+test('a press of Start, Next or Stop in the box: the note names the run and where you stand, the hub hands both to the engine, and the box waits for the view to name the note', () => {
+    const page = read('../src/ui/torn-page.js');
+    const main = read('../src/main.js');
+    const engine = read('../src/engine/engine.js');
+    // The Torn tab: one note, with the place when Next was pressed at a bazaar; the same press kept for the box.
+    assert.match(page, /const nid = note\('act', \{ name: 'run', args: place \? \[op, place\] : \[op\] \}\);/);
+    assert.match(page, /gmSet\(BOX_PRESSES_KEY, \[[^\n]*\{ nid, op, place, t \}\]/);
+    assert.match(page, /gmOnChange\(BOX_PRESSES_KEY, /);
+    // The hub: both arguments reach the engine, and the engine's run takes the place.
+    assert.match(main, /args\.slice\(0, 2\)/);
+    assert.match(main, /if \(n\.what && n\.what\.name === 'run'\) engine\.act\('run', \.\.\.args\);/);
+    assert.match(engine, /^ {8}run\(op, place = null\) \{/m);
+    // The hub hears a note the moment it is written, and names the notes it took in the view it shares.
+    assert.match(main, /gmOnChange\(SHARED_NOTES_KEY, /);
+    assert.match(main, /gmSet\(SHARED_VIEW_KEY, \{ at: t, v, notes: /);
+    // The box reads the view through the presses still waiting.
+    assert.match(page, /const waiting = pressesLeft\(gmGet\(BOX_PRESSES_KEY, \[\]\), new Set\(st\.shared\.notes \|\| \[\]\), t, st\.shared\.at\);/);
+    assert.match(page, /const v = viewWithPresses\(st\.shared\.v, waiting\);/);
+});
+
+test('a look at a piece\'s sellers draws nothing: the hub does not draw again for a press that changes nothing on the screen', () => {
+    const main = read('../src/main.js');
+    const quiet = main.match(/const HUB_QUIET = new Set\(\[([^\]]*)\]\)/);
+    assert.ok(quiet && /'look'/.test(quiet[1]), 'look is a quiet press');
+    assert.match(read('../src/engine/engine.js'), /look\(itemId\) \{[^\n]*return false; \}/);
+});
+
+test('what a Torn tab needs of 1.3.0 rides in the view it is given: the buy taken back, the run, each piece\'s lines', () => {
+    const input = fixtureInput(NOW);
+    input.back = [{ id: '258', qty: 3, whoId: '11', im: false, t: NOW - 90000 }];
+    const v = shared(input);
+    assert.deepEqual(v.buy.back.map((b) => [String(b.id), b.qty]), [['258', 3]]);
+    assert.ok(v.buy.run && Array.isArray(v.buy.run.stops));
+    for (const p of v.pieces) for (const k of ['worth', 'line', 'lineS', 'need', 'held', 'target']) assert.ok(Number.isFinite(p[k]), p.name + ' has no ' + k);
+});
+
+test('"Read" on your stock, in the hub and in the box on a Torn page, both reach the engine\'s readStock', () => {
+    const main = read('../src/main.js');
+    assert.match(read('../src/ui/hub.js'), /a === 'read-stock'\) \{ act\('readStock'\)/);
+    assert.match(between(main, '    const actions = {', '\n    };'), /^ {8}readStock\b/m);
+    assert.match(read('../src/ui/torn-page.js'), /else note\('read', \{ what: 'stock' \}\);/);
+    assert.match(main, /n\.kind === 'read'\) \{ engine\.act\('readStock'\);/);
+});

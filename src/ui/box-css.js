@@ -57,7 +57,9 @@ export const BOX_CSS = `
 .ta-l.away { background: none; border-style: dashed; } .ta-l.away b { color: var(--text2); }
 .ta-l .hold { display: flex; align-items: center; gap: 8px; white-space: nowrap; } .ta-l .hold b { color: var(--text2); }
 .bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
-.bar i { display: block; height: 100%; width: var(--w); border-radius: 2px; background: var(--need); transition: width .3s ease; } .bar.full i { background: var(--good); }
+/* What you hold of a piece against what you build (the owner, 2026-10-11: "red for we have too much, orange we
+   still need more, and green we have enough exactly"): the same three colours as the hub's Stock page. */
+.bar i { display: block; height: 100%; width: var(--w); border-radius: 2px; background: var(--warn); transition: width .3s ease; } .bar.full i { background: var(--good); }
 .it { width: 38px; height: 19px; flex: none; display: inline-grid; place-items: center; }
 .it img { width: 38px; height: 19px; object-fit: contain; display: block; }
 .ta-kv { display: flex; align-items: baseline; gap: 10px; font-size: 12px; color: var(--muted); }
@@ -68,7 +70,9 @@ export const BOX_CSS = `
 .ta-hold b { color: var(--warn); font-weight: 600; }
 .ta-ok { padding: 8px 10px; border-radius: 9px; background: var(--good-bg); border: 1px solid rgba(63,207,107,.35); color: var(--text2); font-size: 12px; line-height: 1.5; }
 .msg { padding: 7px 10px; border-radius: 10px; background: var(--input); border: 1px solid var(--line); color: var(--text2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.ta-btns { display: flex; gap: 6px; flex-wrap: wrap; } .ta-btns:empty { display: none; }
+.ta-btns { display: flex; gap: 6px; flex-wrap: wrap; } .ta-btns:empty { display: none; } .ta-btns.late { margin-top: 6px; }
+/* The keys, in one line: each key's cap, then what it does. */
+.ta-n.keys { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; } .ta-n.keys .kbd { margin: 0 5px 0 12px; background: rgba(255,255,255,.12); color: var(--text2); } .ta-n.keys .kbd:first-child { margin-left: 0; }
 .btn { height: 26px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--raised); color: var(--text); font: 550 12px/1 var(--sans); display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; cursor: pointer; }
 .btn:hover { background: #1c212c; }
 .btn.go { background: var(--brand); border-color: transparent; color: #fff; } .btn.go:hover { background: #a08fff; }
@@ -82,7 +86,8 @@ export const BOX_CSS = `
 .st-r { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1px 8px; padding: 3px 8px; border-radius: 8px; border: 1px solid transparent; }
 .st-r .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); } .st-r.here .n { color: var(--text); font-weight: 600; }
 .st-r .x { grid-column: 2; color: var(--muted); font-size: 11.5px; white-space: nowrap; } .st-r .bar { grid-column: 3; width: 54px; flex: none; }
-.st-r.need .x { color: var(--need); } .st-r.ahead .x { color: var(--warn); } .st-r.ok .x { color: var(--good); }
+.st-r.need .x { color: var(--warn); } .st-r.ahead .x { color: #ff8a87; } .st-r.ok .x { color: var(--good); }
+.st-r.ahead .bar i, .st-r.ahead .bar.full i { background: #ff7878; }
 .st-r.over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .st-r.over .x, .st-r.over b { color: #ff8a87; font-weight: 600; } .st-r.over .bar i { background: #ff7878; }
 .ta-hold.st-over { background: rgba(255, 90, 90, .13); border-color: rgba(255, 120, 120, .55); } .ta-hold.st-over b { color: #ff8a87; }
 .ta.ts .ta-b { gap: 3px; } .ta.ts .ta-b h4 { margin-top: 5px; }

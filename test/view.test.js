@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { archiveView, viewForTabs, viewPiece, setLadder, setsTraded, ALL_PIECE_IDS } from '../src/core/view.js';
+import { archiveView, viewForTabs, viewPiece, setLadder, setsTraded, ALL_PIECE_IDS, listPieces } from '../src/core/view.js';
 import { archiveSettings, ARCHIVE_DEFAULTS, setsCtx } from '../src/core/settings.js';
 import { fillPlan, fillList, runStart, stopsOf } from '../src/core/shopping.js';
 import { SETS } from '../src/core/sets.js';
@@ -78,12 +78,15 @@ test('buying: the plan, the hot listings, and the list as stops with a margin li
     assert.ok(todo.first.every((x) => x.gain > 0 && x.cost > 0));
     assert.ok(first.sets.every((s) => todo.full[s.key] >= s.full && todo.full[s.key] <= first.buy.plan.full[s.key]), 'full sets after the cheap listings');
     // Make the list, as the page does.
-    const cart = fillList(first.pieces, base.offers);
+    const cart = fillList(listPieces(first.pieces), base.offers);
     const worthOf = (id) => viewPiece(first, id).worth;
     const v = archiveView({ ...base, cart, run: runStart(stopsOf(cart, worthOf)) });
     assert.equal(v.buy.units, first.buy.plan.units);
     assert.equal(v.buy.stops.length, first.buy.plan.stops);
-    assert.ok(v.buy.stops.every((s) => s.margin.units === s.units && s.margin.ok), 'every stop keeps the least profit: nothing else is on the list');
+    // A stop keeps the least profit by itself - unless a line of it is over its piece's own share and carried by
+    // the room of the set it finishes (1.3.0: such a line says so, `g`).
+    assert.ok(v.buy.stops.every((s) => s.margin.units === s.units && (s.margin.ok || s.lines.some((l) => l.g === 'room' || l.g === 'stretch'))), 'every stop keeps the least profit, or says what carries it');
+    assert.ok(v.buy.stops.every((s) => s.lines.every((l) => l.g !== 'no')), 'nothing on the list is a "No thanks"');
     assert.ok(v.buy.stops[v.buy.stops.length - 1].im || v.buy.stops.every((s) => !s.im), 'the Item Market comes last');
     assert.equal(v.buy.run.stops[0].state, 'cur');
     assert.ok(viewPiece(v, 274).listed > 0);
@@ -106,12 +109,16 @@ test('trades: whose turn, the margin, what is not a set piece', () => {
     assert.ok(garrett.vault > 0);
     assert.equal(v.trades.finished[0].receipt.id, 'r8000');
     assert.equal(v.nav.trades, 3);
-    // The points price falls: the same trade turns amber, with the rate that mends it.
+    // The points price falls. Until 1.3.0 the same trade turned amber and the page offered the rate that mends
+    // it; now that rate is what is paid by itself (core/sellrate.js): the trade keeps your least profit, its
+    // message names the lower rate, and "Open your shop?" no longer says the rate is too high.
     const base = fixtureInput(NOW);
     const fell = archiveView({ ...base, listings: base.listings.map((l) => ({ ...l, cost: l.cost - 400 })) });
-    assert.equal(fell.trades.open[0].margin.state, 'under');
-    assert.ok(fell.trades.open[0].margin.mend < 101);
-    assert.equal(fell.prices.verdict.state, 'low');
+    assert.ok(fell.prices.sets.some((s) => s.capped && s.pct < 101 && s.pct === s.cap), 'a set is at its ceiling, under your 101%');
+    assert.equal(fell.trades.open[0].margin.state, 'ok');
+    assert.ok(fell.trades.open[0].total < garrett.total, 'the same trade costs less');
+    assert.ok(!fell.trades.open[0].message.includes('At 101% of market value that is'));
+    assert.notEqual(fell.prices.verdict.state, 'low');
 });
 
 test('points: the book at its average, the lot that leaves quickest, the mug that counts', () => {
