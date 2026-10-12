@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.4
+// @version      1.3.5
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.4';
+    const TARC_BUILD_VERSION = '1.3.5';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -4525,7 +4525,36 @@
             parts.push([setLine("Mug-free, guaranteed. Fast trade, then you're back in the air.", { size: 5, bold: true }), setLine("Open a trade, drop your items in, I'll send the total.")]);
             rows = parts.flatMap((p, k) => (k ? [...SET_BREAK, ...p] : p));
         }
-        return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join('') };
+        // What this post tells a seller that an edit of your thread is worth: the word on its top, your rate, the pieces
+        // struck out (closed, it names no piece).
+        const says = { open: !!open, pct: rate, struck: open ? rows.flatMap((r) => (r.parts || []).filter((p) => p.s).map((p) => p.t)).sort() : [] };
+        return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join(''), says };
+    }
+
+    /**
+     * What the post you copied last no longer says - the owner, 2026-10-12: "it should also warn me if something is
+     * full in the page and i need to update my forum to strike it out". Torn Archive does not read your thread's post:
+     * it knows what it handed you on "Copy the post" (`posted`: that post's `says`). Never copied: taken as a post
+     * with nothing struck, open as now. The pieces you are short on change too often to ask for an edit: not looked at.
+     * @returns null when nothing differs, else { strike: [full now], back: [wanted again], open: 'open' | 'closed' | '',
+     *          rate: the rate the post names when it is not yours ('' else), words: [a sentence for each] }
+     */
+    function postBehind(posted, says) {
+        if (!says) return null;
+        const was = posted && Array.isArray(posted.struck) ? posted : { open: says.open, pct: says.pct, struck: [] };
+        const flip = !!was.open !== !!says.open;
+        const strike = says.struck.filter((n) => !was.struck.includes(n));
+        const back = says.open && was.open ? was.struck.filter((n) => !says.struck.includes(n)) : [];
+        const rate = !flip && String(was.pct) !== String(says.pct) ? String(was.pct) : '';
+        if (!flip && !strike.length && !back.length && !rate) return null;
+        const are = (xs) => (xs.length === 1 ? 'is' : 'are');
+        const words = [
+            flip ? (says.open ? 'Your shop is open: the post you copied last says CLOSED FOR NOW.' : 'Your shop is closed: the post you copied last says OPEN FOR TRADES.') : '',
+            strike.length ? `${setListWords(strike)} ${are(strike)} full now: struck out in the new post.` : '',
+            back.length ? `${setListWords(back)} ${are(back)} wanted again: no longer struck.` : '',
+            rate ? `Your rate is ${says.pct}%: the post you copied last says ${rate}%.` : '',
+        ].filter(Boolean);
+        return { strike, back, open: flip ? (says.open ? 'open' : 'closed') : '', rate, words };
     }
 
     /**
@@ -4551,8 +4580,18 @@
         return { open, pct: m ? Number(m[1]) : null };
     }
 
-    /** A thread you started that reads like a buying thread for sets. */
-    const isBuyingTitle = (title) => /\b(open|closed)\b/i.test(String(title || '')) && /plush|flower/i.test(String(title || ''));
+    /**
+     * A thread you started that reads like a buying thread for sets: it names plushies or flowers, and says open or
+     * closed - or that you buy ("[B]", "buying", a rate). The owner's own title, 2026-10-12, says neither open nor
+     * closed ("[B] Plushies and Flowers! 101% MV Always!"): until 1.3.4 his thread was not found, so no message to a
+     * seller named it. Never a thread that sells.
+     */
+    const isBuyingTitle = (title) => {
+        const t = String(title || '');
+        if (!/plush|flower/i.test(t)) return false;
+        if (/\b(open|closed)\b/i.test(t)) return true;
+        return !/\[s\]|\bsell/i.test(t) && /\[b\]|\bbuy|\d\s*%/i.test(t);
+    };
 
     /**
      * Does your thread still say what Torn Archive says?
@@ -6503,7 +6542,7 @@
     const EN_LOTS_READ = 300;
 
     /** The parts of the state, each stored under its own name: only what changed is written. */
-    const ENGINE_PARTS = ['self', 'items', 'stock', 'seen', 'swaps', 'offers', 'summary', 'shops', 'bids', 'points', 'money', 'book', 'types', 'log', 'ledger', 'outs', 'trades', 'cart', 'plan', 'run', 'hot', 'thread', 'w3b', 'rate', 'hist', 'names', 'server'];
+    const ENGINE_PARTS = ['self', 'items', 'stock', 'seen', 'swaps', 'offers', 'summary', 'shops', 'bids', 'points', 'money', 'book', 'types', 'log', 'ledger', 'outs', 'trades', 'cart', 'plan', 'run', 'hot', 'thread', 'posted', 'w3b', 'rate', 'hist', 'names', 'server'];
 
     function engineEmpty() {
         return {
@@ -6540,6 +6579,8 @@
             run: { ...RUN_IDLE },
             hot: {},
             thread: null,
+            // What the forum post said when you last pressed "Copy the post": { open, pct, struck: [names], at }.
+            posted: null,
             w3b: { list: null, listAt: 0, receipts: [], receiptsAt: 0, lastReceiptAt: 0, error: '', receiptsError: '', tried: {} },
             // What you pay your sellers, fixed for the hour (core/sellrate.js fixTable; engine rateKeep). `sent`: the
             // table's `rev` as it was last brought to TornW3B - kept over a reload, so a reload keeps the hour.
@@ -7623,6 +7664,7 @@
             cart: S.cart, run: S.run, hotSince: S.hot,
             kept: settings.targetMode !== 'number' && S.cart.length && S.plan && S.plan.targets ? S.plan.targets : null,
             thread: S.thread,
+            posted: S.posted,
             w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error, receiptsError: S.w3b.receiptsError || '', tried: S.w3b.tried || {} },
             hist: S.hist,
             names: (id) => S.names[String(id)] || '',
@@ -8767,6 +8809,8 @@
 
         // ---- my prices ---------------------------------------------------------------------------------------------------
         const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
+        // Only with a thread of yours known: without one there is nothing to edit.
+        forum.behind = i.thread && i.thread.title ? postBehind(i.posted, forum.says) : null;
         // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
         const paidRows = sets.map((s) => ({ label: s.label, pct: s.rate.pct }));
         const thread = i.thread && i.thread.title ? { ...i.thread, url: threadUrl, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;
@@ -8871,6 +8915,7 @@
         if (open.length) todo.push({ kind: 'trades', tone: 'warn', n: open.length, wait: trades.wait, money: trades.waitMoney });
         if (hotPlan.length) todo.push({ kind: 'hot', tone: '', n: vwSum(hotPlan, (l) => l.q), stops: hotPlanStops.length, pic: hotPlan[0].id, first: firstStops(hotPlanStops), cost: vwSum(hotPlanStops, (s) => s.cost), full: fullAfter((p) => onList(hotPlan, p.id)) });
         else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
+        if (prices.forum.behind) todo.push({ kind: 'post', tone: 'warn', words: prices.forum.behind.words });
         if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
         if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice, each: Math.ceil(book.cost / book.left), loss: pointsPrice > 0 && book.left * pointsPrice < book.cost });
 
@@ -10639,6 +10684,8 @@
                 if (logRead()) due.log = 0;
             },
             clearList() { S.cart = []; idle(); touch('cart', 'run'); },
+            // "Copy the post" pressed: what that post says is what your thread is taken to say from now on.
+            posted() { S.posted = { ...view().prices.forum.says, at: env.now() }; touch('posted'); },
             // `place` (Next pressed on a Torn page): where you stand. A bazaar of the list that is not the stop the run
             // is on becomes that stop first - you did not follow the order - and Next goes on from there; the stops
             // passed over stay on the list. (Until 1.3.0 Next was only offered on the current stop.)
@@ -12246,6 +12293,7 @@
         if (t.kind === 'trades') return row(tone.warn, ic('trades'), `<b>${hPlural(t.n, 'trade')} open with you.</b> ${t.wait ? `${t.wait} ${t.wait === 1 ? 'waits' : 'wait'} for your money: ${hMoney(t.money)}.` : 'None waits for you.'}`, '<button class="btn sm go" data-go="trades">See them</button>');
         if (t.kind === 'hot') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Cheaper than from your sellers, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list" data-v="hot">The list</button>');
         if (t.kind === 'buy') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Under their worth, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
+        if (t.kind === 'post') return row(tone.warn, ic('tag'), `<b>Update your forum post.</b> ${hEsc(t.words[0])}${t.words.length > 1 ? ` And ${hPlural(t.words.length - 1, 'more thing')}.` : ''}`, '<button class="btn sm" data-go="prices">The post</button>');
         if (t.kind === 'swap') return row(tone.brand, ic('brand'), `<b>Swap ${hPlural(t.n, 'set')}.</b> ${hNum(t.points)} points.`, hOut(MUSEUM_URL, 'Museum', 'btn sm out'));
         if (t.kind === 'hold') return row(tone.warn, ic('points'), `<b>Hold your points.</b> Under the usual ${hMoney(t.usual)}.`, '<button class="btn sm" data-go="points">Points</button>');
         if (t.loss) return row(tone.warn, ic('points'), `<b>Your ${hNum(t.n)} points would sell at a loss.</b> They cost you ${hMoney(t.each)} each, the market pays ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
@@ -12266,7 +12314,7 @@
         const under = (s) => (s.gain < 0 ? `<span class="t-muted" title="These pieces are over their own share of the set by this much: the set carries it - it still pays at today's points price, with your least profit">${hMoney(-s.gain)} over</span>` : `<span class="t-good">${hSigned(s.gain)}</span>`);
         if (t.kind === 'hot' || t.kind === 'buy') return head(t.kind === 'hot' ? 'Where' : 'The first stops', 'Pieces', t.kind === 'hot' ? 'Under your sellers' : 'Under their worth') + (t.first || []).map((s) => line(`<b>${s.im ? 'Item Market' : hEsc(s.who || 'Bazaar ' + (s.whoId ?? ''))}</b>`, hNum(s.units), under(s))).join('');
         if (t.kind === 'swap') return head('Full sets', 'Sets', 'Points') + v.sets.filter((s) => s.full).map((s) => line(`<b>${hEsc(s.label)} Set</b>`, hNum(s.full), hNum(s.full * s.points))).join('');
-        if (t.kind === 'hold') return '';
+        if (t.kind === 'hold' || t.kind === 'post') return '';
         const sell = v.points.sell;
         return head('At this price', '', '') + line('You get', '', hMoney(sell.lands)) + line('Over what they cost you', '', `<span class="${sell.profit >= 0 ? 't-good' : 't-warn'}">${hSigned(sell.profit)}</span>`);
     }
@@ -12841,8 +12889,8 @@
           <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
           ${pgW3b(d)}
           <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-            <div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
-            <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
+            ${pr.forum.behind ? `<div class="ta-hold" data-k="post-behind" style="margin-bottom:10px"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Copy the post and paste it over the old one on Torn.</div>` : ''}<div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}" data-post="1">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
           </div></div>
           <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
         </div>
@@ -13423,7 +13471,7 @@
             else if (a === 'run') { ui.imKey = ''; act('run', v); }
             // The Item Market stop: the link opened the next piece's page; the run stays on the stop.
             else if (a === 'im-walk') { ui.imKey = v; draw(false); }
-            else if (a === 'copy') { act('copy', v, el.dataset.html || ''); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
+            else if (a === 'copy') { act('copy', v, el.dataset.html || ''); const was = el.textContent; const post = el.dataset.post === '1'; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; if (post) act('posted'); }, 1400); }
             else if (a === 'key-save') { const box = $(`input[data-key="${v}"]`); const key = box ? box.value.trim() : ''; if (key) { box.value = ''; act('keySave', v, key); } }
             else if (a === 'key-forget') act('keyForget', v);
             else if (a === 'key-show') act('keyShow', v);
@@ -14665,7 +14713,8 @@
         let html = bxHead('Your thread', under ? 'the title names your rate' : ok ? 'the title matches' : 'the title is out of date') + bxKv('Shop', `<span class="${pr.open ? 't-good' : ''}">${shop}</span>`);
         if (under) html += `<div class="ta-hold"><b>It says ${hRate(check.says.pct)}%; today you pay ${paid}.</b> The points price holds a set under your rate. The message for a trade names what you pay.</div>`;
         else if (!ok) html += `<div class="ta-hold"><b>${hEsc(why)}</b> Edit the thread on Torn and paste the new title.</div><div class="msg">${hEsc(pr.forum.title)}</div>`;
-        html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}"`)}</div>`
+        if (pr.forum.behind) html += `<div class="ta-hold"><b>Your post is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Copy the post and paste it over the old one.</div>`;
+        html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}" data-post="1"`)}</div>`
             + bxNote('<b>Nothing is posted or edited for you.</b>');
         return { where: 'your thread', html, marks: [], titleMark: { text: under ? `says ${hRate(check.says.pct)}%, you pay ${paid} today` : ok ? `matches your shop: ${shop}` : 'does not match your shop', state: under ? 'ahead' : ok ? 'good' : 'over' }, title };
     }
@@ -18031,7 +18080,14 @@
             if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
             // A piece of your stock: Torn Archive opens on its Buy page, on that piece (ui/hub.js reads the address).
             if (act === 'plan') { gmOpenTab(ARCHIVE_PAGE_URL + (tpDigits(val) ? '#buy/' + tpDigits(val) : '#buy')); return; }
-            if (act === 'copy') { if (btn.dataset.html ? gmCopyRich(val, btn.dataset.html) : gmCopy(val)) done('copy:' + val); return; }
+            if (act === 'copy') {
+                if (btn.dataset.html ? gmCopyRich(val, btn.dataset.html) : gmCopy(val)) {
+                    done('copy:' + val);
+                    // The post copied: the hub keeps what it says, to tell you when your thread is behind it.
+                    if (btn.dataset.post === '1') note('act', { name: 'posted', args: [] });
+                }
+                return;
+            }
             if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
             if (!v) return;
             if (act === 'run-start') { pressRun('start'); return; }
@@ -18629,6 +18685,7 @@
                         const args = Array.isArray(n.what && n.what.args) ? n.what.args.slice(0, 2) : [];
                         logLine('note', 'A Torn page', 'A press in the box taken: ' + String((n.what && n.what.name) || '') + ' ' + args.map(String).join(' '), 'it waited ' + Math.max(0, t - n.t) + ' ms');
                         if (n.what && n.what.name === 'run') engine.act('run', ...args);
+                        else if (n.what && n.what.name === 'posted') engine.act('posted');
                         moved = true;
                     }
                     // 'press': Torn's own Buy pressed on a listing - counted for nothing, your log is asked soon after.
@@ -18807,6 +18864,8 @@
             // "Read my stock": your items and your log, ahead of the rest, and nothing else.
             readStock: () => { engine.act('readStock'); },
             copy: (text, html) => (html ? gmCopyRich(text, html) : gmCopy(text)),
+            // "Copy the post": the engine keeps what that post says, to tell you when your thread is behind it.
+            posted: () => engine.act('posted'),
             keySave(kind, value) {
                 if (!KEY_KINDS.includes(kind) || !value) return;
                 gmSet('key.' + kind, String(value).trim());

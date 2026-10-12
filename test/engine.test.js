@@ -1705,10 +1705,21 @@ test('1.3.3 a piece you hold too many of comes off your TornW3B list, is named o
     // The post names every piece and strikes that one out.
     assert.ok(v.prices.forum.html.includes('<s>'), v.prices.forum.html);
     assert.equal((v.prices.forum.html.match(/<s>/g) || []).length, 1);
+    // 1.3.4: your thread is behind that post until you press "Copy the post", and "Do now" says so.
+    assert.ok(v.prices.thread, 'your thread is known');
+    assert.equal(v.prices.forum.behind.strike.length, 1);
+    assert.ok(v.dash.todo.some((t) => t.kind === 'post'));
+    r.engine.act('posted');
+    assert.equal(r.view().prices.forum.behind, null);
+    assert.ok(!r.view().dash.todo.some((t) => t.kind === 'post'));
+    assert.deepEqual(r.engine.state.posted.struck, v.prices.forum.says.struck);
     // You no longer hold too many: it is back on the list by itself.
     r.world.held[258] = 5;
     await r.go(15 * MIN);
     assert.equal(piece(r.view(), 258).ahead, 0);
     assert.equal(onW3b(r.world, 258), piece(r.view(), 258).pay);
     assert.ok(!r.view().prices.forum.html.includes('<s>'));
+    // The piece is wanted again: the post you copied still strikes it.
+    assert.equal(r.view().prices.forum.behind.back.length, 1);
+    assert.match(r.view().prices.forum.behind.words[0], / is wanted again: no longer struck\.$/);
 });

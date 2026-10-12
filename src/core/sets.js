@@ -480,7 +480,36 @@ export function forumText({ open, pct, stocks = [], sets = SETS, list = '' }) {
         parts.push([setLine("Mug-free, guaranteed. Fast trade, then you're back in the air.", { size: 5, bold: true }), setLine("Open a trade, drop your items in, I'll send the total.")]);
         rows = parts.flatMap((p, k) => (k ? [...SET_BREAK, ...p] : p));
     }
-    return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join('') };
+    // What this post tells a seller that an edit of your thread is worth: the word on its top, your rate, the pieces
+    // struck out (closed, it names no piece).
+    const says = { open: !!open, pct: rate, struck: open ? rows.flatMap((r) => (r.parts || []).filter((p) => p.s).map((p) => p.t)).sort() : [] };
+    return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join(''), says };
+}
+
+/**
+ * What the post you copied last no longer says - the owner, 2026-10-12: "it should also warn me if something is
+ * full in the page and i need to update my forum to strike it out". Torn Archive does not read your thread's post:
+ * it knows what it handed you on "Copy the post" (`posted`: that post's `says`). Never copied: taken as a post
+ * with nothing struck, open as now. The pieces you are short on change too often to ask for an edit: not looked at.
+ * @returns null when nothing differs, else { strike: [full now], back: [wanted again], open: 'open' | 'closed' | '',
+ *          rate: the rate the post names when it is not yours ('' else), words: [a sentence for each] }
+ */
+export function postBehind(posted, says) {
+    if (!says) return null;
+    const was = posted && Array.isArray(posted.struck) ? posted : { open: says.open, pct: says.pct, struck: [] };
+    const flip = !!was.open !== !!says.open;
+    const strike = says.struck.filter((n) => !was.struck.includes(n));
+    const back = says.open && was.open ? was.struck.filter((n) => !says.struck.includes(n)) : [];
+    const rate = !flip && String(was.pct) !== String(says.pct) ? String(was.pct) : '';
+    if (!flip && !strike.length && !back.length && !rate) return null;
+    const are = (xs) => (xs.length === 1 ? 'is' : 'are');
+    const words = [
+        flip ? (says.open ? 'Your shop is open: the post you copied last says CLOSED FOR NOW.' : 'Your shop is closed: the post you copied last says OPEN FOR TRADES.') : '',
+        strike.length ? `${setListWords(strike)} ${are(strike)} full now: struck out in the new post.` : '',
+        back.length ? `${setListWords(back)} ${are(back)} wanted again: no longer struck.` : '',
+        rate ? `Your rate is ${says.pct}%: the post you copied last says ${rate}%.` : '',
+    ].filter(Boolean);
+    return { strike, back, open: flip ? (says.open ? 'open' : 'closed') : '', rate, words };
 }
 
 /**
@@ -506,8 +535,18 @@ export function readThreadTitle(title) {
     return { open, pct: m ? Number(m[1]) : null };
 }
 
-/** A thread you started that reads like a buying thread for sets. */
-export const isBuyingTitle = (title) => /\b(open|closed)\b/i.test(String(title || '')) && /plush|flower/i.test(String(title || ''));
+/**
+ * A thread you started that reads like a buying thread for sets: it names plushies or flowers, and says open or
+ * closed - or that you buy ("[B]", "buying", a rate). The owner's own title, 2026-10-12, says neither open nor
+ * closed ("[B] Plushies and Flowers! 101% MV Always!"): until 1.3.4 his thread was not found, so no message to a
+ * seller named it. Never a thread that sells.
+ */
+export const isBuyingTitle = (title) => {
+    const t = String(title || '');
+    if (!/plush|flower/i.test(t)) return false;
+    if (/\b(open|closed)\b/i.test(t)) return true;
+    return !/\[s\]|\bsell/i.test(t) && /\[b\]|\bbuy|\d\s*%/i.test(t);
+};
 
 /**
  * Does your thread still say what Torn Archive says?

@@ -97,6 +97,7 @@ function pgTodo(v, t) {
     if (t.kind === 'trades') return row(tone.warn, ic('trades'), `<b>${hPlural(t.n, 'trade')} open with you.</b> ${t.wait ? `${t.wait} ${t.wait === 1 ? 'waits' : 'wait'} for your money: ${hMoney(t.money)}.` : 'None waits for you.'}`, '<button class="btn sm go" data-go="trades">See them</button>');
     if (t.kind === 'hot') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Cheaper than from your sellers, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list" data-v="hot">The list</button>');
     if (t.kind === 'buy') return row('', pic(t.pic), `<b>Buy ${hPlural(t.n, 'piece')}.</b> Under their worth, ${hPlural(t.stops, 'stop')}.`, '<button class="btn sm" data-act="make-list">The list</button>');
+    if (t.kind === 'post') return row(tone.warn, ic('tag'), `<b>Update your forum post.</b> ${hEsc(t.words[0])}${t.words.length > 1 ? ` And ${hPlural(t.words.length - 1, 'more thing')}.` : ''}`, '<button class="btn sm" data-go="prices">The post</button>');
     if (t.kind === 'swap') return row(tone.brand, ic('brand'), `<b>Swap ${hPlural(t.n, 'set')}.</b> ${hNum(t.points)} points.`, hOut(MUSEUM_URL, 'Museum', 'btn sm out'));
     if (t.kind === 'hold') return row(tone.warn, ic('points'), `<b>Hold your points.</b> Under the usual ${hMoney(t.usual)}.`, '<button class="btn sm" data-go="points">Points</button>');
     if (t.loss) return row(tone.warn, ic('points'), `<b>Your ${hNum(t.n)} points would sell at a loss.</b> They cost you ${hMoney(t.each)} each, the market pays ${hMoney(t.price)}.`, '<button class="btn sm" data-go="points">Points</button>');
@@ -117,7 +118,7 @@ function pgTodoMore(v, t) {
     const under = (s) => (s.gain < 0 ? `<span class="t-muted" title="These pieces are over their own share of the set by this much: the set carries it - it still pays at today's points price, with your least profit">${hMoney(-s.gain)} over</span>` : `<span class="t-good">${hSigned(s.gain)}</span>`);
     if (t.kind === 'hot' || t.kind === 'buy') return head(t.kind === 'hot' ? 'Where' : 'The first stops', 'Pieces', t.kind === 'hot' ? 'Under your sellers' : 'Under their worth') + (t.first || []).map((s) => line(`<b>${s.im ? 'Item Market' : hEsc(s.who || 'Bazaar ' + (s.whoId ?? ''))}</b>`, hNum(s.units), under(s))).join('');
     if (t.kind === 'swap') return head('Full sets', 'Sets', 'Points') + v.sets.filter((s) => s.full).map((s) => line(`<b>${hEsc(s.label)} Set</b>`, hNum(s.full), hNum(s.full * s.points))).join('');
-    if (t.kind === 'hold') return '';
+    if (t.kind === 'hold' || t.kind === 'post') return '';
     const sell = v.points.sell;
     return head('At this price', '', '') + line('You get', '', hMoney(sell.lands)) + line('Over what they cost you', '', `<span class="${sell.profit >= 0 ? 't-good' : 't-warn'}">${hSigned(sell.profit)}</span>`);
 }
@@ -692,8 +693,8 @@ function pgPrices(d) {
       <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
       ${pgW3b(d)}
       <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-        <div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
-        <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
+        ${pr.forum.behind ? `<div class="ta-hold" data-k="post-behind" style="margin-bottom:10px"><b>Your thread is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Copy the post and paste it over the old one on Torn.</div>` : ''}<div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}" data-post="1">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
       </div></div>
       <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
     </div>

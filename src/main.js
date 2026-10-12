@@ -360,6 +360,7 @@ function bootHub(tabId) {
                     const args = Array.isArray(n.what && n.what.args) ? n.what.args.slice(0, 2) : [];
                     logLine('note', 'A Torn page', 'A press in the box taken: ' + String((n.what && n.what.name) || '') + ' ' + args.map(String).join(' '), 'it waited ' + Math.max(0, t - n.t) + ' ms');
                     if (n.what && n.what.name === 'run') engine.act('run', ...args);
+                    else if (n.what && n.what.name === 'posted') engine.act('posted');
                     moved = true;
                 }
                 // 'press': Torn's own Buy pressed on a listing - counted for nothing, your log is asked soon after.
@@ -538,6 +539,8 @@ function bootHub(tabId) {
         // "Read my stock": your items and your log, ahead of the rest, and nothing else.
         readStock: () => { engine.act('readStock'); },
         copy: (text, html) => (html ? gmCopyRich(text, html) : gmCopy(text)),
+        // "Copy the post": the engine keeps what that post says, to tell you when your thread is behind it.
+        posted: () => engine.act('posted'),
         keySave(kind, value) {
             if (!KEY_KINDS.includes(kind) || !value) return;
             gmSet('key.' + kind, String(value).trim());

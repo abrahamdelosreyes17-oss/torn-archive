@@ -44,7 +44,7 @@ const EN_NAMES_KEPT = 1500;
 const EN_LOTS_READ = 300;
 
 /** The parts of the state, each stored under its own name: only what changed is written. */
-export const ENGINE_PARTS = ['self', 'items', 'stock', 'seen', 'swaps', 'offers', 'summary', 'shops', 'bids', 'points', 'money', 'book', 'types', 'log', 'ledger', 'outs', 'trades', 'cart', 'plan', 'run', 'hot', 'thread', 'w3b', 'rate', 'hist', 'names', 'server'];
+export const ENGINE_PARTS = ['self', 'items', 'stock', 'seen', 'swaps', 'offers', 'summary', 'shops', 'bids', 'points', 'money', 'book', 'types', 'log', 'ledger', 'outs', 'trades', 'cart', 'plan', 'run', 'hot', 'thread', 'posted', 'w3b', 'rate', 'hist', 'names', 'server'];
 
 export function engineEmpty() {
     return {
@@ -81,6 +81,8 @@ export function engineEmpty() {
         run: { ...RUN_IDLE },
         hot: {},
         thread: null,
+        // What the forum post said when you last pressed "Copy the post": { open, pct, struck: [names], at }.
+        posted: null,
         w3b: { list: null, listAt: 0, receipts: [], receiptsAt: 0, lastReceiptAt: 0, error: '', receiptsError: '', tried: {} },
         // What you pay your sellers, fixed for the hour (core/sellrate.js fixTable; engine rateKeep). `sent`: the
         // table's `rev` as it was last brought to TornW3B - kept over a reload, so a reload keeps the hour.
@@ -1164,6 +1166,7 @@ export function engineInput(S, settings, now, { logRead = false } = {}) {
         cart: S.cart, run: S.run, hotSince: S.hot,
         kept: settings.targetMode !== 'number' && S.cart.length && S.plan && S.plan.targets ? S.plan.targets : null,
         thread: S.thread,
+        posted: S.posted,
         w3b: { list: S.w3b.list ? new Map(S.w3b.list) : null, listAt: S.w3b.listAt, receipts: new Map(S.w3b.receipts), lastReceiptAt: S.w3b.lastReceiptAt, error: S.w3b.error, receiptsError: S.w3b.receiptsError || '', tried: S.w3b.tried || {} },
         hist: S.hist,
         names: (id) => S.names[String(id)] || '',

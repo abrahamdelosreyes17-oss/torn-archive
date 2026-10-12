@@ -1089,7 +1089,14 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
         // A piece of your stock: Torn Archive opens on its Buy page, on that piece (ui/hub.js reads the address).
         if (act === 'plan') { gmOpenTab(ARCHIVE_PAGE_URL + (tpDigits(val) ? '#buy/' + tpDigits(val) : '#buy')); return; }
-        if (act === 'copy') { if (btn.dataset.html ? gmCopyRich(val, btn.dataset.html) : gmCopy(val)) done('copy:' + val); return; }
+        if (act === 'copy') {
+            if (btn.dataset.html ? gmCopyRich(val, btn.dataset.html) : gmCopy(val)) {
+                done('copy:' + val);
+                // The post copied: the hub keeps what it says, to tell you when your thread is behind it.
+                if (btn.dataset.post === '1') note('act', { name: 'posted', args: [] });
+            }
+            return;
+        }
         if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
         if (!v) return;
         if (act === 'run-start') { pressRun('start'); return; }

@@ -2,7 +2,7 @@
 // Pure: the engine hands in settings, the stock count, prices, the points market, the books and the open trades;
 // out comes one plain object. No page, no storage, no clock of its own. The pages only format it.
 
-import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, thanksMessage, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
+import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, postBehind, thanksMessage, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
 import { setsCtx, buysFrom } from './settings.js';
 import { safeWorth, pieceBrings, tradeMargin, placeMargin } from './margin.js';
 import { fillPlan, fillList, stopsOf, runView, runOrder, onList, listAfterRun, cheapPieces, placeOf, addAll } from './shopping.js';
@@ -421,6 +421,8 @@ export function archiveView(i) {
 
     // ---- my prices ---------------------------------------------------------------------------------------------------
     const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
+    // Only with a thread of yours known: without one there is nothing to edit.
+    forum.behind = i.thread && i.thread.title ? postBehind(i.posted, forum.says) : null;
     // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
     const paidRows = sets.map((s) => ({ label: s.label, pct: s.rate.pct }));
     const thread = i.thread && i.thread.title ? { ...i.thread, url: threadUrl, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;
@@ -525,6 +527,7 @@ export function archiveView(i) {
     if (open.length) todo.push({ kind: 'trades', tone: 'warn', n: open.length, wait: trades.wait, money: trades.waitMoney });
     if (hotPlan.length) todo.push({ kind: 'hot', tone: '', n: vwSum(hotPlan, (l) => l.q), stops: hotPlanStops.length, pic: hotPlan[0].id, first: firstStops(hotPlanStops), cost: vwSum(hotPlanStops, (s) => s.cost), full: fullAfter((p) => onList(hotPlan, p.id)) });
     else if (buy.plan.units) todo.push({ kind: 'buy', tone: '', n: buy.plan.units, stops: buy.plan.stops, pic: plan[0].id, first: firstStops(planStops), cost: buy.plan.cost, full: buy.plan.full });
+    if (prices.forum.behind) todo.push({ kind: 'post', tone: 'warn', words: prices.forum.behind.words });
     if (fullAll) todo.push({ kind: 'swap', tone: 'brand', n: fullAll, points: vwSum(sets, (s) => s.full * s.points) });
     if (book.left) todo.push(hold ? { kind: 'hold', tone: 'warn', usual: level.lo || 0 } : { kind: 'sell', tone: 'good', n: book.left, price: pointsPrice, each: Math.ceil(book.cost / book.left), loss: pointsPrice > 0 && book.left * pointsPrice < book.cost });
 

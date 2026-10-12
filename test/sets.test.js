@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
     SETS, setByKey, setOfItem, isSetItem, shortName, setsOn, keptForSets, setStock, autoTarget, autoTargets, fillCost, setMarketValue, setValue, pieceWorths,
-    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, tradeMessage, mostWanted, forumText, setListLines, thanksMessage, readThreadTitle,
+    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, tradeMessage, mostWanted, forumText, setListLines, postBehind, thanksMessage, readThreadTitle,
     isBuyingTitle, threadCheck, moneyShare,
 } from '../src/core/sets.js';
 
@@ -305,6 +305,38 @@ test('your forum thread: the title and post to copy, open and closed (mockup Z3)
     assert.equal(thanksMessage({ receipt: 'https://weav3r.dev/receipt/abc' }), 'Thanks for the trade! Hope to trade again! Your receipt: https://weav3r.dev/receipt/abc');
     assert.equal(thanksMessage({ receipt: 'R', thread: 'T' }), 'Thanks for the trade! If you enjoyed it, a like and a comment on my forum would be a big help: T Hope to trade again! Your receipt: R');
     assert.equal(forumText({ open: true, pct: 99.4, stocks: [], sets: [PLUSHIE] }).title, '[OPEN] Buying Plushies · 99.4% of market value');
+});
+
+test('1.3.4 your thread is found by its own title, and the post you copied last is held against your stock', () => {
+    // The owner's title says neither open nor closed: his thread was not found, so no message to a seller named it.
+    assert.equal(isBuyingTitle('[B] Plushies and Flowers! 101% MV Always!'), true);
+    assert.equal(isBuyingTitle('Buying flowers'), true);
+    assert.equal(isBuyingTitle('[S] Plushies and Flowers, 95%'), false);
+    assert.equal(isBuyingTitle('Selling plushies cheap 90%'), false);
+    assert.equal(isBuyingTitle('Plushie appreciation thread'), false);
+    assert.equal(threadCheck('[B] Plushies and Flowers! 101% MV Always!', { open: true, pct: 101 }).state, 'match');
+    assert.equal(threadCheck('[B] Plushies and Flowers! 101% MV Always!', { open: false, pct: 101 }).state, 'match', 'a title that says neither is never out of date for it');
+    assert.equal(threadCheck('[B] Plushies and Flowers! 101% MV Always!', { open: true, pct: 100 }).state, 'rate');
+    const over = [setStock(PLUSHIE, { ...held, [ID.Lion]: 90 }, 40)];
+    const now = forumText({ open: true, pct: 101, stocks: over, sets: [PLUSHIE] }).says;
+    assert.deepEqual({ open: now.open, pct: now.pct }, { open: true, pct: '101' });
+    assert.ok(now.struck.includes('Lion'), JSON.stringify(now));
+    // Never copied: taken as a post with nothing struck.
+    const first = postBehind(null, now);
+    assert.deepEqual(first.strike, now.struck);
+    assert.match(first.words[0], / (is|are) full now: struck out in the new post\.$/);
+    // Copied as it stands: nothing to say.
+    assert.equal(postBehind({ ...now, at: 1 }, now), null);
+    // One piece is full since, another no longer is.
+    const b = postBehind({ open: true, pct: '101', struck: ['Zebra', ...now.struck.filter((n) => n !== 'Lion')] }, now);
+    assert.deepEqual([b.strike, b.back], [['Lion'], ['Zebra']]);
+    assert.deepEqual(b.words, ['Lion is full now: struck out in the new post.', 'Zebra is wanted again: no longer struck.']);
+    // The shop closed since (a closed post names no piece), or the rate is another.
+    const closed = forumText({ open: false, pct: 101, stocks: over, sets: [PLUSHIE] }).says;
+    assert.deepEqual(closed.struck, []);
+    assert.deepEqual(postBehind(now, closed).words, ['Your shop is closed: the post you copied last says OPEN FOR TRADES.']);
+    assert.deepEqual(postBehind(closed, now).words[0], 'Your shop is open: the post you copied last says CLOSED FOR NOW.');
+    assert.deepEqual(postBehind({ ...now, pct: '100' }, now).words, ['Your rate is 101%: the post you copied last says 100%.']);
 });
 
 test('your thread against Torn Bids: says when the title no longer matches (mockup Z10)', () => {

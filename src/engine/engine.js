@@ -1218,6 +1218,8 @@ export function makeEngine(env) {
             if (logRead()) due.log = 0;
         },
         clearList() { S.cart = []; idle(); touch('cart', 'run'); },
+        // "Copy the post" pressed: what that post says is what your thread is taken to say from now on.
+        posted() { S.posted = { ...view().prices.forum.says, at: env.now() }; touch('posted'); },
         // `place` (Next pressed on a Torn page): where you stand. A bazaar of the list that is not the stop the run
         // is on becomes that stop first - you did not follow the order - and Next goes on from there; the stops
         // passed over stay on the list. (Until 1.3.0 Next was only offered on the current stop.)

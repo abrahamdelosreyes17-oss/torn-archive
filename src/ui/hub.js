@@ -310,7 +310,7 @@ export function mountHub(doc, actions) {
         else if (a === 'run') { ui.imKey = ''; act('run', v); }
         // The Item Market stop: the link opened the next piece's page; the run stays on the stop.
         else if (a === 'im-walk') { ui.imKey = v; draw(false); }
-        else if (a === 'copy') { act('copy', v, el.dataset.html || ''); const was = el.textContent; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; }, 1400); }
+        else if (a === 'copy') { act('copy', v, el.dataset.html || ''); const was = el.textContent; const post = el.dataset.post === '1'; el.textContent = 'Copied ✓'; win.setTimeout(() => { if (el.isConnected) el.textContent = was; if (post) act('posted'); }, 1400); }
         else if (a === 'key-save') { const box = $(`input[data-key="${v}"]`); const key = box ? box.value.trim() : ''; if (key) { box.value = ''; act('keySave', v, key); } }
         else if (a === 'key-forget') act('keyForget', v);
         else if (a === 'key-show') act('keyShow', v);
