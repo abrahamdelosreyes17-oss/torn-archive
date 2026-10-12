@@ -48,7 +48,7 @@ const rnd = (() => { let s = 7; return () => (s = (s * 1664525 + 1013904223) >>>
 const usage = { torn: Array.from({ length: 60 }, (_, i) => Math.round(28 + 18 * Math.sin(i / 7) + rnd() * 14)), w3b: Array.from({ length: 60 }, (_, i) => Math.round(8 + 5 * Math.cos(i / 9) + rnd() * 6)), refused: 0 };
 usage.nowTorn = usage.torn[59];
 usage.nowW3b = usage.w3b[59];
-const busy = { w3b: false, receipt: null, held: q.has('held') ? 'TornW3B took this same write and its list still reads differently: it is not sent again by itself until something changes - your own press still sends it' : '' };
+const busy = { w3b: false, receipt: null, held: q.has('held') ? 'TornW3B took this same write and its list still reads differently: it is not sent again by itself until something changes - your own press still sends it' : '', wrote: q.get('wrote') === 'bad' ? { at: Date.now() - 60000, ok: false, by: 'your press', text: 'HTTP 400 · it said: Invalid request body' } : q.has('wrote') ? { at: Date.now() - 60000, ok: true, by: 'by itself', text: '0 set, 1 taken off', left: q.get('wrote') === 'left' ? 1 : 0 } : null, next: q.has('wrote') ? Date.now() + 60000 : 0 };
 if (q.has('over')) { const all = input.held; input.held = (id) => all(id) + (Number(id) === 215 || Number(id) === 263 ? 400 : 0); }
 // ?server=ok | old | update | password | down | saved (anything else: off)
 // ?server=ours | alone | asking: the server built into the copy - connected, a PC it does not serve, Torn has not said who you are

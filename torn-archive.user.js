@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.3
+// @version      1.3.4
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.3';
+    const TARC_BUILD_VERSION = '1.3.4';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -4420,70 +4420,125 @@
 
     const setPctText = (pct) => String(Math.round(setNum(pct) * 10) / 10);
 
+    /** The pieces holding sets back, a few of each set: one row of short names per set. */
+    const setWantedRows = (stocks, perSet) => stocks.map((st) => (st.pieces || []).filter((p) => p.need > 0).sort((a, b) => a.rank - b.rank).slice(0, perSet).map((p) => shortName(p.name))).filter((r) => r.length);
+
     /** The pieces to name in the thread: the ones holding sets back, a few of each set. */
     function mostWanted(stocks, perSet = 3) {
-        return stocks.map((st) => st.pieces.filter((p) => p.need > 0).sort((a, b) => a.rank - b.rank).slice(0, perSet).map((p) => shortName(p.name)).join(', ')).filter(Boolean).join(' · ');
+        return setWantedRows(stocks, perSet).map((r) => r.join(', ')).join(' · ');
     }
 
     /** A word struck out in plain text: a line through each letter, kept wherever it is pasted. */
     const SET_STRIKE = '̶';
     const setStruck = (word) => [...String(word)].map((c) => (c === ' ' ? c : c + SET_STRIKE)).join('');
-    const setHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    /** The post says where a seller sees whether you are open (the owner, 2026-10-12: "say look at profile picture"). */
-    const SET_PICTURE_LINE = 'Look at my profile picture: it says when I am open for trading.';
+    const setHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+    const SET_DOT = ' · ';
+    /** A list in the post is cut into lines of about this many letters: the posted thread is narrower than the box you
+     *  paste into, and a line Torn wraps leaves one name alone under the rest (the owner's thread, 2026-10-12). */
+    const SET_LINE_LETTERS = 60;
+    const SET_RULE = '─'.repeat(20);
+    const SET_OPEN_COLOR = '#3fb950';
+    const SET_CLOSED_COLOR = '#f85149';
     /**
-     * Title and post for your buying thread. Written for you to copy: Torn Archive never posts.
-     * The post names every piece, each set on a line of its own, and strikes out the ones you hold too many of
-     * (`ahead`: over your target) - the owner, 2026-10-12: "list them all (so plushie and flower separate) BUT
-     * strikeout (so still written but striken out) the plushies/flower that is overstocked". These are the pieces
-     * your TornW3B list leaves out (core/tw3b-list.js desiredList).
-     * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
-     * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
-     *          `html` is the same post for a box that keeps the look (Torn's forum box): a struck piece is <s>
+     * How a line is centred for Torn's forum box (TinyMCE 6.8.5, read on the owner's thread 2026-10-12): a paste loses
+     * every `style`, and the posted thread drops `<center>` and `align` - but the box gives `data-mce-style` back as
+     * the line's style, which is what its own centre button writes. `style` is for the hub, which shows the post as is.
      */
-    function forumText({ open, pct, stocks = [], sets = SETS }) {
-        const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
-        const every = sets.length === 1 ? (sets[0].key === 'plushie' ? 'plushie' : 'flower') : 'plushie and flower';
-        // A line is its parts: [{ t, s }], `s` = struck out.
-        const say = (t) => [{ t }];
-        const lines = [];
-        let title;
-        if (!open) {
-            title = `[CLOSED] Buying ${what} · back soon`;
-            lines.push(say('Closed for now: not buying until this thread says OPEN again.'), say(`When I am open I pay ${setPctText(pct)}% of market value for every ${every}.`), say(SET_PICTURE_LINE));
-        } else {
-            title = `[OPEN] Buying ${what} · ${setPctText(pct)}% of market value`;
-            const lists = stocks.filter((st) => st && st.key && (st.pieces || []).length).map((st) => ({
-                label: st.key === 'plushie' ? 'Plushies' : 'Flowers',
-                pieces: [...st.pieces].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => ({ t: shortName(p.name), s: p.ahead > 0 })),
-            }));
-            const struck = lists.some((l) => l.pieces.some((p) => p.s));
-            const wanted = mostWanted(stocks);
-            lines.push(say(struck ? `Buying ${what.toLowerCase().replace('&', 'and')}, any amount - except the ones struck out: I have enough of those for now.` : `Buying every ${every}, any amount.`));
-            lines.push(say(`I pay ${setPctText(pct)}% of market value, paid in the trade.`));
-            for (const l of lists) lines.push([{ t: l.label + ': ' }, ...l.pieces.flatMap((p, k) => (k ? [{ t: ', ' }, p] : [p]))]);
-            if (wanted) lines.push(say(`Most wanted now: ${wanted}.`));
-            lines.push(say(SET_PICTURE_LINE), say('Start a trade with me and add your items. I answer with the total.'));
+    const SET_CENTRE = 'data-mce-style="text-align: center;" style="text-align: center;"';
+
+    /** Names cut into lines of about the same length, none much over `max` letters. `parts`: [{ t }]. */
+    function setListLines(parts, max = SET_LINE_LETTERS) {
+        const len = (p) => [...String(p.t)].length;
+        const total = parts.reduce((n, p) => n + len(p), 0) + SET_DOT.length * Math.max(0, parts.length - 1);
+        const rows = Math.max(1, Math.ceil(total / max));
+        const each = total / rows;
+        const out = Array.from({ length: rows }, () => []);
+        let at = 0;
+        for (const p of parts) {
+            out[Math.min(rows - 1, Math.floor((at + len(p) / 2) / each))].push(p);
+            at += len(p) + SET_DOT.length;
         }
-        return {
-            title,
-            post: lines.map((l) => l.map((p) => (p.s ? setStruck(p.t) : p.t)).join('')).join('\n'),
-            // Both ways a box may keep a struck word: the tag, and the style.
-            html: lines.map((l) => l.map((p) => (p.s ? `<s><span style="text-decoration:line-through">${setHtml(p.t)}</span></s>` : setHtml(p.t))).join('')).join('<br>'),
-        };
+        return out.filter((r) => r.length);
+    }
+
+    // A post is its rows: a line { parts: [{ t, s, href }], size, bold, color }, an empty line { gap }, a drawn line { rule }.
+    // `s` = struck out. `size` is Torn's own scale (4 large, 5 x-large, 6 xx-large).
+    const setLine = (t, look = {}) => ({ parts: typeof t === 'string' ? [{ t }] : t, ...look });
+    const SET_GAP = { gap: true };
+    const SET_BREAK = [SET_GAP, { rule: true }, SET_GAP];
+    const setDotted = (parts) => parts.flatMap((p, k) => (k ? [{ t: SET_DOT }, p] : [p]));
+
+    function setRowText(row) {
+        if (row.gap) return '';
+        if (row.rule) return SET_RULE;
+        return row.parts.map((p) => (p.s ? setStruck(p.t) : p.t)).join('');
+    }
+
+    function setRowHtml(row) {
+        if (row.gap) return '<br>';
+        if (row.rule) return '<hr>';
+        let inner = row.parts.map((p) => (p.s ? `<s>${setHtml(p.t)}</s>` : p.href ? `<a href="${setHtml(p.href)}">${setHtml(p.t)}</a>` : setHtml(p.t))).join('');
+        if (row.bold) inner = `<b>${inner}</b>`;
+        if (row.size || row.color) inner = `<font${row.size ? ` size="${row.size}"` : ''}${row.color ? ` color="${row.color}"` : ''}>${inner}</font>`;
+        return `<div ${SET_CENTRE}>${inner}</div>`;
     }
 
     /**
-     * What to say to a seller after a trade, with the receipt's link last (the owner, 2026-10-12: "Thank you for
-     * trading! If you enjoyed this experience, please leave a like and comment on my forum ... then link the receipt").
+     * Title and post for your buying thread. Written for you to copy: Torn Archive never posts.
+     * The post is the owner's wording and look of 2026-10-12, pasted by him into Torn's box pass by pass: open or closed
+     * on the very top, the heading, his price list's link, every piece of each set under its own label, the pieces
+     * holding sets back, and his two promises last - centred, with drawn lines between the parts.
+     * A piece you hold too many of (`ahead`: over your target) is still written, struck out - the owner, 2026-10-12:
+     * "list them all (so plushie and flower separate) BUT strikeout (so still written but striken out) the
+     * plushies/flower that is overstocked". These are the pieces your TornW3B list leaves out (core/tw3b-list.js).
+     * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
+     * @param list your price list's address on TornW3B, '' when your Torn id is not known: its line is then left out
+     * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
+     *          `html` is the same post for a box that keeps the look (Torn's forum box)
+     */
+    function forumText({ open, pct, stocks = [], sets = SETS, list = '' }) {
+        const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
+        const rate = setPctText(pct);
+        const head = [setLine(`BUYING ${what.toUpperCase().replace('&', 'AND')}`, { size: 6, bold: true }), setLine(`${rate}% of Market Value`, { size: 6, bold: true })];
+        let title;
+        let rows;
+        if (!open) {
+            title = `[CLOSED] Buying ${what} · back soon`;
+            rows = [setLine('CLOSED FOR NOW', { size: 5, bold: true, color: SET_CLOSED_COLOR }), SET_GAP, ...head, SET_GAP, setLine('Not buying right now. Back as soon as this says open.', { size: 5 })];
+        } else {
+            title = `[OPEN] Buying ${what} · ${rate}% of market value`;
+            const lists = stocks.filter((st) => st && st.key && (st.pieces || []).length).map((st) => ({
+                label: st.key === 'plushie' ? 'PLUSHIES' : 'FLOWERS',
+                pieces: [...st.pieces].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => ({ t: shortName(p.name), s: p.ahead > 0 })),
+            }));
+            const struck = lists.some((l) => l.pieces.some((p) => p.s));
+            const wanted = setWantedRows(stocks, 3);
+            const parts = [[setLine('OPEN FOR TRADES', { size: 5, bold: true, color: SET_OPEN_COLOR }), SET_GAP, ...head]];
+            if (list) parts[0].push(SET_GAP, setLine([{ t: 'Pricelist: ' }, { t: list, href: list }], { size: 4 }));
+            if (lists.length) {
+                const block = lists.flatMap((l, k) => [...(k ? [SET_GAP] : []), setLine(l.label, { size: 4, bold: true }), ...setListLines(l.pieces).map((r) => setLine(setDotted(r), { size: 4 }))]);
+                if (struck) block.push(SET_GAP, setLine("Crossed out = I'm swimming in those. Try me again later."));
+                parts.push(block);
+            }
+            if (wanted.length) parts.push([setLine("I'm short on these, bring them first", { size: 4, bold: true }), ...wanted.map((r) => setLine(r.join(SET_DOT), { size: 4 }))]);
+            parts.push([setLine("Mug-free, guaranteed. Fast trade, then you're back in the air.", { size: 5, bold: true }), setLine("Open a trade, drop your items in, I'll send the total.")]);
+            rows = parts.flatMap((p, k) => (k ? [...SET_BREAK, ...p] : p));
+        }
+        return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join('') };
+    }
+
+    /**
+     * What to say to a seller after a trade, with the receipt's link last. The owner's order, 2026-10-12: whether they
+     * enjoyed it, a like and a comment on the forum ("it will be a big help", "dont make it too wordy"), hope to trade
+     * again, then the receipt. Plain text: the thread's address is what they click.
      * @param thread your buying thread's link, '' when it is not known: the sentence about it is then left out
      */
     function thanksMessage({ receipt = '', thread = '' } = {}) {
         return [
-            'Thank you for trading!',
-            thread ? `If you enjoyed it, a like and a comment on my thread would help me a lot: ${thread}` : '',
-            thread ? 'It also says what I am buying now. Hope to trade again!' : 'Hope to trade again!',
+            'Thanks for the trade!',
+            thread ? `If you enjoyed it, a like and a comment on my forum would be a big help: ${thread}` : '',
+            'Hope to trade again!',
             receipt ? `Your receipt: ${receipt}` : '',
         ].filter(Boolean).join(' ');
     }
@@ -6302,6 +6357,10 @@
         if (form === 1) return { items, tradeID: num };
         return { items, tradeID: num, ...(sellerId ? { buyerPlayerId: Number(sellerId) } : {}), includeMessage: true };
     }
+
+    const TW_LIST_AT = 'https://weav3r.dev/pricelist/';
+    /** Your price list's page on TornW3B: the link your forum post carries. '' while your Torn id is not known. */
+    const listLink = (userId) => (Number(userId) > 0 ? TW_LIST_AT + encodeURIComponent(String(userId)) : '');
 
     const TW_RECEIPT_AT = 'https://weav3r.dev/receipt/';
     /** The page of one receipt on TornW3B: the link you send the seller. */
@@ -8707,7 +8766,7 @@
         };
 
         // ---- my prices ---------------------------------------------------------------------------------------------------
-        const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on });
+        const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
         // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
         const paidRows = sets.map((s) => ({ label: s.label, pct: s.rate.pct }));
         const thread = i.thread && i.thread.title ? { ...i.thread, url: threadUrl, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;
@@ -10183,6 +10242,7 @@
                     const parts = [...egLines(w.diff.set.map((s) => s.itemID + ' $' + s.price + (s.was == null ? ' (new)' : ' (was $' + s.was + ')'))).map((l) => 'set: ' + l), ...egLines(w.diff.remove.map((r) => String(r.itemID))).map((l) => 'taken off: ' + l)];
                     parts.forEach((l, k) => env.say('note', 'TornW3B refused the write of your list: what was sent, ' + (k + 1) + ' of ' + parts.length, l));
                 }
+                wrote({ ok: false, by, text: egMsg(error) + (error && error.said ? ' · it said: ' + error.said : '') });
                 throw error;
             }
             listRefused = '';
@@ -10204,6 +10264,16 @@
                 const lines = egLines([...left.diff.set.map((x) => x.itemID + ' yours $' + x.price + ', reads ' + (now.has(String(x.itemID)) ? '$' + now.get(String(x.itemID)).value : 'no price')), ...left.diff.remove.map((x) => x.itemID + ' still on it')]);
                 lines.forEach((l, k) => env.say('note', 'TornW3B took the write and your list there still reads differently, ' + (k + 1) + ' of ' + lines.length, l));
             }
+            wrote({ ok: true, by, text: w.diff.set.length + ' set, ' + w.diff.remove.length + ' taken off', left: left.body ? left.diff.set.length + left.diff.remove.length : 0 });
+        }
+
+        /**
+         * The last write of your list and how it ended, kept: the panel says "sent" or "refused" with its time (the
+         * owner, 2026-10-12: "i need to know if it is sending, sent, or refused/error").
+         */
+        function wrote(w) {
+            S.w3b = { ...S.w3b, wrote: { at: env.now(), ...w } };
+            touch('w3b');
         }
 
         /** "Keep it at my rate by itself" is on and nothing is sent: the reason, said once each time it changes. */
@@ -10660,7 +10730,8 @@
             state: S, step, view, calm, act, note, readNow, keyChanged, flush, serverWant, serverTook, serverForget,
             serverMark: () => ({ seq: S.server.seq, seenAt: S.server.seenAt }),
             keys: () => keyState,
-            busy: () => ({ ...flags }),
+            // `wrote`: the last write of your list and how it ended; `next`: when a write by itself may go again.
+            busy: () => ({ ...flags, wrote: S.w3b.wrote || null, next: syncAt ? syncAt + EG_SYNC_GAP_MS : 0 }),
             mv: mvOf(S),
             /** Whether the settings changed something the reads depend on. */
             settingsChanged() {
@@ -11644,6 +11715,11 @@
     .li-m { flex: 1; min-width: 0; } .li-m b { display: block; } .li-m span { color: var(--muted); font-size: 12px; }
     .av { width: 30px; height: 30px; border-radius: 50%; background: var(--raised); border: 1px solid var(--line2); display: grid; place-items: center; font: 650 12px var(--sans); color: var(--text2); flex: none; }
     .msg { padding: 7px 12px; border-radius: 10px; background: var(--input); border: 1px solid var(--line); color: var(--text2); line-height: 1.5; }
+    /* Your forum post as it is copied (1.3.4): its lines, order, colour and drawn lines, at the hub's own sizes - Torn's
+       (font size 4, 5, 6) are three steps here. Its link is not one in the hub: a press must not leave the page. */
+    .post-view { margin-top: 7px; padding-top: 9px; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+    .post-view font[size="4"] { font-size: 13px; } .post-view font[size="5"] { font-size: 15px; } .post-view font[size="6"] { font-size: 19px; }
+    .post-view hr { border: 0; border-top: 1px solid var(--line2); margin: 0; } .post-view a { color: var(--brand); pointer-events: none; text-decoration: none; } .post-view font[color] b { color: inherit; }
     .hero { font: 650 36px/1 var(--disp); letter-spacing: -.02em; } .hero small { font-size: 16px; color: var(--muted); font-weight: 500; letter-spacing: 0; margin-left: 6px; }
     .track { position: relative; height: 8px; border-radius: 5px; background: rgba(255,255,255,.07); margin: 27px 0 26px; }
     .track i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: 5px; background: linear-gradient(90deg, #6a55e8, #a694ff); }
@@ -12689,7 +12765,15 @@
             // (`held`: the engine's own words for it). Then the reason is said and the button is yours.
             const held = w.sync ? String((d.busy && d.busy.held) || '') : '';
             badge = `<span class="badge ahead">${hPlural(w.diff.set.length + w.diff.remove.length, 'price')} differ</span>`;
-            body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
+            body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? `<span class="t-muted">${d.busy && d.busy.w3b ? 'sending now' : `not sent yet: goes by itself ${d.busy && d.busy.next > d.view.at ? 'at ' + hClock(d.busy.next) + ' TCT' : 'within 2 minutes'}`}</span>` : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
+        }
+        // The last write and how it ended: sent, sent and still different there, or refused with TornW3B's words.
+        const wr = key.set && d.busy ? d.busy.wrote : null;
+        if (wr) {
+            const by = wr.by === 'by itself' ? ' by itself' : '';
+            body += `<div class="row"><span class="grow1 ${wr.ok ? (wr.left ? 't-warn' : 't-muted') : 't-bad'}">${wr.ok
+                ? `<b class="${wr.left ? '' : 't-good'}">Sent</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}. ${wr.left ? `TornW3B took it, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.` : 'TornW3B took it.'}`
+                : `<b>Refused</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}.`}</span></div>`;
         }
         // The pieces you hold too many of are not on your list, and come back by themselves.
         if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
@@ -12757,7 +12841,7 @@
           <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
           ${pgW3b(d)}
           <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-            <div class="msg"><b>${hEsc(pr.forum.title)}</b><br>${pr.forum.html}</div>
+            <div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
             <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
           </div></div>
           <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
@@ -14581,7 +14665,7 @@
         let html = bxHead('Your thread', under ? 'the title names your rate' : ok ? 'the title matches' : 'the title is out of date') + bxKv('Shop', `<span class="${pr.open ? 't-good' : ''}">${shop}</span>`);
         if (under) html += `<div class="ta-hold"><b>It says ${hRate(check.says.pct)}%; today you pay ${paid}.</b> The points price holds a set under your rate. The message for a trade names what you pay.</div>`;
         else if (!ok) html += `<div class="ta-hold"><b>${hEsc(why)}</b> Edit the thread on Torn and paste the new title.</div><div class="msg">${hEsc(pr.forum.title)}</div>`;
-        html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post)}</div>`
+        html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}"`)}</div>`
             + bxNote('<b>Nothing is posted or edited for you.</b>');
         return { where: 'your thread', html, marks: [], titleMark: { text: under ? `says ${hRate(check.says.pct)}%, you pay ${paid} today` : ok ? `matches your shop: ${shop}` : 'does not match your shop', state: under ? 'ahead' : ok ? 'good' : 'over' }, title };
     }
@@ -17947,7 +18031,7 @@
             if (act === 'hub') { gmOpenTab(ARCHIVE_PAGE_URL); return; }
             // A piece of your stock: Torn Archive opens on its Buy page, on that piece (ui/hub.js reads the address).
             if (act === 'plan') { gmOpenTab(ARCHIVE_PAGE_URL + (tpDigits(val) ? '#buy/' + tpDigits(val) : '#buy')); return; }
-            if (act === 'copy') { if (gmCopy(val)) done('copy:' + val); return; }
+            if (act === 'copy') { if (btn.dataset.html ? gmCopyRich(val, btn.dataset.html) : gmCopy(val)) done('copy:' + val); return; }
             if (act === 'open-trade') { win.location.assign(tradeViewUrl(val)); return; }
             if (!v) return;
             if (act === 'run-start') { pressRun('start'); return; }

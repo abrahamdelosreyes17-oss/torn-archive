@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
     SETS, setByKey, setOfItem, isSetItem, shortName, setsOn, keptForSets, setStock, autoTarget, autoTargets, fillCost, setMarketValue, setValue, pieceWorths,
-    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, tradeMessage, mostWanted, forumText, thanksMessage, readThreadTitle,
+    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, tradeMessage, mostWanted, forumText, setListLines, thanksMessage, readThreadTitle,
     isBuyingTitle, threadCheck, moneyShare,
 } from '../src/core/sets.js';
 
@@ -252,29 +252,58 @@ test('a trade with nothing you need, and one with nothing you buy', () => {
 test('your forum thread: the title and post to copy, open and closed (mockup Z3)', () => {
     const stocks = [setStock(PLUSHIE, held, 40), setStock(FLOWER, { 263: 3, 617: 6, 276: 7 }, 10)];
     assert.match(mostWanted(stocks), /^Panda, Nessie, Jaguar · /);
-    const open = forumText({ open: true, pct: 101, stocks });
+    const LIST = 'https://weav3r.dev/pricelist/2000001';
+    const open = forumText({ open: true, pct: 101, stocks, list: LIST });
     assert.equal(open.title, '[OPEN] Buying Plushies & Flowers · 101% of market value');
-    // 1.3.3: every piece is named, each set on its own line, and where a seller sees whether you are open.
-    assert.match(open.post, /^Buying plushies and flowers, any amount - except the ones struck out: I have enough of those for now\.\nI pay 101% of market value, paid in the trade\.\nPlushies: Camel, Chamois, Jaguar, [^\n]+\nFlowers: African Violet, [^\n]+\nMost wanted now: Panda, Nessie, Jaguar · /);
-    assert.match(open.post, /\nLook at my profile picture: it says when I am open for trading\.\nStart a trade with me and add your items\. I answer with the total\.$/);
-    // Nothing held over the target: nothing struck, and the same words with or without the look.
+    // 1.3.4, the owner's wording of 2026-10-12: open or closed on the very top, the heading, his price list, every
+    // piece under its set's label, the pieces holding sets back, his two promises last - a drawn line between the parts.
+    const RULE = '─'.repeat(20);
+    assert.ok(open.post.startsWith(`OPEN FOR TRADES\n\nBUYING PLUSHIES AND FLOWERS\n101% of Market Value\n\nPricelist: ${LIST}\n\n${RULE}\n\nPLUSHIES\nCamel · Chamois · Jaguar · `), open.post);
+    assert.match(open.post, /\n\nFLOWERS\nAfrican Violet · [^\n]+\n/);
+    const tail = open.post.split(`\n\n${RULE}\n\n`);
+    assert.equal(tail.length, 4, 'four parts, a drawn line between them');
+    assert.match(tail[2], /^I'm short on these, bring them first\nPanda · Nessie · Jaguar\n[^\n]+$/);
+    assert.equal(tail[3], "Mug-free, guaranteed. Fast trade, then you're back in the air.\nOpen a trade, drop your items in, I'll send the total.");
+    assert.ok(!/profile picture|any amount|paid in the trade/i.test(open.post), 'the lines he took out');
+    // A list is cut into lines of about the same length, none long enough for the posted thread to wrap.
+    const rows = (label) => { const all = open.post.split('\n'); const at = all.indexOf(label); return all.slice(at + 1, all.indexOf('', at)); };
+    assert.equal(rows('PLUSHIES').length, 2);
+    assert.equal(rows('FLOWERS').length, 3);
+    for (const r of [...rows('PLUSHIES'), ...rows('FLOWERS')]) assert.ok([...r.replace(/̶/g, '')].length <= 62, r);
+    assert.equal(rows('PLUSHIES').join(' · ').split(' · ').length, PLUSHIE.pieces.length, 'every plushie is written, once');
+    assert.equal(rows('FLOWERS').join(' · ').split(' · ').length, FLOWER.pieces.length, 'every flower is written, once');
+    assert.deepEqual(setListLines([{ t: 'One' }]).map((r) => r.length), [1]);
+    assert.deepEqual(setListLines([]), []);
+    // The look, written the ways Torn's forum box keeps through a paste AND a post (read on his thread 2026-10-12):
+    // each line centred by itself with data-mce-style, sizes and colour as <font>, a drawn line as <hr>.
+    const CENTRE = '<div data-mce-style="text-align: center;" style="text-align: center;">';
+    assert.ok(open.html.startsWith(`${CENTRE}<font size="5" color="#3fb950"><b>OPEN FOR TRADES</b></font></div><br>${CENTRE}<font size="6"><b>BUYING PLUSHIES AND FLOWERS</b></font></div>${CENTRE}<font size="6"><b>101% of Market Value</b></font></div><br>`), open.html);
+    assert.ok(open.html.includes(`${CENTRE}<font size="4">Pricelist: <a href="${LIST}">${LIST}</a></font></div><br><hr><br>${CENTRE}<font size="4"><b>PLUSHIES</b></font></div>`), open.html);
+    assert.equal((open.html.match(/<hr>/g) || []).length, 3);
+    assert.ok(!/align=|<center/.test(open.html), 'the posted thread drops both');
+    assert.equal((open.html.match(/<div /g) || []).length, (open.html.match(/<div data-mce-style="text-align: center;" /g) || []).length, 'every line is centred by itself');
+    // Your Torn id not known yet: no price list line, and nothing else moves.
+    const bare = forumText({ open: true, pct: 101, stocks });
+    assert.ok(bare.post.startsWith(`OPEN FOR TRADES\n\nBUYING PLUSHIES AND FLOWERS\n101% of Market Value\n\n${RULE}\n\nPLUSHIES\n`), bare.post);
+    // Nothing held over the target: nothing struck, and no line about it.
     const even = forumText({ open: true, pct: 101, stocks: [setStock(PLUSHIE, {}, 40)], sets: [PLUSHIE] });
-    assert.match(even.post, /^Buying every plushie, any amount\.\n/);
-    assert.equal(even.html, even.post.replace(/\n/g, '<br>'));
-    const closed = forumText({ open: false, pct: 101, stocks });
+    assert.ok(even.post.startsWith('OPEN FOR TRADES\n\nBUYING PLUSHIES\n101% of Market Value\n'), even.post);
+    assert.ok(!even.post.includes('Crossed out') && !even.html.includes('<s>'));
+    const closed = forumText({ open: false, pct: 101, stocks, list: LIST });
     assert.equal(closed.title, '[CLOSED] Buying Plushies & Flowers · back soon');
-    assert.match(closed.post, /\nLook at my profile picture: it says when I am open for trading\.$/);
+    assert.equal(closed.post, 'CLOSED FOR NOW\n\nBUYING PLUSHIES AND FLOWERS\n101% of Market Value\n\nNot buying right now. Back as soon as this says open.');
+    assert.ok(closed.html.startsWith(`${CENTRE}<font size="5" color="#f85149"><b>CLOSED FOR NOW</b></font></div><br>`), closed.html);
+    assert.ok(!closed.post.includes('weav3r'), 'closed: your list on TornW3B is empty, so it is not pointed at');
     // A piece you hold too many of is still written, struck out: a line through each letter in plain text, <s> where the look is kept.
     const over = [setStock(PLUSHIE, { ...held, [ID.Lion]: 90 }, 40)];
     const struck = forumText({ open: true, pct: 101, stocks: over, sets: [PLUSHIE] });
-    assert.match(struck.post, /^Buying plushies, any amount - except the ones struck out: I have enough of those for now\.\n/);
-    assert.ok(struck.post.includes(', L̶i̶o̶n̶, '), struck.post);
-    assert.ok(struck.html.includes(', <s><span style="text-decoration:line-through">Lion</span></s>, '), struck.html);
+    assert.ok(struck.post.includes(' · L̶i̶o̶n̶ · '), struck.post);
+    assert.ok(struck.post.includes("\n\nCrossed out = I'm swimming in those. Try me again later.\n"), struck.post);
+    assert.ok(struck.html.includes(' · <s>Lion</s> · '), struck.html);
     assert.equal((struck.html.match(/<s>/g) || []).length, over[0].pieces.filter((p) => p.ahead > 0).length, 'each piece held over the target, and no other');
-    assert.equal(struck.post.split('\n').find((l) => l.startsWith('Plushies: ')).split(', ').length, PLUSHIE.pieces.length, 'every piece is still written');
-    // What to send the seller after a trade: the thread when it is known, the receipt's link last.
-    assert.equal(thanksMessage({ receipt: 'https://weav3r.dev/receipt/abc' }), 'Thank you for trading! Hope to trade again! Your receipt: https://weav3r.dev/receipt/abc');
-    assert.match(thanksMessage({ receipt: 'R', thread: 'T' }), /^Thank you for trading! If you enjoyed it, a like and a comment on my thread would help me a lot: T It also says what I am buying now\. Hope to trade again! Your receipt: R$/);
+    // What to send the seller after a trade, in his order: enjoyed it, the forum, hope to trade again, the receipt last.
+    assert.equal(thanksMessage({ receipt: 'https://weav3r.dev/receipt/abc' }), 'Thanks for the trade! Hope to trade again! Your receipt: https://weav3r.dev/receipt/abc');
+    assert.equal(thanksMessage({ receipt: 'R', thread: 'T' }), 'Thanks for the trade! If you enjoyed it, a like and a comment on my forum would be a big help: T Hope to trade again! Your receipt: R');
     assert.equal(forumText({ open: true, pct: 99.4, stocks: [], sets: [PLUSHIE] }).title, '[OPEN] Buying Plushies · 99.4% of market value');
 });
 

@@ -141,6 +141,10 @@ export function receiptBody(tradeId, rows, sellerId, form = 0) {
     return { items, tradeID: num, ...(sellerId ? { buyerPlayerId: Number(sellerId) } : {}), includeMessage: true };
 }
 
+const TW_LIST_AT = 'https://weav3r.dev/pricelist/';
+/** Your price list's page on TornW3B: the link your forum post carries. '' while your Torn id is not known. */
+export const listLink = (userId) => (Number(userId) > 0 ? TW_LIST_AT + encodeURIComponent(String(userId)) : '');
+
 const TW_RECEIPT_AT = 'https://weav3r.dev/receipt/';
 /** The page of one receipt on TornW3B: the link you send the seller. */
 export const receiptLink = (id) => (id == null || id === '' ? '' : TW_RECEIPT_AT + encodeURIComponent(String(id)));

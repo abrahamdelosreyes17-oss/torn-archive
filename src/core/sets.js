@@ -375,70 +375,125 @@ export function tradeMessage(offer, { open = true, everything = false } = {}) {
 
 const setPctText = (pct) => String(Math.round(setNum(pct) * 10) / 10);
 
+/** The pieces holding sets back, a few of each set: one row of short names per set. */
+const setWantedRows = (stocks, perSet) => stocks.map((st) => (st.pieces || []).filter((p) => p.need > 0).sort((a, b) => a.rank - b.rank).slice(0, perSet).map((p) => shortName(p.name))).filter((r) => r.length);
+
 /** The pieces to name in the thread: the ones holding sets back, a few of each set. */
 export function mostWanted(stocks, perSet = 3) {
-    return stocks.map((st) => st.pieces.filter((p) => p.need > 0).sort((a, b) => a.rank - b.rank).slice(0, perSet).map((p) => shortName(p.name)).join(', ')).filter(Boolean).join(' · ');
+    return setWantedRows(stocks, perSet).map((r) => r.join(', ')).join(' · ');
 }
 
 /** A word struck out in plain text: a line through each letter, kept wherever it is pasted. */
 const SET_STRIKE = '̶';
 const setStruck = (word) => [...String(word)].map((c) => (c === ' ' ? c : c + SET_STRIKE)).join('');
-const setHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-/** The post says where a seller sees whether you are open (the owner, 2026-10-12: "say look at profile picture"). */
-const SET_PICTURE_LINE = 'Look at my profile picture: it says when I am open for trading.';
+const setHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+const SET_DOT = ' · ';
+/** A list in the post is cut into lines of about this many letters: the posted thread is narrower than the box you
+ *  paste into, and a line Torn wraps leaves one name alone under the rest (the owner's thread, 2026-10-12). */
+const SET_LINE_LETTERS = 60;
+const SET_RULE = '─'.repeat(20);
+const SET_OPEN_COLOR = '#3fb950';
+const SET_CLOSED_COLOR = '#f85149';
 /**
- * Title and post for your buying thread. Written for you to copy: Torn Archive never posts.
- * The post names every piece, each set on a line of its own, and strikes out the ones you hold too many of
- * (`ahead`: over your target) - the owner, 2026-10-12: "list them all (so plushie and flower separate) BUT
- * strikeout (so still written but striken out) the plushies/flower that is overstocked". These are the pieces
- * your TornW3B list leaves out (core/tw3b-list.js desiredList).
- * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
- * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
- *          `html` is the same post for a box that keeps the look (Torn's forum box): a struck piece is <s>
+ * How a line is centred for Torn's forum box (TinyMCE 6.8.5, read on the owner's thread 2026-10-12): a paste loses
+ * every `style`, and the posted thread drops `<center>` and `align` - but the box gives `data-mce-style` back as
+ * the line's style, which is what its own centre button writes. `style` is for the hub, which shows the post as is.
  */
-export function forumText({ open, pct, stocks = [], sets = SETS }) {
-    const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
-    const every = sets.length === 1 ? (sets[0].key === 'plushie' ? 'plushie' : 'flower') : 'plushie and flower';
-    // A line is its parts: [{ t, s }], `s` = struck out.
-    const say = (t) => [{ t }];
-    const lines = [];
-    let title;
-    if (!open) {
-        title = `[CLOSED] Buying ${what} · back soon`;
-        lines.push(say('Closed for now: not buying until this thread says OPEN again.'), say(`When I am open I pay ${setPctText(pct)}% of market value for every ${every}.`), say(SET_PICTURE_LINE));
-    } else {
-        title = `[OPEN] Buying ${what} · ${setPctText(pct)}% of market value`;
-        const lists = stocks.filter((st) => st && st.key && (st.pieces || []).length).map((st) => ({
-            label: st.key === 'plushie' ? 'Plushies' : 'Flowers',
-            pieces: [...st.pieces].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => ({ t: shortName(p.name), s: p.ahead > 0 })),
-        }));
-        const struck = lists.some((l) => l.pieces.some((p) => p.s));
-        const wanted = mostWanted(stocks);
-        lines.push(say(struck ? `Buying ${what.toLowerCase().replace('&', 'and')}, any amount - except the ones struck out: I have enough of those for now.` : `Buying every ${every}, any amount.`));
-        lines.push(say(`I pay ${setPctText(pct)}% of market value, paid in the trade.`));
-        for (const l of lists) lines.push([{ t: l.label + ': ' }, ...l.pieces.flatMap((p, k) => (k ? [{ t: ', ' }, p] : [p]))]);
-        if (wanted) lines.push(say(`Most wanted now: ${wanted}.`));
-        lines.push(say(SET_PICTURE_LINE), say('Start a trade with me and add your items. I answer with the total.'));
+const SET_CENTRE = 'data-mce-style="text-align: center;" style="text-align: center;"';
+
+/** Names cut into lines of about the same length, none much over `max` letters. `parts`: [{ t }]. */
+export function setListLines(parts, max = SET_LINE_LETTERS) {
+    const len = (p) => [...String(p.t)].length;
+    const total = parts.reduce((n, p) => n + len(p), 0) + SET_DOT.length * Math.max(0, parts.length - 1);
+    const rows = Math.max(1, Math.ceil(total / max));
+    const each = total / rows;
+    const out = Array.from({ length: rows }, () => []);
+    let at = 0;
+    for (const p of parts) {
+        out[Math.min(rows - 1, Math.floor((at + len(p) / 2) / each))].push(p);
+        at += len(p) + SET_DOT.length;
     }
-    return {
-        title,
-        post: lines.map((l) => l.map((p) => (p.s ? setStruck(p.t) : p.t)).join('')).join('\n'),
-        // Both ways a box may keep a struck word: the tag, and the style.
-        html: lines.map((l) => l.map((p) => (p.s ? `<s><span style="text-decoration:line-through">${setHtml(p.t)}</span></s>` : setHtml(p.t))).join('')).join('<br>'),
-    };
+    return out.filter((r) => r.length);
+}
+
+// A post is its rows: a line { parts: [{ t, s, href }], size, bold, color }, an empty line { gap }, a drawn line { rule }.
+// `s` = struck out. `size` is Torn's own scale (4 large, 5 x-large, 6 xx-large).
+const setLine = (t, look = {}) => ({ parts: typeof t === 'string' ? [{ t }] : t, ...look });
+const SET_GAP = { gap: true };
+const SET_BREAK = [SET_GAP, { rule: true }, SET_GAP];
+const setDotted = (parts) => parts.flatMap((p, k) => (k ? [{ t: SET_DOT }, p] : [p]));
+
+function setRowText(row) {
+    if (row.gap) return '';
+    if (row.rule) return SET_RULE;
+    return row.parts.map((p) => (p.s ? setStruck(p.t) : p.t)).join('');
+}
+
+function setRowHtml(row) {
+    if (row.gap) return '<br>';
+    if (row.rule) return '<hr>';
+    let inner = row.parts.map((p) => (p.s ? `<s>${setHtml(p.t)}</s>` : p.href ? `<a href="${setHtml(p.href)}">${setHtml(p.t)}</a>` : setHtml(p.t))).join('');
+    if (row.bold) inner = `<b>${inner}</b>`;
+    if (row.size || row.color) inner = `<font${row.size ? ` size="${row.size}"` : ''}${row.color ? ` color="${row.color}"` : ''}>${inner}</font>`;
+    return `<div ${SET_CENTRE}>${inner}</div>`;
 }
 
 /**
- * What to say to a seller after a trade, with the receipt's link last (the owner, 2026-10-12: "Thank you for
- * trading! If you enjoyed this experience, please leave a like and comment on my forum ... then link the receipt").
+ * Title and post for your buying thread. Written for you to copy: Torn Archive never posts.
+ * The post is the owner's wording and look of 2026-10-12, pasted by him into Torn's box pass by pass: open or closed
+ * on the very top, the heading, his price list's link, every piece of each set under its own label, the pieces
+ * holding sets back, and his two promises last - centred, with drawn lines between the parts.
+ * A piece you hold too many of (`ahead`: over your target) is still written, struck out - the owner, 2026-10-12:
+ * "list them all (so plushie and flower separate) BUT strikeout (so still written but striken out) the
+ * plushies/flower that is overstocked". These are the pieces your TornW3B list leaves out (core/tw3b-list.js).
+ * @param stocks [{ key, pieces: [{ name, need, ahead, rank }] }] a set's stock (setStock), the sets you trade
+ * @param list your price list's address on TornW3B, '' when your Torn id is not known: its line is then left out
+ * @returns { title, post, html } - `post` is plain text, a struck piece with a line through each letter;
+ *          `html` is the same post for a box that keeps the look (Torn's forum box)
+ */
+export function forumText({ open, pct, stocks = [], sets = SETS, list = '' }) {
+    const what = sets.length === 1 ? (sets[0].key === 'plushie' ? 'Plushies' : 'Flowers') : 'Plushies & Flowers';
+    const rate = setPctText(pct);
+    const head = [setLine(`BUYING ${what.toUpperCase().replace('&', 'AND')}`, { size: 6, bold: true }), setLine(`${rate}% of Market Value`, { size: 6, bold: true })];
+    let title;
+    let rows;
+    if (!open) {
+        title = `[CLOSED] Buying ${what} · back soon`;
+        rows = [setLine('CLOSED FOR NOW', { size: 5, bold: true, color: SET_CLOSED_COLOR }), SET_GAP, ...head, SET_GAP, setLine('Not buying right now. Back as soon as this says open.', { size: 5 })];
+    } else {
+        title = `[OPEN] Buying ${what} · ${rate}% of market value`;
+        const lists = stocks.filter((st) => st && st.key && (st.pieces || []).length).map((st) => ({
+            label: st.key === 'plushie' ? 'PLUSHIES' : 'FLOWERS',
+            pieces: [...st.pieces].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => ({ t: shortName(p.name), s: p.ahead > 0 })),
+        }));
+        const struck = lists.some((l) => l.pieces.some((p) => p.s));
+        const wanted = setWantedRows(stocks, 3);
+        const parts = [[setLine('OPEN FOR TRADES', { size: 5, bold: true, color: SET_OPEN_COLOR }), SET_GAP, ...head]];
+        if (list) parts[0].push(SET_GAP, setLine([{ t: 'Pricelist: ' }, { t: list, href: list }], { size: 4 }));
+        if (lists.length) {
+            const block = lists.flatMap((l, k) => [...(k ? [SET_GAP] : []), setLine(l.label, { size: 4, bold: true }), ...setListLines(l.pieces).map((r) => setLine(setDotted(r), { size: 4 }))]);
+            if (struck) block.push(SET_GAP, setLine("Crossed out = I'm swimming in those. Try me again later."));
+            parts.push(block);
+        }
+        if (wanted.length) parts.push([setLine("I'm short on these, bring them first", { size: 4, bold: true }), ...wanted.map((r) => setLine(r.join(SET_DOT), { size: 4 }))]);
+        parts.push([setLine("Mug-free, guaranteed. Fast trade, then you're back in the air.", { size: 5, bold: true }), setLine("Open a trade, drop your items in, I'll send the total.")]);
+        rows = parts.flatMap((p, k) => (k ? [...SET_BREAK, ...p] : p));
+    }
+    return { title, post: rows.map(setRowText).join('\n'), html: rows.map(setRowHtml).join('') };
+}
+
+/**
+ * What to say to a seller after a trade, with the receipt's link last. The owner's order, 2026-10-12: whether they
+ * enjoyed it, a like and a comment on the forum ("it will be a big help", "dont make it too wordy"), hope to trade
+ * again, then the receipt. Plain text: the thread's address is what they click.
  * @param thread your buying thread's link, '' when it is not known: the sentence about it is then left out
  */
 export function thanksMessage({ receipt = '', thread = '' } = {}) {
     return [
-        'Thank you for trading!',
-        thread ? `If you enjoyed it, a like and a comment on my thread would help me a lot: ${thread}` : '',
-        thread ? 'It also says what I am buying now. Hope to trade again!' : 'Hope to trade again!',
+        'Thanks for the trade!',
+        thread ? `If you enjoyed it, a like and a comment on my forum would be a big help: ${thread}` : '',
+        'Hope to trade again!',
         receipt ? `Your receipt: ${receipt}` : '',
     ].filter(Boolean).join(' ');
 }

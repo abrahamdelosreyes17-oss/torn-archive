@@ -255,6 +255,11 @@ table.t { width: 100%; border-collapse: collapse; }
 .li-m { flex: 1; min-width: 0; } .li-m b { display: block; } .li-m span { color: var(--muted); font-size: 12px; }
 .av { width: 30px; height: 30px; border-radius: 50%; background: var(--raised); border: 1px solid var(--line2); display: grid; place-items: center; font: 650 12px var(--sans); color: var(--text2); flex: none; }
 .msg { padding: 7px 12px; border-radius: 10px; background: var(--input); border: 1px solid var(--line); color: var(--text2); line-height: 1.5; }
+/* Your forum post as it is copied (1.3.4): its lines, order, colour and drawn lines, at the hub's own sizes - Torn's
+   (font size 4, 5, 6) are three steps here. Its link is not one in the hub: a press must not leave the page. */
+.post-view { margin-top: 7px; padding-top: 9px; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.post-view font[size="4"] { font-size: 13px; } .post-view font[size="5"] { font-size: 15px; } .post-view font[size="6"] { font-size: 19px; }
+.post-view hr { border: 0; border-top: 1px solid var(--line2); margin: 0; } .post-view a { color: var(--brand); pointer-events: none; text-decoration: none; } .post-view font[color] b { color: inherit; }
 .hero { font: 650 36px/1 var(--disp); letter-spacing: -.02em; } .hero small { font-size: 16px; color: var(--muted); font-weight: 500; letter-spacing: 0; margin-left: 6px; }
 .track { position: relative; height: 8px; border-radius: 5px; background: rgba(255,255,255,.07); margin: 27px 0 26px; }
 .track i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: 5px; background: linear-gradient(90deg, #6a55e8, #a694ff); }

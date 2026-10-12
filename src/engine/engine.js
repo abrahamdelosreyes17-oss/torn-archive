@@ -821,6 +821,7 @@ export function makeEngine(env) {
                 const parts = [...egLines(w.diff.set.map((s) => s.itemID + ' $' + s.price + (s.was == null ? ' (new)' : ' (was $' + s.was + ')'))).map((l) => 'set: ' + l), ...egLines(w.diff.remove.map((r) => String(r.itemID))).map((l) => 'taken off: ' + l)];
                 parts.forEach((l, k) => env.say('note', 'TornW3B refused the write of your list: what was sent, ' + (k + 1) + ' of ' + parts.length, l));
             }
+            wrote({ ok: false, by, text: egMsg(error) + (error && error.said ? ' · it said: ' + error.said : '') });
             throw error;
         }
         listRefused = '';
@@ -842,6 +843,16 @@ export function makeEngine(env) {
             const lines = egLines([...left.diff.set.map((x) => x.itemID + ' yours $' + x.price + ', reads ' + (now.has(String(x.itemID)) ? '$' + now.get(String(x.itemID)).value : 'no price')), ...left.diff.remove.map((x) => x.itemID + ' still on it')]);
             lines.forEach((l, k) => env.say('note', 'TornW3B took the write and your list there still reads differently, ' + (k + 1) + ' of ' + lines.length, l));
         }
+        wrote({ ok: true, by, text: w.diff.set.length + ' set, ' + w.diff.remove.length + ' taken off', left: left.body ? left.diff.set.length + left.diff.remove.length : 0 });
+    }
+
+    /**
+     * The last write of your list and how it ended, kept: the panel says "sent" or "refused" with its time (the
+     * owner, 2026-10-12: "i need to know if it is sending, sent, or refused/error").
+     */
+    function wrote(w) {
+        S.w3b = { ...S.w3b, wrote: { at: env.now(), ...w } };
+        touch('w3b');
     }
 
     /** "Keep it at my rate by itself" is on and nothing is sent: the reason, said once each time it changes. */
@@ -1298,7 +1309,8 @@ export function makeEngine(env) {
         state: S, step, view, calm, act, note, readNow, keyChanged, flush, serverWant, serverTook, serverForget,
         serverMark: () => ({ seq: S.server.seq, seenAt: S.server.seenAt }),
         keys: () => keyState,
-        busy: () => ({ ...flags }),
+        // `wrote`: the last write of your list and how it ended; `next`: when a write by itself may go again.
+        busy: () => ({ ...flags, wrote: S.w3b.wrote || null, next: syncAt ? syncAt + EG_SYNC_GAP_MS : 0 }),
         mv: mvOf(S),
         /** Whether the settings changed something the reads depend on. */
         settingsChanged() {

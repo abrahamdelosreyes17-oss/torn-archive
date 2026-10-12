@@ -14,7 +14,7 @@ import { shortlists } from './shortlist.js';
 import { lotTable, sellPlan } from './lots.js';
 import { hotListings, shopVerdict, shareCovers } from './verdict.js';
 import { tradeTurn, agoWords } from './trades.js';
-import { listDiff, desiredList, owedPieces, listMatches, listedUntil } from './tw3b-list.js';
+import { listDiff, desiredList, owedPieces, listMatches, listedUntil, listLink } from './tw3b-list.js';
 
 /** Your thread on Torn's forums, when Torn said which forum it is in ('' else: no link is guessed). */
 const vwThreadUrl = (t) => (t && t.id != null && t.forum != null ? `https://www.torn.com/forums.php#/p=threads&f=${encodeURIComponent(t.forum)}&t=${encodeURIComponent(t.id)}` : '');
@@ -420,7 +420,7 @@ export function archiveView(i) {
     };
 
     // ---- my prices ---------------------------------------------------------------------------------------------------
-    const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on });
+    const forum = forumText({ open: settings.open, pct: settings.pct, stocks: sets.map((s) => ({ key: s.key, pieces: s.pieces })), sets: on, list: listLink(i.me) });
     // The thread names your rate - the most you pay. What you pay today is beside it when it is less.
     const paidRows = sets.map((s) => ({ label: s.label, pct: s.rate.pct }));
     const thread = i.thread && i.thread.title ? { ...i.thread, url: threadUrl, check: threadCheck(i.thread.title, { open: settings.open, pct: settings.pct, paid: paidRows }) } : null;

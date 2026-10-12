@@ -1227,7 +1227,7 @@ test('1.3.3 a receipt: the form TornW3B takes is found, remembered, and the link
     const f = r.view().trades.finished.find((x) => x.id === id);
     assert.match(f.receipt.url, /^https:\/\/weav3r\.dev\/receipt\/fr\d+$/);
     assert.equal(f.why, '');
-    assert.ok(f.thanks.startsWith('Thank you for trading!') && f.thanks.endsWith('Your receipt: ' + f.receipt.url), f.thanks);
+    assert.ok(f.thanks.startsWith('Thanks for the trade!') && f.thanks.endsWith('Your receipt: ' + f.receipt.url), f.thanks);
     assert.ok(r.said.some((s) => s.what === 'Receipt made on TornW3B' && s.detail.startsWith('by itself · trade ' + id + ' · form 3 · ' + f.receipt.url)));
     // The next trade goes in the form that was taken, at once.
     const next = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 1 }] }));

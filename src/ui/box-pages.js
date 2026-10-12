@@ -519,7 +519,7 @@ export function boxForum(v, title, check) {
     let html = bxHead('Your thread', under ? 'the title names your rate' : ok ? 'the title matches' : 'the title is out of date') + bxKv('Shop', `<span class="${pr.open ? 't-good' : ''}">${shop}</span>`);
     if (under) html += `<div class="ta-hold"><b>It says ${hRate(check.says.pct)}%; today you pay ${paid}.</b> The points price holds a set under your rate. The message for a trade names what you pay.</div>`;
     else if (!ok) html += `<div class="ta-hold"><b>${hEsc(why)}</b> Edit the thread on Torn and paste the new title.</div><div class="msg">${hEsc(pr.forum.title)}</div>`;
-    html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post)}</div>`
+    html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}"`)}</div>`
         + bxNote('<b>Nothing is posted or edited for you.</b>');
     return { where: 'your thread', html, marks: [], titleMark: { text: under ? `says ${hRate(check.says.pct)}%, you pay ${paid} today` : ok ? `matches your shop: ${shop}` : 'does not match your shop', state: under ? 'ahead' : ok ? 'good' : 'over' }, title };
 }

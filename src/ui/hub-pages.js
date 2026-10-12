@@ -616,7 +616,15 @@ function pgW3b(d) {
         // (`held`: the engine's own words for it). Then the reason is said and the button is yours.
         const held = w.sync ? String((d.busy && d.busy.held) || '') : '';
         badge = `<span class="badge ahead">${hPlural(w.diff.set.length + w.diff.remove.length, 'price')} differ</span>`;
-        body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? '<span class="t-muted">sending</span>' : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
+        body = `<div class="row"><span class="grow1">${[w.diff.set.length ? `${hPlural(w.diff.set.length, 'price')} to set` : '', w.diff.remove.length ? `${hPlural(w.diff.remove.length, 'piece')} to take off` : ''].filter(Boolean).join(' · ')}. Only set pieces are touched: anything else on your list stays as it is.${held ? ` <span class="t-warn">Not sent by itself: ${hEsc(held)}.</span>` : ''}</span>${w.sync && !held ? `<span class="t-muted">${d.busy && d.busy.w3b ? 'sending now' : `not sent yet: goes by itself ${d.busy && d.busy.next > d.view.at ? 'at ' + hClock(d.busy.next) + ' TCT' : 'within 2 minutes'}`}</span>` : `<button class="btn sm go" data-act="w3b" data-v="send"${d.busy && d.busy.w3b ? ' disabled' : ''}>Send to TornW3B</button>`}</div>`;
+    }
+    // The last write and how it ended: sent, sent and still different there, or refused with TornW3B's words.
+    const wr = key.set && d.busy ? d.busy.wrote : null;
+    if (wr) {
+        const by = wr.by === 'by itself' ? ' by itself' : '';
+        body += `<div class="row"><span class="grow1 ${wr.ok ? (wr.left ? 't-warn' : 't-muted') : 't-bad'}">${wr.ok
+            ? `<b class="${wr.left ? '' : 't-good'}">Sent</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}. ${wr.left ? `TornW3B took it, and ${hPlural(wr.left, 'price')} there still ${wr.left === 1 ? 'reads' : 'read'} differently.` : 'TornW3B took it.'}`
+            : `<b>Refused</b> ${hClock(wr.at)} TCT${by}: ${hEsc(wr.text)}.`}</span></div>`;
     }
     // The pieces you hold too many of are not on your list, and come back by themselves.
     if (key.set && w.known && !w.error && w.over.length) body += `<div class="row"><span class="grow1 t-muted">Left off while you hold too many: ${hEsc(w.over.join(', '))}.</span></div>`;
@@ -684,7 +692,7 @@ function pgPrices(d) {
       <div class="panel" data-k="verdict"><div class="ph"><h2>Open your shop?</h2></div><div class="pb">${pgVerdict(v)}</div></div>
       ${pgW3b(d)}
       <div class="panel" data-k="thread"><div class="ph"><h2>Your forum thread</h2><span class="sp"></span><span class="badge ${tcls}">${twords}</span></div><div class="pb">
-        <div class="msg"><b>${hEsc(pr.forum.title)}</b><br>${pr.forum.html}</div>
+        <div class="msg"><b>${hEsc(pr.forum.title)}</b><div class="post-view">${pr.forum.html}</div></div>
         <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.title)}">Copy the title</button><button class="btn" data-act="copy" data-v="${hEsc(pr.forum.post)}" data-html="${hEsc(pr.forum.html)}">Copy the post</button>${th && th.url ? hOut(th.url, 'Your thread', 'btn out') : ''}<span class="sp"></span><span class="t-muted" style="font-size:12px">You paste and post it.</span></div>
       </div></div>
       <div class="panel grow minc" data-k="ratechart"><div class="ph"><h2>What a set leaves you, by rate</h2><div class="legend">${pgSetKeys(v)}</div></div><div class="pb"><div class="chart" data-chart="rate"></div></div></div>
