@@ -17,6 +17,10 @@ const sum = (xs, f) => xs.reduce((a, x) => a + f(x), 0);
 test('the setting: both places on for a new install, one may be off, never both', () => {
     assert.deepEqual(ARCHIVE_DEFAULTS.from, { bazaar: true, market: true });
     assert.deepEqual(archiveSettings(null).from, { bazaar: true, market: true });
+    // 1.3.7: Torn's "Yes" after Buy is pressed for you only when you turned that on.
+    assert.equal(archiveSettings(null).noConfirm, false);
+    assert.equal(archiveSettings({ noConfirm: true }).noConfirm, true);
+    assert.equal(archiveSettings({ noConfirm: 'yes' }).noConfirm, false);
     assert.deepEqual(archiveSettings({ from: { market: false } }).from, { bazaar: true, market: false });
     assert.deepEqual(archiveSettings({ from: { bazaar: false } }).from, { bazaar: false, market: true });
     assert.deepEqual(archiveSettings({ from: { bazaar: false, market: false } }).from, { bazaar: true, market: true }, 'nowhere to buy is no list: both stay on');

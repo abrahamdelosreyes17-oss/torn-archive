@@ -22,7 +22,16 @@
   .trade-cont { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .trade-cont ul { list-style: none; margin: 0; padding: 0; }
   .trade-cont .title-black { padding: 7px 10px; background: #222; }
-  .trade-cont ul.desc > li { padding: 8px 10px; border-top: 1px solid #3a3a3a; background: #2a2a2a; }
+  .trade-cont ul.desc > li { position: relative; display: flex; justify-content: space-between; padding: 8px 10px; border-top: 1px solid #3a3a3a; background: #2a2a2a; }
+  .trade-cont .del.right { width: 34px; text-align: center; color: #777; }
+  .init-trade, .vault-wrap { margin-top: 12px; background: #2a2a2a; border-radius: 4px; }
+  .init-trade .title-black { padding: 7px 10px; background: #222; } .init-trade .cont-gray { padding: 10px; }
+  .init-trade ul.inputs { list-style: none; margin: 8px 0; padding: 0; } .init-trade ul.inputs li { display: block; }
+  .init-trade .title { display: inline-block; width: 60px; }
+  .input-money-group { display: inline-block; width: 315px; vertical-align: middle; } .input-money-group input { width: 270px; background: #1b1b1b; border: 1px solid #444; color: #ccc; padding: 5px 6px; }
+  .vault-wrap { display: grid; grid-template-columns: 1fr 1fr; } .vault-cont .title { padding: 8px 10px; } .vault-cont .title p { margin: 0; }
+  .vault-cont .cont { display: flex; gap: 8px; align-items: center; padding: 10px; } .vault-cont .input-money-group { width: 190px; } .vault-cont .input-money-group input { width: 150px; }
+  .torn-btn { background: #555; color: #eee; border: 0; border-radius: 3px; padding: 5px 14px; cursor: pointer; } .sent { color: #8a8; }
   .set { margin: 12px 0; padding: 10px; background: #2a2a2a; border-radius: 4px; }
   .set ul { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 10px 0; }
   .set li { width: 66px; padding: 14px 0 4px; text-align: center; background: #222; border: 1px solid #3a3a3a; border-radius: 4px; }
@@ -51,6 +60,9 @@
     ?page=bazaar&im=1       stands in for the Item Market (the address gets Torn's own sid=ItemMarket: the box tells
                             the Item Market by that word in the address, as on Torn)
     ?page=trade#step=view&ID=N   a trade (&money=1: the add-money step; &more=1: ten more of its first piece on the page than the hub read)
+                            &hand=N  what is on you, as the Add Money step says it
+    ?page=vault             your vault (&hand=N on you, &vault=N in it, &list=1 with a shopping list made)
+    &noconfirm=1            Settings: No "Yes" after Buy is on (with ?page=bazaar&step=1 the stand-in asks "Yes No")
     &late=N   the hub last answered N minutes ago
     ?page=museum   ?page=pmarket   ?page=forum#/p=threads&t=N
     &old=1  the shared view is 20 minutes old      &none=1  nothing shared yet     &trading=1  Torn Trading on this page
@@ -72,6 +84,7 @@ const q = new URLSearchParams(location.search);
 const page = q.get('page') || 'bazaar';
 const now = Date.now();
 const input = fixtureInput(now);
+if (q.has('noconfirm')) input.settings = { ...input.settings, noConfirm: true };
 // &fixed=1: your prices fixed for the hour 20 minutes ago; with &fell=N the points price fell since (they came down).
 if (q.has('fixed')) input.rate = fixTable(archiveView(input).prices.live, rateKey(input.settings), now - 20 * 60000);
 if (q.has('fell')) input.listings = input.listings.map((l) => ({ ...l, cost: l.cost - (Number(q.get('fell')) || 400) }));
@@ -133,15 +146,32 @@ if (page === 'bazaar') {
         sell(tile, typed);
     });
 } else if (page === 'trade') {
+    // The markup of the owner's real trade, read 2026-10-12: your money row is `li.color1 ul.desc > li` with
+    // `.name.left` and Torn's bin `.del.right`; the Add Money step is `.init-trade.add-money` with "You have
+    // $<span.money-value>" and a form whose box stands in `.input-money-group` (a shown box and a hidden twin).
+    // &hand=N: what is on you there (the fixture's own number when left out).
     const id = (location.hash.match(/ID=(\d+)/) || [])[1];
     const t = view.trades.open.find((x) => String(x.id) === id) || view.trades.open[0];
     if (!id && t) location.hash = 'step=' + (q.has('money') ? 'addmoney' : 'view') + '&ID=' + t.id;
     const firstPiece = t ? t.rows.findIndex((r) => r.state !== 'other') : -1;
     const rows = t ? t.rows.map((r, i) => (q.has('more') && i === firstPiece ? { ...r, qty: r.qty + 10 } : r)) : [];
+    const hand = q.has('hand') ? Number(q.get('hand')) || 0 : view.top.onHand || 0;
+    const mine = (n) => `<li class="color1"><ul class="desc"><li><div class="name left">${n ? money(n) + ' in trade' : 'No money in trade'}</div><div class="del right">bin</div></li></ul></li>`;
     main.innerHTML = `<h1>Trade</h1><div class="trade-cont">
-      <div class="user left"><div class="title-black">You</div><ul class="cont"><li class="color1"><div class="name">${t && t.myMoney ? money(t.myMoney) : 'No money in trade'}</div></li><li class="color2"><ul class="desc"><li><div class="name">No items in trade</div></li></ul></li></ul></div>
-      <div class="user right"><div class="title-black">${esc((t && t.who) || 'Someone')}</div><ul class="cont"><li class="color1"><div class="name">No money in trade</div></li><li class="color2"><ul class="desc">${rows.map((r) => `<li><div class="name">${esc(r.name)} x${r.qty}</div></li>`).join('')}</ul></li></ul></div>
-    </div>${q.has('money') ? '<p class="input-money-group"><input class="input-money" type="text" value=""><input class="input-money" type="hidden" name="amount" value=""> <button>Change</button></p>' : ''}`;
+      <div class="user left"><div class="title-black">You</div><ul class="cont">${mine(t && t.myMoney)}<li class="color2"><ul class="desc"><li><div class="name">No items in trade</div></li></ul></li></ul></div>
+      <div class="user right"><div class="title-black">${esc((t && t.who) || 'Someone')}</div><ul class="cont"><li class="color1"><ul class="desc"><li><div class="name left">No money in trade</div></li></ul></li><li class="color2"><ul class="desc">${rows.map((r) => `<li><div class="name">${esc(r.name)} x${r.qty}</div></li>`).join('')}</ul></li></ul></div>
+    </div>${q.has('money') ? `<div class="init-trade add-money"><div class="title-black">Add Money to Trade</div><div class="cont-gray"><p>You have $<span class="money-value">${hand.toLocaleString('en-US')}</span></p><form><ul class="inputs"><li><div class="title">Money:</div><div class="input-money-group"><span class="input-money-symbol">$</span><input class="user-id input-money" type="text" value=""><input class="user-id input-money" type="hidden" name="amount" value=""></div></li></ul><span class="btn-wrap silver"><input class="torn-btn" type="submit" value="Change"></span><p class="sent" hidden></p></form></div></div>` : ''}`;
+    const form = main.querySelector('.add-money form');
+    if (form) form.addEventListener('submit', (e) => { e.preventDefault(); window.sent = [...(window.sent || []), ['Change', form.querySelector('[name=amount]').value]]; const p = form.querySelector('.sent'); p.hidden = false; p.textContent = 'Stand-in: Torn was sent ' + JSON.stringify(window.sent); });
+} else if (page === 'vault') {
+    // Your vault as read on the owner's real page 2026-10-12: `.vault-wrap > form.vault-cont.left` (.wvalue: in the
+    // vault; .cont > .input-money-group + WITHDRAW) and `form.vault-cont.right.deposit-box` (.dvalue: on you).
+    // &hand=N &vault=N: what is on you and in the vault (the fixture's own numbers when left out).
+    const hand = q.has('hand') ? Number(q.get('hand')) || 0 : view.top.onHand || 0;
+    const inVault = q.has('vault') ? Number(q.get('vault')) || 0 : view.top.vault || 0;
+    const side = (cls, val, n, words, btn) => `<form class="vault-cont ${cls}"><div class="title"><p>${words[0]} <span class="${val}">$${n.toLocaleString('en-US')}</span> ${words[1]}</p></div><div class="cont torn-divider"><i class="${btn.toLowerCase()}-icon"></i><div class="input-money-group"><span class="input-money-symbol">$</span><input class="input-money" type="text" value=""><input class="input-money" type="hidden" name="${btn.toLowerCase()}" value=""></div><span class="btn-wrap silver"><input class="torn-btn" type="submit" value="${btn}"></span></div></form>`;
+    main.innerHTML = `<h1>Properties</h1><div class="vault-wrap">${side('left', 'wvalue', inVault, ['There is', 'stored in the vault.'], 'WITHDRAW')}${side('right deposit-box', 'dvalue', hand, ['You have', 'on you.'], 'DEPOSIT')}</div><p class="sent" hidden></p>`;
+    for (const form of main.querySelectorAll('form')) form.addEventListener('submit', (e) => { e.preventDefault(); window.sent = [...(window.sent || []), [form.querySelector('.torn-btn').value, form.querySelector('input[type=hidden]').value]]; const p = main.querySelector('.sent'); p.hidden = false; p.textContent = 'Stand-in: Torn was sent ' + JSON.stringify(window.sent); });
 } else if (page === 'museum') {
     main.innerHTML = '<h1>Museum</h1>' + SETS.map((s) => `<div class="set"><p>To exchange a ${esc(s.museum)} for ${s.points} points, you need one of each:</p><ul>${s.pieces.map((p) => `<li>${pic(p.id)}</li>`).join('')}</ul>
       <p>Number of sets <input type="text" value=""> <button>EXCHANGE</button></p></div>`).join('');

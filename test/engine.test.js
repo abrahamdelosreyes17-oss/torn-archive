@@ -1823,3 +1823,28 @@ test('1.3.6 your own price list for the server: what you pay now, also with the 
     assert.equal(Object.keys(own.prices).length, 23, 'closed: what you would pay if you opened now');
     for (const [id, pay] of Object.entries(own.prices)) assert.equal(pay, piece(r.view(), id).pay);
 });
+
+// 1.3.7 - the owner, 2026-10-12: "trade is done. it takes forever for it to show up in torn archive ... for the
+// receipt". With Torn Bids in view the Archive keeps to 12 requests a minute (core/turns.js SHARES.behind). Until
+// 1.3.7 its slow lane then never got a slot, and finished trades were read in that lane: on this same pretend Torn a
+// finished trade was not read, and got no receipt, in half an hour - at 12 and at 20 a minute alike (5 s at 85).
+for (const perMinute of [12, 20]) {
+    test(`1.3.7 at ${perMinute} requests a minute a finished trade is read within two minutes and has its receipt within four`, async (t) => {
+        const r = rig(t, { tornPerMinute: perMinute, settings: { w3bSync: true } });
+        await r.go(20 * MIN);
+        const id = String(r.fake.openTrade({ whoId: 4000006, theirs: [{ id: 384, qty: 2 }] }));
+        await r.go(3 * MIN);
+        assert.ok(r.view().trades.open.find((x) => x.id === id), 'the open trade is seen');
+        r.fake.finishTrade(id, { pay: 2 * payOf(r.world, 384) });
+        await r.go(2 * MIN);
+        const f = r.view().trades.finished.find((x) => x.id === id);
+        assert.ok(f, 'the finished trade is in the hub');
+        // The receipt waits for one thing more: your list on TornW3B holding a price for each piece of the trade
+        // (TornW3B makes the receipt from that list). At 20 a minute that took 80 s more on this pretend Torn.
+        await r.go(2 * MIN);
+        const g = r.view().trades.finished.find((x) => x.id === id);
+        assert.ok(g.receipt && g.receipt.url, 'and has its receipt');
+        // The slow lane itself is read again: your money and the points market, which it never reached before.
+        assert.ok(r.torn('/v2/user/money').length > 0 && r.torn('/v2/market/pointsmarket').length > 0);
+    });
+}

@@ -179,6 +179,12 @@ export function isPointsMarketPage(href) {
     return url.includes('/pmarket.php') || /[?&]page=pmarket(?:[&#]|$)/.test(url);
 }
 
+/** Your properties (properties.php): the vault tab is one of its pages. `page=vault` is the harness's stand-in. */
+export function isVaultPage(href) {
+    const url = String(href || '').toLowerCase();
+    return url.includes('/properties.php') || /[?&]page=vault(?:[&#]|$)/.test(url);
+}
+
 /** Torn's forums (forums.php). `page=forum` is the harness's stand-in. */
 export function isForumPage(href) {
     const url = String(href || '').toLowerCase();

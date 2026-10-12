@@ -381,7 +381,7 @@ export function boxTrade(v, t, rows, step, hasMoneyBox, known = null) {
     else if (!owed && t.total) html += '<div class="ta-ok">Your money covers it: nothing to do until they accept.</div>';
     const others = v.trades.open.filter((x) => x.id !== t.id);
     if (others.length) html += `<div class="ta-kv sep"><span>Also open with you</span><span>${others.map((x) => `<a class="lk" data-act="open-trade" data-v="${hEsc(x.id)}">${hEsc(x.who || 'a trade')}</a>`).join(' · ')}</span></div>`;
-    html += bxNote(`Fill types the money into Torn's box. <b>You press Change and Accept.</b> Nothing is sent or accepted for you.`);
+    html += bxNote(`The buttons beside Torn's own box type the money and press Torn's <b>Change</b>, once. Fill here only types. <b>You press Accept.</b>`);
     return { where: 'a trade', html, marks };
 }
 
@@ -523,4 +523,124 @@ export function boxForum(v, title, check) {
     html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}" data-post="1"`)}</div>`
         + bxNote('<b>Nothing is posted or edited for you.</b>');
     return { where: 'your thread', html, marks: [], titleMark: { text: under ? `says ${hRate(check.says.pct)}%, you pay ${paid} today` : ok ? `matches your shop: ${shop}` : 'does not match your shop', state: under ? 'ahead' : ok ? 'good' : 'over' }, title };
+}
+
+/*
+ * 1.3.7 - the total where you pay it. The owner, 2026-10-12, on his own trade: "it shows how much each is, but just
+ * doesnt show the total ... cant i just overlay should fill here how much i need? and red if i dont have enough?
+ * and when i go to property to withdraw my vault, fill how much i need to withdraw?" Until now the total and Fill
+ * were in the box alone. These say them on Torn's own lines: a mark on your money row of the trade, Fill beside
+ * Torn's Add Money box, and Fill beside your vault's Withdraw box. The words only; torn-page.js puts them there.
+ */
+
+/** Torn's own vault tab: it shows the vault of the property you live in. */
+export const VAULT_URL = 'https://www.torn.com/properties.php#/p=options&tab=vault';
+
+/**
+ * A trade's money, on Torn's own lines.
+ * @param t      the trade as the view has it, null when the hub has not read it
+ * @param same   tradeSame(): false when the pieces on the page are not the ones the hub read
+ * @param onHand your money on you: as Torn's Add Money line says it, else as the hub last read it; null when neither
+ * @returns { mark: { text, state } | null   on your money row of the trade,
+ *            fill: { buttons: [{ label, amount }], note, state, vault } | null   beside Torn's Add Money box }
+ */
+export function tradeMoney(t, same = true, onHand = null) {
+    if (!t) return { mark: null, fill: null };
+    if (!same) return { mark: { text: 'changed since it was read: total within a minute', state: 'ahead' }, fill: { buttons: [], note: 'This trade changed since it was read. Its total is here within a minute; nothing is filled until then.', state: 'ahead', vault: false } };
+    const total = Math.max(0, Math.floor(Number(t.total) || 0));
+    if (!total) return { mark: null, fill: null };
+    const need = Math.max(0, Math.floor(Number(t.needTotal) || 0));
+    const mine = Math.max(0, Math.floor(Number(t.myMoney) || 0));
+    const split = need > 0 && need < total;
+    const have = onHand == null ? null : Math.max(0, Math.floor(Number(onHand) || 0));
+    // What is still to come from your pocket, for everything and for only what you need.
+    const moreAll = Math.max(0, total - mine);
+    const moreNeed = split ? Math.max(0, need - mine) : moreAll;
+    const shortAll = have == null ? 0 : Math.max(0, moreAll - have);
+    const shortNeed = have == null ? 0 : Math.max(0, moreNeed - have);
+
+    let mark;
+    if (!moreAll) mark = { text: `Total ${hMoney(total)} · paid ✓`, state: 'good' };
+    else if (split && !moreNeed) mark = { text: `What you need ${hMoney(need)} · paid ✓ · all ${hMoney(total)}`, state: 'good' };
+    else if (shortNeed) mark = { text: `Add ${hMoney(moreAll)} · only ${hMoney(have)} on you`, state: 'over' };
+    else mark = { text: `Total ${hMoney(total)} · add ${hMoney(moreAll)}`, state: 'top' };
+
+    // Torn's box takes the whole amount of the trade, so the number is the total, not what is still missing.
+    const buttons = [];
+    if (moreAll) buttons.push({ label: `Add ${hMoney(total)}`, amount: total });
+    if (split && moreNeed) buttons.push({ label: `Add only what I need: ${hMoney(need)}`, amount: need });
+    let note;
+    let state = '';
+    if (!moreAll) { note = `Your ${hMoney(mine)} in the trade pays for everything.`; state = 'good'; }
+    else if (have == null) note = split ? `Everything, ${hPlural(t.units, 'piece')}: ${hMoney(total)}.` : '';
+    else if (shortNeed) { note = `You have ${hMoney(have)} on you: ${hMoney(shortAll)} short${split && shortNeed !== shortAll ? `, ${hMoney(shortNeed)} short of only what you need` : ''}.`; state = 'over'; }
+    else if (shortAll) { note = `You have ${hMoney(have)} on you: enough for what you need, ${hMoney(shortAll)} short of everything.`; state = 'over'; }
+    else { note = `You have ${hMoney(have)} on you: enough.`; state = 'good'; }
+    return { mark, fill: { buttons, note, state, vault: shortAll > 0 } };
+}
+
+/**
+ * Your vault's Withdraw box: exactly what to take out - for your open trades, for your shopping list, for both -
+ * which is what they want less what is on you already (the owner, 2026-10-12: "whenever we have a trade, or a
+ * shopping list. it automatically shows me how much money i need to put in the trade and take out for shopping
+ * (exactly) ... so click it it fills and withdraws").
+ * @param onHand, vault  as Torn's vault page says them; else as the hub last read them; null when neither
+ * @returns { buttons: [{ label, amount }], note, state, all, need, n, list } | null   null: nothing wants money
+ */
+export function vaultMoney(v, onHand = null, vault = null) {
+    const open = ((v && v.trades && v.trades.open) || []).filter((t) => Number(t.total) > 0);
+    let all = 0;
+    let need = 0;
+    let n = 0;
+    for (const t of open) {
+        const mine = Math.max(0, Math.floor(Number(t.myMoney) || 0));
+        const a = Math.max(0, Math.floor(Number(t.total) || 0) - mine);
+        const part = Number(t.needTotal) > 0 && Number(t.needTotal) < Number(t.total);
+        all += a;
+        need += part ? Math.max(0, Math.floor(Number(t.needTotal)) - mine) : a;
+        if (a) n += 1;
+    }
+    // What is left of your shopping list costs, as the hub has it.
+    const list = Math.max(0, Math.floor(Number(v && v.buy && v.buy.cost) || 0));
+    if (!all && !list) return null;
+    const top = (v && v.top) || {};
+    const have = onHand == null ? (top.onHand != null ? top.onHand : null) : onHand;
+    const inVault = vault == null ? (top.vault != null ? top.vault : null) : vault;
+    const take = (want) => Math.max(0, want - (have || 0));
+    const wants = [];
+    if (all) wants.push(`${hPlural(n, 'open trade')} ${n === 1 ? 'wants' : 'want'} ${hMoney(all)} more from you`);
+    if (list) wants.push(`your list costs ${hMoney(list)}`);
+    const why = wants.join(' · ') + (have == null ? '' : ` · ${hMoney(have)} on you`);
+    const most = take(all + list);
+    if (!most) return { buttons: [], note: `${why}: enough, nothing to take out.`, state: 'good', all, need, n, list };
+    const buttons = [];
+    const add = (label, amount) => { if (amount > 0 && !buttons.some((b) => b.amount === amount)) buttons.push({ label: `Withdraw ${hMoney(amount)} · ${label}`, amount }); };
+    if (all) add(n === 1 ? 'your trade' : 'your trades', take(all));
+    if (all && need < all) add('only what I need', take(need));
+    if (list) add('your list', take(list));
+    if (all && list) add('both', most);
+    const lacks = inVault != null && inVault < most;
+    return {
+        buttons: inVault == null ? buttons : buttons.filter((b) => b.amount <= inVault),
+        note: lacks ? `${why}. Your vault holds ${hMoney(inVault)}: ${hMoney(most - inVault)} short${all && list ? ' of both' : ''}.` : `${why}.`,
+        state: lacks ? 'over' : '', all, need, n, list,
+    };
+}
+
+/** Your vault's Deposit box: everything on you, in one press ("a button that automatically deposits all"). */
+export function vaultDeposit(onHand = null) {
+    const have = Math.max(0, Math.floor(Number(onHand) || 0));
+    return have ? { buttons: [{ label: `Deposit all ${hMoney(have)}`, amount: have }] } : null;
+}
+
+/** The box on your vault's page: the same numbers, once. */
+export function boxVault(v, m) {
+    if (!m) return null;
+    let html = bxHead('Your vault', [m.n ? hPlural(m.n, 'open trade') : '', m.list ? 'your list' : ''].filter(Boolean).join(' · '));
+    if (m.all) html += bxKv('Trades, still to pay', hMoney(m.all));
+    if (m.all && m.need !== m.all) html += bxKv('Only what you need', hMoney(m.need));
+    if (m.list) html += bxKv('Your shopping list', hMoney(m.list));
+    html += `<div class="${m.state === 'over' ? 'ta-hold' : m.state === 'good' ? 'ta-ok' : 'ta-kv sep'}">${hEsc(m.note)}</div>`;
+    html += bxNote(`One press of a button under Torn's box types the number and presses Torn's own <b>Withdraw</b> or <b>Deposit</b>, once.`);
+    return { where: 'your vault', html, marks: [] };
 }

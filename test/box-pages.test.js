@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { archiveView, viewForTabs, viewPiece } from '../src/core/view.js';
 import { fillPlan, stopsOf, runStart, IM_PLACE } from '../src/core/shopping.js';
 import { threadCheck } from '../src/core/sets.js';
-import { boxWaiting, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum } from '../src/ui/box-pages.js';
+import { boxWaiting, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum, tradeMoney, vaultMoney, vaultDeposit, boxVault } from '../src/ui/box-pages.js';
 import { tornPageKind } from '../src/ui/torn-page.js';
 import { fixtureInput } from './fixture-view.js';
 
@@ -163,7 +163,7 @@ test('a trade: each row priced, the margin said once, money typed only on the ad
     assert.ok(out.html.includes('data-act="copy"'));
     const pay = boxTrade(v, t, rows, 'addmoney', true);
     if (t.total > t.myMoney) assert.ok(pay.html.includes(`data-act="fill-money" data-v="${t.total}"`));
-    assert.ok(/You press Change and Accept\./.test(pay.html));
+    assert.ok(/press Torn's <b>Change<\/b>, once\. Fill here only types\. <b>You press Accept\.<\/b>/.test(pay.html));
     // A trade the hub has not read: said, and nothing priced.
     assert.ok(boxTrade(v, null, rows, 'view', false).html.includes('has not been read yet'));
     assert.equal(boxTrade(v, null, [], 'view', false), null);
@@ -324,4 +324,81 @@ test('the Item Market\'s page: each price row under the worth gets its own part 
     const blind = boxBazaar(v, [card(p.worth - 90, 0)], IM_PLACE);
     assert.deepEqual(blind.marks.map((m) => m.text), ['under its worth · open it for the stock']);
     assert.deepEqual(blind.fill, []);
+});
+
+/// 1.3.7 - the total where you pay it (the owner, 2026-10-12: "it shows how much each is, but just doesnt show the
+// total ... fill here how much i need? and red if i dont have enough? and when i go to property to withdraw my
+// vault, fill how much i need to withdraw?" - and then: "click it it fills and withdraws ... a button that
+// automaticalyl deposits all with 1 button").
+test('a trade\'s money on Torn\'s own lines: the total on your money row, Add beside Add Money, red when you are short', () => {
+    const t = { total: 7021632, needTotal: 5279012, myMoney: 0, units: 206 };
+    // Enough on you: the total, both buttons, said green.
+    const rich = tradeMoney(t, true, 9271480);
+    assert.deepEqual(rich.mark, { text: 'Total $7,021,632 · add $7,021,632', state: 'top' });
+    assert.deepEqual(rich.fill.buttons, [{ label: 'Add $7,021,632', amount: 7021632 }, { label: 'Add only what I need: $5,279,012', amount: 5279012 }]);
+    assert.deepEqual([rich.fill.state, rich.fill.vault], ['good', false]);
+    // Nothing on you: red on the row and beside the box, with what is short and the way to your vault.
+    const poor = tradeMoney(t, true, 0);
+    assert.deepEqual(poor.mark, { text: 'Add $7,021,632 · only $0 on you', state: 'over' });
+    assert.equal(poor.fill.state, 'over');
+    assert.ok(poor.fill.note.includes('$7,021,632 short') && poor.fill.note.includes('$5,279,012 short of only what you need'));
+    assert.equal(poor.fill.vault, true);
+    assert.equal(poor.fill.buttons.length, 2, 'the button still types the number: Torn says no, not Torn Archive');
+    // Enough for what you need, not for everything.
+    const some = tradeMoney(t, true, 6000000);
+    assert.deepEqual([some.mark.state, some.fill.state, some.fill.vault], ['top', 'over', true]);
+    assert.ok(some.fill.note.includes('enough for what you need, $1,021,632 short of everything'));
+    // Paid: no button, and the row says so. Paid only what you need: said, the rest still offered.
+    const paid = tradeMoney({ ...t, myMoney: 7021632 }, true, 0);
+    assert.deepEqual([paid.mark.text, paid.mark.state, paid.fill.buttons.length, paid.fill.state], ['Total $7,021,632 · paid ✓', 'good', 0, 'good']);
+    const part = tradeMoney({ ...t, myMoney: 5279012 }, true, 2000000);
+    assert.equal(part.mark.state, 'good');
+    assert.deepEqual(part.fill.buttons, [{ label: 'Add $7,021,632', amount: 7021632 }]);
+    // What is on you not known: the numbers, no judgement. Every piece needed: one button.
+    assert.equal(tradeMoney(t, true, null).fill.state, '');
+    assert.equal(tradeMoney({ ...t, needTotal: t.total }, true, 9e6).fill.buttons.length, 1);
+    // Changed since it was read, not read, or nothing priced: no number of the trade as it was.
+    const changed = tradeMoney(t, false, 9e6);
+    assert.equal(changed.fill.buttons.length, 0);
+    assert.ok(!/\$/.test(changed.mark.text + changed.fill.note));
+    assert.deepEqual(tradeMoney(null, true, 5), { mark: null, fill: null });
+    assert.deepEqual(tradeMoney({ total: 0, needTotal: 0, myMoney: 0 }, true, 5), { mark: null, fill: null });
+});
+
+test('your vault: exactly what to take out for your trades, your list, or both; everything on you back in one press', () => {
+    const view = (open, cost = 0, top = {}) => ({ trades: { open }, buy: { cost }, top: { onHand: null, vault: null, ...top } });
+    const a = { total: 7021632, needTotal: 5279012, myMoney: 0 };
+    const b = { total: 1000000, needTotal: 1000000, myMoney: 400000 };
+    // Trades alone: what they still want, less what is on you.
+    const m = vaultMoney(view([a, b]), 500000, 90000000);
+    assert.deepEqual(m.buttons, [{ label: 'Withdraw $7,121,632 · your trades', amount: 7121632 }, { label: 'Withdraw $5,379,012 · only what I need', amount: 5379012 }]);
+    assert.deepEqual([m.all, m.need, m.n, m.list, m.state], [7621632, 5879012, 2, 0, '']);
+    assert.ok(m.note.startsWith('2 open trades want $7,621,632 more from you · $500,000 on you'));
+    // A shopping list alone, and both together: each its own exact sum, and one for both.
+    assert.deepEqual(vaultMoney(view([], 2300000), 300000, 9e7).buttons, [{ label: 'Withdraw $2,000,000 · your list', amount: 2000000 }]);
+    const both = vaultMoney(view([b], 2300000), 100000, 9e7);
+    assert.deepEqual(both.buttons, [{ label: 'Withdraw $500,000 · your trade', amount: 500000 }, { label: 'Withdraw $2,200,000 · your list', amount: 2200000 }, { label: 'Withdraw $2,800,000 · both', amount: 2800000 }]);
+    assert.ok(both.note.startsWith('1 open trade wants $600,000 more from you · your list costs $2,300,000 · $100,000 on you'));
+    // Enough on you for a part: no button for that part, the rest still to take out.
+    assert.deepEqual(vaultMoney(view([b], 2300000), 700000, 9e7).buttons.map((x) => x.label), ['Withdraw $1,600,000 · your list', 'Withdraw $2,200,000 · both']);
+    // Enough for everything: said, no button. The vault short: red, and no button for more than it holds.
+    const fine = vaultMoney(view([b]), 600000, 5);
+    assert.deepEqual([fine.buttons.length, fine.state], [0, 'good']);
+    const low = vaultMoney(view([a]), 0, 6000000);
+    assert.equal(low.state, 'over');
+    assert.deepEqual(low.buttons.map((x) => x.amount), [5279012]);
+    assert.ok(low.note.includes('Your vault holds $6,000,000: $1,021,632 short'));
+    // The page's own numbers first; without them, the hub's last read.
+    assert.deepEqual(vaultMoney(view([b], 0, { onHand: 100000 })).buttons, [{ label: 'Withdraw $500,000 · your trade', amount: 500000 }]);
+    // Nothing wants money: nothing at all, and no box.
+    assert.equal(vaultMoney(view([{ ...b, myMoney: 1000000 }]), 0, 0), null);
+    assert.equal(vaultMoney(view([]), 0, 0), null);
+    assert.equal(boxVault(view([]), null), null);
+    const box = boxVault(view([b], 2300000), both);
+    assert.equal(box.where, 'your vault');
+    assert.ok(box.html.includes('$600,000') && box.html.includes('$2,300,000') && /presses Torn's own/.test(box.html));
+    // Deposit: all of it, one button; nothing on you, no button.
+    assert.deepEqual(vaultDeposit(500000), { buttons: [{ label: 'Deposit all $500,000', amount: 500000 }] });
+    assert.equal(vaultDeposit(0), null);
+    assert.equal(vaultDeposit(null), null);
 });

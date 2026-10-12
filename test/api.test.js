@@ -240,6 +240,21 @@ test('priority lanes: with the shared window nearly full, a low call waits and a
     assert.equal(client.laneLimit(2), 85);
 });
 
+test('1.3.7 the lanes under a small share: the low lane is not left with one slot', () => {
+    // With Torn Bids in view this app keeps to 12 a minute. 20 held back out of 12 left the low lane a single
+    // slot, taken only after a whole minute with no request at all: finished trades, the log, money and prices
+    // were then never read.
+    const behind = makeClient(null, { maxPerMinute: 12 });
+    assert.deepEqual([behind.laneLimit(2), behind.laneLimit(1), behind.laneLimit(0)], [12, 12, 10]);
+    const twenty = makeClient(null, { maxPerMinute: 20 });
+    assert.deepEqual([twenty.laneLimit(2), twenty.laneLimit(1), twenty.laneLimit(0)], [20, 19, 16]);
+    const front = makeClient(null, { maxPerMinute: 70 });
+    assert.deepEqual([front.laneLimit(2), front.laneLimit(1), front.laneLimit(0)], [70, 66, 54]);
+    // Alone, as it was.
+    const alone = makeClient(null, { maxPerMinute: 85 });
+    assert.deepEqual([alone.laneLimit(2), alone.laneLimit(1), alone.laneLimit(0)], [85, 80, 65]);
+});
+
 // ---- what Torn's "too many" teaches ----------------------------------------------------------------------------------
 
 const T0 = Date.UTC(2026, 9, 11, 18, 0, 0);
@@ -257,8 +272,9 @@ test('after a "too many" the client holds under what it had made, comes back a s
     assert.equal(client.ceilNow(T0), 42);
     assert.equal(client.limitNow(T0), 42);
     assert.equal(client.laneLimit(2, T0), 42);
-    assert.equal(client.laneLimit(1, T0), 37);
-    assert.equal(client.laneLimit(0, T0), 22);
+    // The lanes' reserves shrink with the ceiling (1.3.7): 5 and 20 were chosen for 85 a minute.
+    assert.equal(client.laneLimit(1, T0), 40);
+    assert.equal(client.laneLimit(0, T0), 33);
     assert.equal(client.stats(T0).ceil, 42);
     assert.equal(client.ceilNow(T0 + CEIL_BACK_EVERY_MS - 1), 42);
     assert.equal(client.ceilNow(T0 + CEIL_BACK_EVERY_MS), 42 + CEIL_BACK);

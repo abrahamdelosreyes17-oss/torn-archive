@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.6
+// @version      1.3.7
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.6';
+    const TARC_BUILD_VERSION = '1.3.7';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -1062,6 +1062,14 @@
     const API_PRIORITY = { low: 0, normal: 1, high: 2 };
     const NORMAL_RESERVE = 5;
     const LOW_RESERVE = 20;
+    /*
+     * The ceiling those two were chosen for. Under a smaller one they shrink with it (1.3.7): with Torn Bids in view
+     * this app keeps to 12 a minute, and 20 held back out of 12 left the low lane one slot - taken only when a whole
+     * minute had passed with no request at all, which the once-a-minute trade read never lets happen. Measured on the
+     * pretend Torn: at 12 and at 20 a minute a finished trade was not read in half an hour; nor your log, your money,
+     * the points market or the Item Market.
+     */
+    const RESERVE_FOR = 85;
     /* Returned by a wait that gave way to a more urgent call. */
     const YIELDED = Symbol('yielded');
 
@@ -1311,8 +1319,10 @@
 
         /** How many of the window's slots this lane may fill. */
         laneLimit(priority = API_PRIORITY.normal, now = Date.now()) {
-            const reserve = priority >= API_PRIORITY.high ? 0 : priority >= API_PRIORITY.normal ? NORMAL_RESERVE : LOW_RESERVE;
-            return Math.max(1, this.limitNow(now) - reserve);
+            const limit = this.limitNow(now);
+            const full = priority >= API_PRIORITY.high ? 0 : priority >= API_PRIORITY.normal ? NORMAL_RESERVE : LOW_RESERVE;
+            const reserve = Math.min(full, Math.floor(limit * full / RESERVE_FOR));
+            return Math.max(1, limit - reserve);
         }
 
         /**
@@ -7750,6 +7760,7 @@
         sound: false,
         beforeEach: 0,
         w3bSync: false,
+        noConfirm: false,
         from: Object.freeze({ bazaar: true, market: true }),
     });
 
@@ -7782,6 +7793,8 @@
             beforeEach: stNum(s.beforeEach) > 0 ? stWhole(s.beforeEach) : 0,
             // Keep your TornW3B price list at your rate by itself (needs the key you registered there).
             w3bSync: s.w3bSync === true,
+            // After your press of Torn's Buy on a listing the Archive tells you to buy: Torn's "Yes" is pressed too.
+            noConfirm: s.noConfirm === true,
             // Where a list may send you to buy: bazaars, the Item Market, or both.
             from: { bazaar: from.bazaar !== false, market: from.market !== false },
         };
@@ -9901,9 +9914,18 @@
             }
         }
 
+        /*
+         * 1.3.7 - the owner, 2026-10-12: "trade is done. it takes forever for it to show up in torn archive, for the
+         * receipt". Finished trades were always read in the slow lane, behind every price read - right for the old
+         * ones of the books, wrong for the one that ended a moment ago and waits for its receipt. Now the list of them
+         * (one request) and every trade still young enough for a receipt by itself are read in the normal lane; only
+         * the old ones of the books wait in the slow one. (And the slow lane itself was starved while Torn Bids is in
+         * view: api/client.js RESERVE_FOR.)
+         */
         async function readFinished() {
             const now = env.now();
-            const use = { tag: 't.setslog', priority: 'low' };
+            const use = { tag: 't.setslog', priority: 'normal' };
+            const slow = { tag: 't.setslog', priority: 'low' };
             const from = S.ledger.tradesFrom || Math.floor((now - BACKFILL_MS) / 1000);
             // Whether Torn's `from` goes by when a trade was finished or when it was opened is not known: a day back is
             // asked for, and a trade is taken once by its id. A full page means a backlog: then from where it stood.
@@ -9924,7 +9946,7 @@
                 let full = null;
                 // One trade Torn refuses does not stop the ones after it: until 1.2.2 it did, and every later trade
                 // (its pieces, its money) stayed out of the count for as long as that one failed.
-                try { full = await fetchTrade(env.torn, x.id, use); } catch (error) {
+                try { full = await fetchTrade(env.torn, x.id, done && now - done * 1000 < EG_RECEIPT_WITHIN_MS ? use : slow); } catch (error) {
                     tradeFails[x.id] = (tradeFails[x.id] || 0) + 1;
                     if (tradeFails[x.id] >= EG_TRADE_TRIES) env.say('note', 'A finished trade could not be read from Torn, and is left out', `trade ${x.id}: ${egMsg(error)}`);
                     else stuck = stuck ? Math.min(stuck, done || from) : done || from;
@@ -9940,7 +9962,7 @@
                 const odd = tradesOdd(S);
                 for (const id of odd.slice(0, EG_REPRICE_AT_ONCE)) {
                     let full = null;
-                    try { full = await fetchTrade(env.torn, id, use); } catch { full = null; }
+                    try { full = await fetchTrade(env.torn, id, slow); } catch { full = null; }
                     const n = foldTradeReprice(S, id, full);
                     if (n) env.say('note', 'An old trade priced again', 'trade ' + id + ': ' + n + ' row(s) - its money is shared over everything that was in it');
                 }
@@ -11614,6 +11636,12 @@
         return url.includes('/pmarket.php') || /[?&]page=pmarket(?:[&#]|$)/.test(url);
     }
 
+    /** Your properties (properties.php): the vault tab is one of its pages. `page=vault` is the harness's stand-in. */
+    function isVaultPage(href) {
+        const url = String(href || '').toLowerCase();
+        return url.includes('/properties.php') || /[?&]page=vault(?:[&#]|$)/.test(url);
+    }
+
     /** Torn's forums (forums.php). `page=forum` is the harness's stand-in. */
     function isForumPage(href) {
         const url = String(href || '').toLowerCase();
@@ -13230,6 +13258,7 @@
               <div class="field"><span class="f-l">When points are under their usual level</span>${pgSeg('cheapRule', s.cheapRule, [['hold', 'Hold'], ['tell', 'Tell me only']])}</div>
               <div class="field"><span class="f-l">Fill at the museum<span>You press EXCHANGE</span></span>${pgSeg('fillMuseum', s.fillMuseum ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>
               <div class="field"><span class="f-l">Fill at the points market<span>You press ADD LISTING</span></span>${pgSeg('fillPoints', s.fillPoints ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>
+              <div class="field"><span class="f-l">No "Yes" after Buy<span>Only on listings the Archive tells you to buy, and never for more than it says</span></span>${pgSeg('noConfirm', s.noConfirm ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>
             </div></div>
             <div class="panel" data-k="tell"><div class="ph"><h2>Tell me when</h2><span class="sp"></span><button class="btn sm" data-act="notify-test">Try it</button></div><div class="pb">
               <div class="field"><span class="f-l">Someone opens a trade with you<span>Seen within a minute, with a Torn tab or this page open</span></span>${pgSeg('notify', s.notify, [['browser', 'Browser'], ['app', 'In the app'], ['off', 'Off']])}</div>
@@ -13361,7 +13390,7 @@
     .shop.shut .dot { background: var(--faint); } .shop.shut .lab b { color: var(--text2); }
     `;
 
-    const HUB_BOOL = new Set(['open', 'fillMuseum', 'fillPoints', 'sound', 'w3bSync']);
+    const HUB_BOOL = new Set(['open', 'fillMuseum', 'fillPoints', 'sound', 'w3bSync', 'noConfirm']);
     const HUB_NUM = new Set(['pct', 'least', 'target', 'shareMax', 'readMin', 'beforeEach']);
     const HUB_PIN_KEY = 'tarc-pin';
     /** The piece open on "Sold by" is named to the engine when it changes, and again this often while it stays open. */
@@ -14237,6 +14266,20 @@
     .tarc-setfill:hover { background: #173a63; color: #fff; }
     .tarc-setfill[data-done="1"] { border-color: rgba(111, 220, 127, 0.55); background: #12301a; color: #b9f3c2; }
 
+    /*
+     * Our own line after Torn's money box - a trade's Add Money, your vault's Withdraw (1.3.7): Fill buttons and what
+     * you are short of. It stands in the page's flow, beside the box or under it, and covers nothing of Torn's.
+     */
+    .tarc-fillrow { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 0 10px; vertical-align: middle; }
+    .tarc-fillrow[data-block="1"] { display: flex; margin: 8px 10px; }
+    .tarc-fillrow .tarc-setfill { position: static; transform: none; display: inline-block; height: 26px; line-height: 24px; font-size: 12px; text-decoration: none; white-space: nowrap; }
+    .tarc-fillnote { font: 600 12px/18px "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif; font-variant-numeric: tabular-nums; color: #c3c9d4; }
+    .tarc-fillrow[data-state="over"] .tarc-fillnote { color: #ff8f8f; }
+    .tarc-fillrow[data-state="good"] .tarc-fillnote { color: #9be3a6; }
+    .tarc-fillrow[data-state="ahead"] .tarc-fillnote { color: #ffd98a; }
+    /* Your money row of a trade: the mark stands left of Torn's bin, never on it. */
+    .tarc-setmark[data-where="money"] { top: 50%; left: auto; right: 58px; transform: translateY(-50%); }
+
     /* Why a price box on your bazaar's add page is red or amber, and a piece kept for sets (no Fill). */
     .tarc-tonetag, .tarc-keptnote {
         height: 16px;
@@ -14830,7 +14873,7 @@
         else if (!owed && t.total) html += '<div class="ta-ok">Your money covers it: nothing to do until they accept.</div>';
         const others = v.trades.open.filter((x) => x.id !== t.id);
         if (others.length) html += `<div class="ta-kv sep"><span>Also open with you</span><span>${others.map((x) => `<a class="lk" data-act="open-trade" data-v="${hEsc(x.id)}">${hEsc(x.who || 'a trade')}</a>`).join(' · ')}</span></div>`;
-        html += bxNote(`Fill types the money into Torn's box. <b>You press Change and Accept.</b> Nothing is sent or accepted for you.`);
+        html += bxNote(`The buttons beside Torn's own box type the money and press Torn's <b>Change</b>, once. Fill here only types. <b>You press Accept.</b>`);
         return { where: 'a trade', html, marks };
     }
 
@@ -14972,6 +15015,126 @@
         html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}" data-post="1"`)}</div>`
             + bxNote('<b>Nothing is posted or edited for you.</b>');
         return { where: 'your thread', html, marks: [], titleMark: { text: under ? `says ${hRate(check.says.pct)}%, you pay ${paid} today` : ok ? `matches your shop: ${shop}` : 'does not match your shop', state: under ? 'ahead' : ok ? 'good' : 'over' }, title };
+    }
+
+    /*
+     * 1.3.7 - the total where you pay it. The owner, 2026-10-12, on his own trade: "it shows how much each is, but just
+     * doesnt show the total ... cant i just overlay should fill here how much i need? and red if i dont have enough?
+     * and when i go to property to withdraw my vault, fill how much i need to withdraw?" Until now the total and Fill
+     * were in the box alone. These say them on Torn's own lines: a mark on your money row of the trade, Fill beside
+     * Torn's Add Money box, and Fill beside your vault's Withdraw box. The words only; torn-page.js puts them there.
+     */
+
+    /** Torn's own vault tab: it shows the vault of the property you live in. */
+    const VAULT_URL = 'https://www.torn.com/properties.php#/p=options&tab=vault';
+
+    /**
+     * A trade's money, on Torn's own lines.
+     * @param t      the trade as the view has it, null when the hub has not read it
+     * @param same   tradeSame(): false when the pieces on the page are not the ones the hub read
+     * @param onHand your money on you: as Torn's Add Money line says it, else as the hub last read it; null when neither
+     * @returns { mark: { text, state } | null   on your money row of the trade,
+     *            fill: { buttons: [{ label, amount }], note, state, vault } | null   beside Torn's Add Money box }
+     */
+    function tradeMoney(t, same = true, onHand = null) {
+        if (!t) return { mark: null, fill: null };
+        if (!same) return { mark: { text: 'changed since it was read: total within a minute', state: 'ahead' }, fill: { buttons: [], note: 'This trade changed since it was read. Its total is here within a minute; nothing is filled until then.', state: 'ahead', vault: false } };
+        const total = Math.max(0, Math.floor(Number(t.total) || 0));
+        if (!total) return { mark: null, fill: null };
+        const need = Math.max(0, Math.floor(Number(t.needTotal) || 0));
+        const mine = Math.max(0, Math.floor(Number(t.myMoney) || 0));
+        const split = need > 0 && need < total;
+        const have = onHand == null ? null : Math.max(0, Math.floor(Number(onHand) || 0));
+        // What is still to come from your pocket, for everything and for only what you need.
+        const moreAll = Math.max(0, total - mine);
+        const moreNeed = split ? Math.max(0, need - mine) : moreAll;
+        const shortAll = have == null ? 0 : Math.max(0, moreAll - have);
+        const shortNeed = have == null ? 0 : Math.max(0, moreNeed - have);
+
+        let mark;
+        if (!moreAll) mark = { text: `Total ${hMoney(total)} · paid ✓`, state: 'good' };
+        else if (split && !moreNeed) mark = { text: `What you need ${hMoney(need)} · paid ✓ · all ${hMoney(total)}`, state: 'good' };
+        else if (shortNeed) mark = { text: `Add ${hMoney(moreAll)} · only ${hMoney(have)} on you`, state: 'over' };
+        else mark = { text: `Total ${hMoney(total)} · add ${hMoney(moreAll)}`, state: 'top' };
+
+        // Torn's box takes the whole amount of the trade, so the number is the total, not what is still missing.
+        const buttons = [];
+        if (moreAll) buttons.push({ label: `Add ${hMoney(total)}`, amount: total });
+        if (split && moreNeed) buttons.push({ label: `Add only what I need: ${hMoney(need)}`, amount: need });
+        let note;
+        let state = '';
+        if (!moreAll) { note = `Your ${hMoney(mine)} in the trade pays for everything.`; state = 'good'; }
+        else if (have == null) note = split ? `Everything, ${hPlural(t.units, 'piece')}: ${hMoney(total)}.` : '';
+        else if (shortNeed) { note = `You have ${hMoney(have)} on you: ${hMoney(shortAll)} short${split && shortNeed !== shortAll ? `, ${hMoney(shortNeed)} short of only what you need` : ''}.`; state = 'over'; }
+        else if (shortAll) { note = `You have ${hMoney(have)} on you: enough for what you need, ${hMoney(shortAll)} short of everything.`; state = 'over'; }
+        else { note = `You have ${hMoney(have)} on you: enough.`; state = 'good'; }
+        return { mark, fill: { buttons, note, state, vault: shortAll > 0 } };
+    }
+
+    /**
+     * Your vault's Withdraw box: exactly what to take out - for your open trades, for your shopping list, for both -
+     * which is what they want less what is on you already (the owner, 2026-10-12: "whenever we have a trade, or a
+     * shopping list. it automatically shows me how much money i need to put in the trade and take out for shopping
+     * (exactly) ... so click it it fills and withdraws").
+     * @param onHand, vault  as Torn's vault page says them; else as the hub last read them; null when neither
+     * @returns { buttons: [{ label, amount }], note, state, all, need, n, list } | null   null: nothing wants money
+     */
+    function vaultMoney(v, onHand = null, vault = null) {
+        const open = ((v && v.trades && v.trades.open) || []).filter((t) => Number(t.total) > 0);
+        let all = 0;
+        let need = 0;
+        let n = 0;
+        for (const t of open) {
+            const mine = Math.max(0, Math.floor(Number(t.myMoney) || 0));
+            const a = Math.max(0, Math.floor(Number(t.total) || 0) - mine);
+            const part = Number(t.needTotal) > 0 && Number(t.needTotal) < Number(t.total);
+            all += a;
+            need += part ? Math.max(0, Math.floor(Number(t.needTotal)) - mine) : a;
+            if (a) n += 1;
+        }
+        // What is left of your shopping list costs, as the hub has it.
+        const list = Math.max(0, Math.floor(Number(v && v.buy && v.buy.cost) || 0));
+        if (!all && !list) return null;
+        const top = (v && v.top) || {};
+        const have = onHand == null ? (top.onHand != null ? top.onHand : null) : onHand;
+        const inVault = vault == null ? (top.vault != null ? top.vault : null) : vault;
+        const take = (want) => Math.max(0, want - (have || 0));
+        const wants = [];
+        if (all) wants.push(`${hPlural(n, 'open trade')} ${n === 1 ? 'wants' : 'want'} ${hMoney(all)} more from you`);
+        if (list) wants.push(`your list costs ${hMoney(list)}`);
+        const why = wants.join(' · ') + (have == null ? '' : ` · ${hMoney(have)} on you`);
+        const most = take(all + list);
+        if (!most) return { buttons: [], note: `${why}: enough, nothing to take out.`, state: 'good', all, need, n, list };
+        const buttons = [];
+        const add = (label, amount) => { if (amount > 0 && !buttons.some((b) => b.amount === amount)) buttons.push({ label: `Withdraw ${hMoney(amount)} · ${label}`, amount }); };
+        if (all) add(n === 1 ? 'your trade' : 'your trades', take(all));
+        if (all && need < all) add('only what I need', take(need));
+        if (list) add('your list', take(list));
+        if (all && list) add('both', most);
+        const lacks = inVault != null && inVault < most;
+        return {
+            buttons: inVault == null ? buttons : buttons.filter((b) => b.amount <= inVault),
+            note: lacks ? `${why}. Your vault holds ${hMoney(inVault)}: ${hMoney(most - inVault)} short${all && list ? ' of both' : ''}.` : `${why}.`,
+            state: lacks ? 'over' : '', all, need, n, list,
+        };
+    }
+
+    /** Your vault's Deposit box: everything on you, in one press ("a button that automatically deposits all"). */
+    function vaultDeposit(onHand = null) {
+        const have = Math.max(0, Math.floor(Number(onHand) || 0));
+        return have ? { buttons: [{ label: `Deposit all ${hMoney(have)}`, amount: have }] } : null;
+    }
+
+    /** The box on your vault's page: the same numbers, once. */
+    function boxVault(v, m) {
+        if (!m) return null;
+        let html = bxHead('Your vault', [m.n ? hPlural(m.n, 'open trade') : '', m.list ? 'your list' : ''].filter(Boolean).join(' · '));
+        if (m.all) html += bxKv('Trades, still to pay', hMoney(m.all));
+        if (m.all && m.need !== m.all) html += bxKv('Only what you need', hMoney(m.need));
+        if (m.list) html += bxKv('Your shopping list', hMoney(m.list));
+        html += `<div class="${m.state === 'over' ? 'ta-hold' : m.state === 'good' ? 'ta-ok' : 'ta-kv sep'}">${hEsc(m.note)}</div>`;
+        html += bxNote(`One press of a button under Torn's box types the number and presses Torn's own <b>Withdraw</b> or <b>Deposit</b>, once.`);
+        return { where: 'your vault', html, marks: [] };
     }
 
     /* ===== src/core/overlay.js ===== */
@@ -16588,8 +16751,10 @@
     const SET_FILL_CLASS = 'tarc-setfill';
     /* A hairline on the top edge of a row of Torn's (the points market). */
     const SET_RULE_CLASS = 'tarc-setrule';
+    /* A line of ours after one of Torn's money boxes: Fill buttons and a few words (1.3.7). */
+    const SET_FILLROW_CLASS = 'tarc-fillrow';
 
-    const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS;
+    const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS + ', .' + SET_FILLROW_CLASS;
     const OUR_WORDS = '.' + SET_MARK_CLASS;
 
     function setsShown(el) {
@@ -16642,6 +16807,7 @@
 
     /** Every Sets mark and Fill button off the page, and Torn's elements given back as they were. */
     function clearSetMarks(doc = document) {
+        for (const row of doc.querySelectorAll('.' + SET_FILLROW_CLASS)) row.remove();
         for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS)) {
             const host = m.parentElement;
             m.remove();
@@ -16885,6 +17051,119 @@
             if (text.length >= 5 && text.length <= 200) titles.push({ el, text });
         }
         return { id: m ? m[1] : null, titles, docTitle: String(doc.title || '') };
+    }
+
+    /*
+     * 1.3.7 - a trade's money and your vault, read on the real pages 2026-10-12 (the owner's Chrome, looked at only):
+     *   a trade, your side:   .trade-cont .user.left ul.cont > li.color1 ul.desc > li   (.name.left "$7,021,632 in trade",
+     *                         .del.right the bin; the + stands outside the li)
+     *   Add Money:            .init-trade.add-money > .cont-gray > p "You have $<span.money-value>" + form > ul.inputs >
+     *                         li > .title "Money:" + .input-money-group (inline-block; the li is far wider than it)
+     *   your vault:           .vault-wrap > form.vault-cont.left (.wvalue: in the vault; .cont > .input-money-group +
+     *                         WITHDRAW) and form.vault-cont.right.deposit-box (.dvalue: on you)
+     */
+    const setsMoney = (el) => (el ? Number(setsWords(el).replace(/[^\d]/g, '')) || 0 : null);
+    const shownMoneyBox = (root) => (root ? [...root.querySelectorAll('input.input-money')].find((i) => i.type !== 'hidden' && setsShown(i) && !setsOurs(i)) || null : null);
+
+    /** Your own money row in a trade (Torn's "$... in trade" / "No money in trade" line), null when it is not there. */
+    function tradeMyMoneyRow(doc) {
+        const li = doc.querySelector('.trade-cont .user.left ul.cont > li.color1 ul.desc > li');
+        return li && setsShown(li) ? li : null;
+    }
+
+    /** Torn's own button of a form (WITHDRAW, DEPOSIT, Change): null when it is not there or cannot be pressed now. */
+    function tornSubmit(form) {
+        const btn = form ? [...form.querySelectorAll('input.torn-btn[type="submit"], button.torn-btn[type="submit"], input[type="submit"], button[type="submit"]')].find((b) => !setsOurs(b) && setsShown(b)) || null : null;
+        if (!btn) return null;
+        const wrap = btn.closest('.btn-wrap');
+        const off = btn.disabled || btn.classList.contains('disabled') || (wrap && wrap.classList.contains('disabled'));
+        return off ? null : btn;
+    }
+
+    /** Torn's Add Money step: { form, group, box, line, onHand } - its money box, the list it stands in, "You have $..." as said there. */
+    function tradeMoneyForm(doc) {
+        const form = doc.querySelector('.init-trade.add-money form');
+        const box = shownMoneyBox(form);
+        const group = box && box.closest('.input-money-group');
+        if (!group) return null;
+        return { form, group, box, line: group.closest('ul') || group, onHand: setsMoney(doc.querySelector('.init-trade.add-money .money-value')) };
+    }
+
+    /** Your vault's Withdraw form: { group, box, line, vault, onHand } - what is in the vault and on you, as the page says. */
+    function vaultWithdraw(doc) {
+        const form = doc.querySelector('.vault-wrap form.vault-cont.left');
+        const box = shownMoneyBox(form);
+        const group = box && box.closest('.input-money-group');
+        if (!group) return null;
+        return { form, group, box, line: group.closest('.cont') || group, vault: setsMoney(form.querySelector('.wvalue')), onHand: setsMoney(doc.querySelector('.vault-wrap .dvalue')) };
+    }
+
+    /** Your vault's Deposit form: { form, group, box, line, onHand }. */
+    function vaultDepositForm(doc) {
+        const form = doc.querySelector('.vault-wrap form.vault-cont.right');
+        const box = shownMoneyBox(form);
+        const group = box && box.closest('.input-money-group');
+        if (!group) return null;
+        return { form, group, box, line: group.closest('.cont') || group, onHand: setsMoney(form.querySelector('.dvalue')) };
+    }
+
+    /**
+     * A line of ours right after one of Torn's: Fill buttons, a link, a few words. It stands in the page's own flow
+     * (beside Torn's box where there is room, else under it), so nothing of Torn's is covered. Made once, kept up
+     * when its words change, gone with `spec` null.
+     * @param anchor  Torn's element it comes after
+     * @param spec    { buttons: [{ label, amount }], link: { label, href } | null, note, state, block } | null
+     * @param onPress (button, element, event) => void
+     */
+    function setFills(anchor, spec, onPress) {
+        if (!anchor || !anchor.parentElement) return null;
+        const next = anchor.nextElementSibling;
+        let row = next && next.classList && next.classList.contains(SET_FILLROW_CLASS) ? next : null;
+        const empty = !spec || (!(spec.buttons || []).length && !spec.note && !spec.link);
+        if (empty) {
+            if (row) row.remove();
+            return null;
+        }
+        const sig = JSON.stringify(spec);
+        if (row && row.dataset.sig === sig) return row;
+        const doc = anchor.ownerDocument;
+        if (!row) {
+            row = doc.createElement(spec.block ? 'div' : 'span');
+            row.className = SET_FILLROW_CLASS;
+            anchor.insertAdjacentElement('afterend', row);
+        }
+        row.dataset.sig = sig;
+        row.dataset.state = spec.state || '';
+        row.dataset.block = spec.block ? '1' : '';
+        row.textContent = '';
+        for (const b of spec.buttons || []) {
+            const el = doc.createElement('button');
+            el.type = 'button';
+            el.className = SET_FILL_CLASS;
+            el.textContent = b.label;
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (onPress) onPress(b, el, e);
+            });
+            row.appendChild(el);
+        }
+        if (spec.note) {
+            const n = doc.createElement('span');
+            n.className = 'tarc-fillnote';
+            n.textContent = spec.note;
+            row.appendChild(n);
+        }
+        if (spec.link) {
+            const a = doc.createElement('a');
+            a.className = SET_FILL_CLASS;
+            a.href = spec.link.href;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.textContent = spec.link.label;
+            row.appendChild(a);
+        }
+        return row;
     }
 
     /* ===== src/sources/dom/buy-box.js ===== */
@@ -17256,8 +17535,11 @@
     // through storage), reads the page in front of you, and tells the Archive's tab what it saw: a buy on a bazaar,
     // a press of EXCHANGE, your thread's title.
     //
-    // It never presses anything of Torn's. A Fill button of the box types a number into Torn's own box, only on
-    // your press and only on the page you are looking at; you press Buy, EXCHANGE, ADD LISTING, Change and Accept.
+    // Nothing happens on Torn without a press of yours, and one press of yours sends Torn one thing at most. A Fill
+    // button of the box types a number into Torn's own box, only on your press and only on the page you are looking
+    // at; you press Buy, EXCHANGE, ADD LISTING and Accept. Since 1.3.7 three presses of yours also press Torn's own
+    // button, once, in that same press: a sum under your vault's Withdraw or Deposit box, Add beside a trade's Add
+    // Money box (payNow), and - only with Settings' switch on - Torn's "Yes" after your own Buy (armYes).
     // The marks take no room and catch no click. Beside Torn Trading's own panel it is shown all the same.
     //
     // On a bazaar the box is a checklist: what to buy here, what you hold of each piece, and a tick the moment you
@@ -17393,6 +17675,8 @@
     /** The listing the Down key brought you to pulses for this long. */
     const TP_AIM_MS = 4000;
     const TP_DONE_MS = 4000;
+    /** After your press of Torn's Buy, its "Yes" is looked for in that listing for this long (Settings: No "Yes" after Buy). */
+    const TP_YES_MS = 3000;
     /** Torn Trading's panel is looked at this often while it is on the page: it can be moved, folded, or come later. */
     const TP_OTHER_MS = 1000;
     /** The most of the window's height the overlay takes, as Torn Trading's panel. */
@@ -17414,6 +17698,7 @@
         if (isPointsMarketPage(href)) return 'points';
         if (isTradePage(href)) return 'trade';
         if (isForumPage(href)) return 'forum';
+        if (isVaultPage(href)) return 'vault';
         const page = detectPage(href);
         if (page === PAGE_BAZAAR) return bazaarOwnerId(href) ? 'bazaar' : '';
         if (page === PAGE_ITEM_MARKET) return 'itemmarket';
@@ -17447,7 +17732,7 @@
             cards: [], tiles: [], seen: {}, seenPlace: '', pressed: new Map(), images: 0,
             // What this tab saw you buy here: `pend` until the hub's view holds it, `took` for as long as you stay.
             pend: [], took: {}, fillAll: null, fill: [], said: new Set(),
-            exchanges: [], presses: [], pressAt: 0, listing: null, imNext: null, moneyBox: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
+            exchanges: [], presses: [], pressAt: 0, listing: null, imNext: null, moneyBox: null, paidAt: 0, yes: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
             marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
             // Torn's elements holding a note of ours beside a control: the ones of the last look, and of this one.
             notes: new Set(), notesNow: new Set(),
@@ -18060,7 +18345,77 @@
                 const m = marks.get(i);
                 setMark(row.el, m ? m.text : '', m ? m.state : '', 'right');
             });
+            // 1.3.7: the total where you pay it - a mark on your money row, and Fill beside Torn's Add Money box.
+            // What is on you: as Torn's own line says it there, else as the hub last read it.
+            const form = step === 'addmoney' ? tradeMoneyForm(doc) : null;
+            const words = tradeMoney(t, !(out && out.changed), form && form.onHand != null ? form.onHand : v.top.onHand);
+            const mine = tradeMyMoneyRow(doc);
+            if (mine) setMark(mine, words.mark ? words.mark.text : '', words.mark ? words.mark.state : '', 'money');
+            if (form) {
+                const f = words.fill;
+                setFills(form.group, f && f.buttons.length ? { buttons: f.buttons } : null, (b, el, e) => payNow(form, b, el, e, 'a trade'));
+                setFills(form.line, f && f.note ? { note: f.note, state: f.state, block: true, link: f.vault ? { label: 'Your vault', href: VAULT_URL } : null } : null);
+            }
             return out;
+        }
+
+        /*
+         * One press of yours on a button of ours beside one of Torn's money boxes: the number is typed into Torn's box
+         * and Torn's own button of that form is pressed, once, in that same press (the owner, 2026-10-12: "click it it
+         * fills and withdraws"). One press, one request to Torn - never from a timer, never twice. Where Torn's button
+         * cannot be pressed just then, the number stays typed and the button says so.
+         */
+        function payNow(form, b, el, event, where) {
+            if (!event || !yours(event) || !form.box || !form.box.isConnected || !(b.amount > 0)) return;
+            if (now() - st.paidAt < 1500) return;
+            st.paidAt = now();
+            writeInputs(boxTwins(form.box), String(b.amount));
+            const btn = tornSubmit(form.form);
+            if (btn) btn.click();
+            else el.textContent = `${b.label}: typed, press Torn's button`;
+            el.dataset.done = '1';
+            win.setTimeout(() => { if (el.isConnected) { el.dataset.done = ''; el.textContent = b.label; } }, TP_DONE_MS);
+            say('', `Pressed: ${b.label}`, btn ? `typed into Torn's money box on ${where}, and Torn's own button pressed once ("${String(btn.value || btn.textContent || '').trim()}")` : `typed into Torn's money box on ${where}; Torn's own button was not there or not ready: left to you`);
+            for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
+        }
+
+        /** Your vault: exactly what to take out for your trades and your list, and everything on you put back in one press. */
+        function onVault(v) {
+            const out = vaultWithdraw(doc);
+            const m = out ? vaultMoney(v, out.onHand, out.vault) : null;
+            if (out) setFills(out.line, m ? { buttons: m.buttons, note: m.note, state: m.state, block: true } : null, (b, el, e) => payNow(out, b, el, e, 'your vault'));
+            const put = vaultDepositForm(doc);
+            if (put) setFills(put.line, vaultDeposit(put.onHand != null ? put.onHand : out && out.onHand) ? { ...vaultDeposit(put.onHand != null ? put.onHand : out && out.onHand), block: true } : null, (b, el, e) => payNow(put, b, el, e, 'your vault'));
+            return boxVault(v, m);
+        }
+
+        /*
+         * Settings, "No Yes after Buy" (off unless you turn it on; the owner, 2026-10-12: "when we click the buy button
+         * no need for confirmation? ... only no confirmation if part of shopping list or recommendation from torn
+         * archive"). After YOUR press of Torn's Buy on a listing the Archive tells you to buy, with no more in its box
+         * than the Archive says to take there, Torn's own "Yes" in that same listing is pressed, once. Looked for only
+         * in that listing and only for TP_YES_MS; anything else on the page is never pressed. What the listing shows
+         * then was not read on a real page (pressing Buy on the owner's page is his): two public scripts press a
+         * control named "Yes" there. When none is found, what the listing holds goes to the log, for the next zip.
+         */
+        function armYes(tile, what) {
+            if (st.yes) st.yes();
+            let over = false;
+            const find = () => [...tile.querySelectorAll('button, a, [role="button"]')].find((el) => !el.closest('.tarc-setmark, .tarc-fillrow, #tarc-host') && !el.disabled && el.getClientRects().length && /^(yes|confirm)$/i.test(String(el.getAttribute('aria-label') || el.textContent || '').trim())) || null;
+            const stop = () => { over = true; obs.disconnect(); win.clearTimeout(timer); st.yes = null; };
+            const look = () => {
+                if (over || !tile.isConnected) return;
+                const el = find();
+                if (!el) return;
+                stop();
+                el.click();
+                say('', `Torn's "Yes" pressed after your Buy: ${what}`, 'the listing then: ' + shapeOf(tile));
+                for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
+            };
+            const obs = new win.MutationObserver(look);
+            const timer = win.setTimeout(() => { if (over) return; const shape = shapeOf(tile); stop(); say('yes-none', `No "Yes" found in the listing after your Buy: ${what}`, 'left to you. What the listing holds: ' + shape); }, TP_YES_MS);
+            obs.observe(tile, { childList: true, subtree: true, attributes: true, characterData: true });
+            st.yes = stop;
         }
 
         const pieceWords = (p) => (p.need > 0 ? `${p.held.toLocaleString('en-US')} · need ${p.need.toLocaleString('en-US')}` : p.ahead > 0 ? `${p.held.toLocaleString('en-US')} · ${p.ahead.toLocaleString('en-US')} ahead` : `${p.held.toLocaleString('en-US')} ✓`);
@@ -18175,6 +18530,7 @@
             st.listing = null;
             st.imNext = null;
             st.moneyBox = null;
+            if (st.yes) st.yes();
             st.notes = new Set();
         }
 
@@ -18213,6 +18569,7 @@
                 else if (kind === 'museum') out = onMuseum(v);
                 else if (kind === 'points') out = onPoints(v);
                 else if (kind === 'forum') out = onForum(v);
+                else if (kind === 'vault') out = onVault(v);
                 st.marked = true;
             } catch (error) {
                 win.console.error('[Torn Archive] page', kind, error);
@@ -18448,6 +18805,15 @@
                 st.pressSaid = now();
                 note('press', { t: st.pressSaid, id: String(st.cards[i].itemId), whoId: st.kind === 'itemmarket' ? '' : bazaarOwnerId(st.href), im: st.kind === 'itemmarket' });
             }
+            // Torn's own Buy, pressed by you on a listing the Archive tells you to buy, for no more than it says: its
+            // "Yes" is pressed too, when Settings has that on (armYes).
+            const pressedBuy = buy || !!(st.kind === 'itemmarket' && button && /^buy\b/i.test(label));
+            if (pressedBuy && st.shared.v.settings && st.shared.v.settings.noConfirm) {
+                const want = (st.fill || []).find((f) => f.i === i);
+                const input = box || st.tiles[i].input;
+                const n = input ? tpDigits(input.value) : 0;
+                if (want && n > 0 && n <= want.n) armYes(tile, `${n} × ${st.cards[i].name || 'item ' + st.cards[i].itemId}`);
+            }
             // A press on Torn's Close takes the buy back; any other press in the tile (a "Yes" Torn may ask for) keeps it.
             if (!buy && had && had.buy && !(button && /^(close|no|cancel)\b/i.test(label))) { buy = true; typed = had.typed; }
             // The tile itself is kept: a listing is gone only when its tile is (a buy form in it is the listing, open).
@@ -18511,9 +18877,9 @@
             // Our own marks changing is not the page changing.
             for (const m of list) {
                 const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
-                if (el && el.closest && el.closest('#tarc-host, .tarc-setmark, .tarc-setrule')) continue;
+                if (el && el.closest && el.closest('#tarc-host, .tarc-setmark, .tarc-setrule, .tarc-fillrow')) continue;
                 const nodes = m.type === 'childList' ? [...m.addedNodes, ...m.removedNodes] : [];
-                if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && (x.classList.contains('tarc-setmark') || x.classList.contains('tarc-setrule')))) continue;
+                if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && (x.classList.contains('tarc-setmark') || x.classList.contains('tarc-setrule') || x.classList.contains('tarc-fillrow')))) continue;
                 later();
                 return;
             }

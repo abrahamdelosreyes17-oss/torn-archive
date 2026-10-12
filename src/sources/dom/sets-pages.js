@@ -22,8 +22,10 @@ export const SET_MARK_CLASS = 'tarc-setmark';
 export const SET_FILL_CLASS = 'tarc-setfill';
 /* A hairline on the top edge of a row of Torn's (the points market). */
 export const SET_RULE_CLASS = 'tarc-setrule';
+/* A line of ours after one of Torn's money boxes: Fill buttons and a few words (1.3.7). */
+export const SET_FILLROW_CLASS = 'tarc-fillrow';
 
-const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS;
+const OURS = '#tarc-host, .' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS + ', .' + SET_FILLROW_CLASS;
 const OUR_WORDS = '.' + SET_MARK_CLASS;
 
 function setsShown(el) {
@@ -76,6 +78,7 @@ export function setMark(host, text, state = '', where = '') {
 
 /** Every Sets mark and Fill button off the page, and Torn's elements given back as they were. */
 export function clearSetMarks(doc = document) {
+    for (const row of doc.querySelectorAll('.' + SET_FILLROW_CLASS)) row.remove();
     for (const m of doc.querySelectorAll('.' + SET_MARK_CLASS + ', .' + SET_FILL_CLASS + ', .' + SET_RULE_CLASS)) {
         const host = m.parentElement;
         m.remove();
@@ -319,4 +322,117 @@ export function forumThread(doc, href) {
         if (text.length >= 5 && text.length <= 200) titles.push({ el, text });
     }
     return { id: m ? m[1] : null, titles, docTitle: String(doc.title || '') };
+}
+
+/*
+ * 1.3.7 - a trade's money and your vault, read on the real pages 2026-10-12 (the owner's Chrome, looked at only):
+ *   a trade, your side:   .trade-cont .user.left ul.cont > li.color1 ul.desc > li   (.name.left "$7,021,632 in trade",
+ *                         .del.right the bin; the + stands outside the li)
+ *   Add Money:            .init-trade.add-money > .cont-gray > p "You have $<span.money-value>" + form > ul.inputs >
+ *                         li > .title "Money:" + .input-money-group (inline-block; the li is far wider than it)
+ *   your vault:           .vault-wrap > form.vault-cont.left (.wvalue: in the vault; .cont > .input-money-group +
+ *                         WITHDRAW) and form.vault-cont.right.deposit-box (.dvalue: on you)
+ */
+const setsMoney = (el) => (el ? Number(setsWords(el).replace(/[^\d]/g, '')) || 0 : null);
+const shownMoneyBox = (root) => (root ? [...root.querySelectorAll('input.input-money')].find((i) => i.type !== 'hidden' && setsShown(i) && !setsOurs(i)) || null : null);
+
+/** Your own money row in a trade (Torn's "$... in trade" / "No money in trade" line), null when it is not there. */
+export function tradeMyMoneyRow(doc) {
+    const li = doc.querySelector('.trade-cont .user.left ul.cont > li.color1 ul.desc > li');
+    return li && setsShown(li) ? li : null;
+}
+
+/** Torn's own button of a form (WITHDRAW, DEPOSIT, Change): null when it is not there or cannot be pressed now. */
+export function tornSubmit(form) {
+    const btn = form ? [...form.querySelectorAll('input.torn-btn[type="submit"], button.torn-btn[type="submit"], input[type="submit"], button[type="submit"]')].find((b) => !setsOurs(b) && setsShown(b)) || null : null;
+    if (!btn) return null;
+    const wrap = btn.closest('.btn-wrap');
+    const off = btn.disabled || btn.classList.contains('disabled') || (wrap && wrap.classList.contains('disabled'));
+    return off ? null : btn;
+}
+
+/** Torn's Add Money step: { form, group, box, line, onHand } - its money box, the list it stands in, "You have $..." as said there. */
+export function tradeMoneyForm(doc) {
+    const form = doc.querySelector('.init-trade.add-money form');
+    const box = shownMoneyBox(form);
+    const group = box && box.closest('.input-money-group');
+    if (!group) return null;
+    return { form, group, box, line: group.closest('ul') || group, onHand: setsMoney(doc.querySelector('.init-trade.add-money .money-value')) };
+}
+
+/** Your vault's Withdraw form: { group, box, line, vault, onHand } - what is in the vault and on you, as the page says. */
+export function vaultWithdraw(doc) {
+    const form = doc.querySelector('.vault-wrap form.vault-cont.left');
+    const box = shownMoneyBox(form);
+    const group = box && box.closest('.input-money-group');
+    if (!group) return null;
+    return { form, group, box, line: group.closest('.cont') || group, vault: setsMoney(form.querySelector('.wvalue')), onHand: setsMoney(doc.querySelector('.vault-wrap .dvalue')) };
+}
+
+/** Your vault's Deposit form: { form, group, box, line, onHand }. */
+export function vaultDepositForm(doc) {
+    const form = doc.querySelector('.vault-wrap form.vault-cont.right');
+    const box = shownMoneyBox(form);
+    const group = box && box.closest('.input-money-group');
+    if (!group) return null;
+    return { form, group, box, line: group.closest('.cont') || group, onHand: setsMoney(form.querySelector('.dvalue')) };
+}
+
+/**
+ * A line of ours right after one of Torn's: Fill buttons, a link, a few words. It stands in the page's own flow
+ * (beside Torn's box where there is room, else under it), so nothing of Torn's is covered. Made once, kept up
+ * when its words change, gone with `spec` null.
+ * @param anchor  Torn's element it comes after
+ * @param spec    { buttons: [{ label, amount }], link: { label, href } | null, note, state, block } | null
+ * @param onPress (button, element, event) => void
+ */
+export function setFills(anchor, spec, onPress) {
+    if (!anchor || !anchor.parentElement) return null;
+    const next = anchor.nextElementSibling;
+    let row = next && next.classList && next.classList.contains(SET_FILLROW_CLASS) ? next : null;
+    const empty = !spec || (!(spec.buttons || []).length && !spec.note && !spec.link);
+    if (empty) {
+        if (row) row.remove();
+        return null;
+    }
+    const sig = JSON.stringify(spec);
+    if (row && row.dataset.sig === sig) return row;
+    const doc = anchor.ownerDocument;
+    if (!row) {
+        row = doc.createElement(spec.block ? 'div' : 'span');
+        row.className = SET_FILLROW_CLASS;
+        anchor.insertAdjacentElement('afterend', row);
+    }
+    row.dataset.sig = sig;
+    row.dataset.state = spec.state || '';
+    row.dataset.block = spec.block ? '1' : '';
+    row.textContent = '';
+    for (const b of spec.buttons || []) {
+        const el = doc.createElement('button');
+        el.type = 'button';
+        el.className = SET_FILL_CLASS;
+        el.textContent = b.label;
+        el.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (onPress) onPress(b, el, e);
+        });
+        row.appendChild(el);
+    }
+    if (spec.note) {
+        const n = doc.createElement('span');
+        n.className = 'tarc-fillnote';
+        n.textContent = spec.note;
+        row.appendChild(n);
+    }
+    if (spec.link) {
+        const a = doc.createElement('a');
+        a.className = SET_FILL_CLASS;
+        a.href = spec.link.href;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = spec.link.label;
+        row.appendChild(a);
+    }
+    return row;
 }

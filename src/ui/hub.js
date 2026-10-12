@@ -22,7 +22,7 @@ a.btn { text-decoration: none; }
 .shop.shut .dot { background: var(--faint); } .shop.shut .lab b { color: var(--text2); }
 `;
 
-const HUB_BOOL = new Set(['open', 'fillMuseum', 'fillPoints', 'sound', 'w3bSync']);
+const HUB_BOOL = new Set(['open', 'fillMuseum', 'fillPoints', 'sound', 'w3bSync', 'noConfirm']);
 const HUB_NUM = new Set(['pct', 'least', 'target', 'shareMax', 'readMin', 'beforeEach']);
 const HUB_PIN_KEY = 'tarc-pin';
 /** The piece open on "Sold by" is named to the engine when it changes, and again this often while it stays open. */

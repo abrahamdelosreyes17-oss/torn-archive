@@ -10,8 +10,11 @@
 // through storage), reads the page in front of you, and tells the Archive's tab what it saw: a buy on a bazaar,
 // a press of EXCHANGE, your thread's title.
 //
-// It never presses anything of Torn's. A Fill button of the box types a number into Torn's own box, only on
-// your press and only on the page you are looking at; you press Buy, EXCHANGE, ADD LISTING, Change and Accept.
+// Nothing happens on Torn without a press of yours, and one press of yours sends Torn one thing at most. A Fill
+// button of the box types a number into Torn's own box, only on your press and only on the page you are looking
+// at; you press Buy, EXCHANGE, ADD LISTING and Accept. Since 1.3.7 three presses of yours also press Torn's own
+// button, once, in that same press: a sum under your vault's Withdraw or Deposit box, Add beside a trade's Add
+// Money box (payNow), and - only with Settings' switch on - Torn's "Yes" after your own Buy (armYes).
 // The marks take no room and catch no click. Beside Torn Trading's own panel it is shown all the same.
 //
 // On a bazaar the box is a checklist: what to buy here, what you hold of each piece, and a tick the moment you
@@ -38,13 +41,13 @@ import { gmGet, gmSet, gmOnChange, gmCopy, gmCopyRich, gmOpenTab } from '../plat
 import { MARKS_CSS } from './marks-css.js';
 import { BOX_CSS, BOX_MARKS_CSS, BOX_GAP } from './box-css.js';
 import { hIcon, hMoney, hNum } from './fmt.js';
-import { boxClosed, boxAny, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum, boxLate } from './box-pages.js';
+import { boxClosed, boxAny, boxBazaar, boxStock, boxTrade, boxMuseum, boxPoints, boxForum, boxLate, boxVault, tradeMoney, vaultMoney, vaultDeposit, VAULT_URL } from './box-pages.js';
 import { overlayStrips, overlaySide, overlayPlace, overlayFree, OV_WIDTH, OV_BAR, OV_GAP, OV_TOP } from '../core/overlay.js';
 import { scanDom } from '../sources/dom/scan.js';
-import { setMark, setRule, markBeside, clearSetMarks, museumExchanges, pieceTiles, pointsListing, pointsRows, tradeTheirRows, forumThread, boxTwins } from '../sources/dom/sets-pages.js';
+import { setMark, setRule, markBeside, clearSetMarks, museumExchanges, pieceTiles, pointsListing, pointsRows, tradeTheirRows, forumThread, boxTwins, tradeMyMoneyRow, tradeMoneyForm, vaultWithdraw, vaultDepositForm, tornSubmit, setFills } from '../sources/dom/sets-pages.js';
 import { writeInputs } from '../sources/dom/fill.js';
 import { listingTile, buyBox, openBuyMenus, tileHolds } from '../sources/dom/buy-box.js';
-import { detectPage, PAGE_BAZAAR, PAGE_ITEM_MARKET, isTradePage, isMuseumPage, isPointsMarketPage, isForumPage, bazaarOwnerId, itemMarketUrl, tradeViewUrl, ARCHIVE_PAGE_URL } from '../sources/route.js';
+import { detectPage, PAGE_BAZAAR, PAGE_ITEM_MARKET, isTradePage, isMuseumPage, isPointsMarketPage, isForumPage, isVaultPage, bazaarOwnerId, itemMarketUrl, tradeViewUrl, ARCHIVE_PAGE_URL } from '../sources/route.js';
 import { bazaarUrl } from '../core/feed.js';
 import { buildItemIndex, findItemByName } from '../core/items.js';
 import { stockBuys } from '../core/accepted.js';
@@ -147,6 +150,8 @@ const TP_EMPTY_MS = 5000;
 /** The listing the Down key brought you to pulses for this long. */
 const TP_AIM_MS = 4000;
 const TP_DONE_MS = 4000;
+/** After your press of Torn's Buy, its "Yes" is looked for in that listing for this long (Settings: No "Yes" after Buy). */
+const TP_YES_MS = 3000;
 /** Torn Trading's panel is looked at this often while it is on the page: it can be moved, folded, or come later. */
 const TP_OTHER_MS = 1000;
 /** The most of the window's height the overlay takes, as Torn Trading's panel. */
@@ -168,6 +173,7 @@ export function tornPageKind(href) {
     if (isPointsMarketPage(href)) return 'points';
     if (isTradePage(href)) return 'trade';
     if (isForumPage(href)) return 'forum';
+    if (isVaultPage(href)) return 'vault';
     const page = detectPage(href);
     if (page === PAGE_BAZAAR) return bazaarOwnerId(href) ? 'bazaar' : '';
     if (page === PAGE_ITEM_MARKET) return 'itemmarket';
@@ -201,7 +207,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         cards: [], tiles: [], seen: {}, seenPlace: '', pressed: new Map(), images: 0,
         // What this tab saw you buy here: `pend` until the hub's view holds it, `took` for as long as you stay.
         pend: [], took: {}, fillAll: null, fill: [], said: new Set(),
-        exchanges: [], presses: [], pressAt: 0, listing: null, imNext: null, moneyBox: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
+        exchanges: [], presses: [], pressAt: 0, listing: null, imNext: null, moneyBox: null, paidAt: 0, yes: null, tradeRows: null, tradeAsked: 0, shopSig: '', shopAt: 0,
         marked: false, html: '', done: '', doneAt: 0, threadSaid: '',
         // Torn's elements holding a note of ours beside a control: the ones of the last look, and of this one.
         notes: new Set(), notesNow: new Set(),
@@ -814,7 +820,77 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             const m = marks.get(i);
             setMark(row.el, m ? m.text : '', m ? m.state : '', 'right');
         });
+        // 1.3.7: the total where you pay it - a mark on your money row, and Fill beside Torn's Add Money box.
+        // What is on you: as Torn's own line says it there, else as the hub last read it.
+        const form = step === 'addmoney' ? tradeMoneyForm(doc) : null;
+        const words = tradeMoney(t, !(out && out.changed), form && form.onHand != null ? form.onHand : v.top.onHand);
+        const mine = tradeMyMoneyRow(doc);
+        if (mine) setMark(mine, words.mark ? words.mark.text : '', words.mark ? words.mark.state : '', 'money');
+        if (form) {
+            const f = words.fill;
+            setFills(form.group, f && f.buttons.length ? { buttons: f.buttons } : null, (b, el, e) => payNow(form, b, el, e, 'a trade'));
+            setFills(form.line, f && f.note ? { note: f.note, state: f.state, block: true, link: f.vault ? { label: 'Your vault', href: VAULT_URL } : null } : null);
+        }
         return out;
+    }
+
+    /*
+     * One press of yours on a button of ours beside one of Torn's money boxes: the number is typed into Torn's box
+     * and Torn's own button of that form is pressed, once, in that same press (the owner, 2026-10-12: "click it it
+     * fills and withdraws"). One press, one request to Torn - never from a timer, never twice. Where Torn's button
+     * cannot be pressed just then, the number stays typed and the button says so.
+     */
+    function payNow(form, b, el, event, where) {
+        if (!event || !yours(event) || !form.box || !form.box.isConnected || !(b.amount > 0)) return;
+        if (now() - st.paidAt < 1500) return;
+        st.paidAt = now();
+        writeInputs(boxTwins(form.box), String(b.amount));
+        const btn = tornSubmit(form.form);
+        if (btn) btn.click();
+        else el.textContent = `${b.label}: typed, press Torn's button`;
+        el.dataset.done = '1';
+        win.setTimeout(() => { if (el.isConnected) { el.dataset.done = ''; el.textContent = b.label; } }, TP_DONE_MS);
+        say('', `Pressed: ${b.label}`, btn ? `typed into Torn's money box on ${where}, and Torn's own button pressed once ("${String(btn.value || btn.textContent || '').trim()}")` : `typed into Torn's money box on ${where}; Torn's own button was not there or not ready: left to you`);
+        for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
+    }
+
+    /** Your vault: exactly what to take out for your trades and your list, and everything on you put back in one press. */
+    function onVault(v) {
+        const out = vaultWithdraw(doc);
+        const m = out ? vaultMoney(v, out.onHand, out.vault) : null;
+        if (out) setFills(out.line, m ? { buttons: m.buttons, note: m.note, state: m.state, block: true } : null, (b, el, e) => payNow(out, b, el, e, 'your vault'));
+        const put = vaultDepositForm(doc);
+        if (put) setFills(put.line, vaultDeposit(put.onHand != null ? put.onHand : out && out.onHand) ? { ...vaultDeposit(put.onHand != null ? put.onHand : out && out.onHand), block: true } : null, (b, el, e) => payNow(put, b, el, e, 'your vault'));
+        return boxVault(v, m);
+    }
+
+    /*
+     * Settings, "No Yes after Buy" (off unless you turn it on; the owner, 2026-10-12: "when we click the buy button
+     * no need for confirmation? ... only no confirmation if part of shopping list or recommendation from torn
+     * archive"). After YOUR press of Torn's Buy on a listing the Archive tells you to buy, with no more in its box
+     * than the Archive says to take there, Torn's own "Yes" in that same listing is pressed, once. Looked for only
+     * in that listing and only for TP_YES_MS; anything else on the page is never pressed. What the listing shows
+     * then was not read on a real page (pressing Buy on the owner's page is his): two public scripts press a
+     * control named "Yes" there. When none is found, what the listing holds goes to the log, for the next zip.
+     */
+    function armYes(tile, what) {
+        if (st.yes) st.yes();
+        let over = false;
+        const find = () => [...tile.querySelectorAll('button, a, [role="button"]')].find((el) => !el.closest('.tarc-setmark, .tarc-fillrow, #tarc-host') && !el.disabled && el.getClientRects().length && /^(yes|confirm)$/i.test(String(el.getAttribute('aria-label') || el.textContent || '').trim())) || null;
+        const stop = () => { over = true; obs.disconnect(); win.clearTimeout(timer); st.yes = null; };
+        const look = () => {
+            if (over || !tile.isConnected) return;
+            const el = find();
+            if (!el) return;
+            stop();
+            el.click();
+            say('', `Torn's "Yes" pressed after your Buy: ${what}`, 'the listing then: ' + shapeOf(tile));
+            for (const ms of TP_AFTER_PRESS_MS) win.setTimeout(() => later(0), ms);
+        };
+        const obs = new win.MutationObserver(look);
+        const timer = win.setTimeout(() => { if (over) return; const shape = shapeOf(tile); stop(); say('yes-none', `No "Yes" found in the listing after your Buy: ${what}`, 'left to you. What the listing holds: ' + shape); }, TP_YES_MS);
+        obs.observe(tile, { childList: true, subtree: true, attributes: true, characterData: true });
+        st.yes = stop;
     }
 
     const pieceWords = (p) => (p.need > 0 ? `${p.held.toLocaleString('en-US')} · need ${p.need.toLocaleString('en-US')}` : p.ahead > 0 ? `${p.held.toLocaleString('en-US')} · ${p.ahead.toLocaleString('en-US')} ahead` : `${p.held.toLocaleString('en-US')} ✓`);
@@ -929,6 +1005,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         st.listing = null;
         st.imNext = null;
         st.moneyBox = null;
+        if (st.yes) st.yes();
         st.notes = new Set();
     }
 
@@ -967,6 +1044,7 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             else if (kind === 'museum') out = onMuseum(v);
             else if (kind === 'points') out = onPoints(v);
             else if (kind === 'forum') out = onForum(v);
+            else if (kind === 'vault') out = onVault(v);
             st.marked = true;
         } catch (error) {
             win.console.error('[Torn Archive] page', kind, error);
@@ -1202,6 +1280,15 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
             st.pressSaid = now();
             note('press', { t: st.pressSaid, id: String(st.cards[i].itemId), whoId: st.kind === 'itemmarket' ? '' : bazaarOwnerId(st.href), im: st.kind === 'itemmarket' });
         }
+        // Torn's own Buy, pressed by you on a listing the Archive tells you to buy, for no more than it says: its
+        // "Yes" is pressed too, when Settings has that on (armYes).
+        const pressedBuy = buy || !!(st.kind === 'itemmarket' && button && /^buy\b/i.test(label));
+        if (pressedBuy && st.shared.v.settings && st.shared.v.settings.noConfirm) {
+            const want = (st.fill || []).find((f) => f.i === i);
+            const input = box || st.tiles[i].input;
+            const n = input ? tpDigits(input.value) : 0;
+            if (want && n > 0 && n <= want.n) armYes(tile, `${n} × ${st.cards[i].name || 'item ' + st.cards[i].itemId}`);
+        }
         // A press on Torn's Close takes the buy back; any other press in the tile (a "Yes" Torn may ask for) keeps it.
         if (!buy && had && had.buy && !(button && /^(close|no|cancel)\b/i.test(label))) { buy = true; typed = had.typed; }
         // The tile itself is kept: a listing is gone only when its tile is (a buy form in it is the listing, open).
@@ -1265,9 +1352,9 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         // Our own marks changing is not the page changing.
         for (const m of list) {
             const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
-            if (el && el.closest && el.closest('#tarc-host, .tarc-setmark, .tarc-setrule')) continue;
+            if (el && el.closest && el.closest('#tarc-host, .tarc-setmark, .tarc-setrule, .tarc-fillrow')) continue;
             const nodes = m.type === 'childList' ? [...m.addedNodes, ...m.removedNodes] : [];
-            if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && (x.classList.contains('tarc-setmark') || x.classList.contains('tarc-setrule')))) continue;
+            if (nodes.length && nodes.every((x) => x.nodeType === 1 && x.classList && (x.classList.contains('tarc-setmark') || x.classList.contains('tarc-setrule') || x.classList.contains('tarc-fillrow')))) continue;
             later();
             return;
         }

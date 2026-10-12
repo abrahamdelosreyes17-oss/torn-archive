@@ -913,6 +913,7 @@ function pgSettings(d, ui) {
           <div class="field"><span class="f-l">When points are under their usual level</span>${pgSeg('cheapRule', s.cheapRule, [['hold', 'Hold'], ['tell', 'Tell me only']])}</div>
           <div class="field"><span class="f-l">Fill at the museum<span>You press EXCHANGE</span></span>${pgSeg('fillMuseum', s.fillMuseum ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>
           <div class="field"><span class="f-l">Fill at the points market<span>You press ADD LISTING</span></span>${pgSeg('fillPoints', s.fillPoints ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>
+          <div class="field"><span class="f-l">No "Yes" after Buy<span>Only on listings the Archive tells you to buy, and never for more than it says</span></span>${pgSeg('noConfirm', s.noConfirm ? 1 : 0, [[1, 'On'], [0, 'Off']])}</div>
         </div></div>
         <div class="panel" data-k="tell"><div class="ph"><h2>Tell me when</h2><span class="sp"></span><button class="btn sm" data-act="notify-test">Try it</button></div><div class="pb">
           <div class="field"><span class="f-l">Someone opens a trade with you<span>Seen within a minute, with a Torn tab or this page open</span></span>${pgSeg('notify', s.notify, [['browser', 'Browser'], ['app', 'In the app'], ['off', 'Off']])}</div>

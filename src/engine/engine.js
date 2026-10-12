@@ -380,9 +380,18 @@ export function makeEngine(env) {
         }
     }
 
+    /*
+     * 1.3.7 - the owner, 2026-10-12: "trade is done. it takes forever for it to show up in torn archive, for the
+     * receipt". Finished trades were always read in the slow lane, behind every price read - right for the old
+     * ones of the books, wrong for the one that ended a moment ago and waits for its receipt. Now the list of them
+     * (one request) and every trade still young enough for a receipt by itself are read in the normal lane; only
+     * the old ones of the books wait in the slow one. (And the slow lane itself was starved while Torn Bids is in
+     * view: api/client.js RESERVE_FOR.)
+     */
     async function readFinished() {
         const now = env.now();
-        const use = { tag: 't.setslog', priority: 'low' };
+        const use = { tag: 't.setslog', priority: 'normal' };
+        const slow = { tag: 't.setslog', priority: 'low' };
         const from = S.ledger.tradesFrom || Math.floor((now - BACKFILL_MS) / 1000);
         // Whether Torn's `from` goes by when a trade was finished or when it was opened is not known: a day back is
         // asked for, and a trade is taken once by its id. A full page means a backlog: then from where it stood.
@@ -403,7 +412,7 @@ export function makeEngine(env) {
             let full = null;
             // One trade Torn refuses does not stop the ones after it: until 1.2.2 it did, and every later trade
             // (its pieces, its money) stayed out of the count for as long as that one failed.
-            try { full = await fetchTrade(env.torn, x.id, use); } catch (error) {
+            try { full = await fetchTrade(env.torn, x.id, done && now - done * 1000 < EG_RECEIPT_WITHIN_MS ? use : slow); } catch (error) {
                 tradeFails[x.id] = (tradeFails[x.id] || 0) + 1;
                 if (tradeFails[x.id] >= EG_TRADE_TRIES) env.say('note', 'A finished trade could not be read from Torn, and is left out', `trade ${x.id}: ${egMsg(error)}`);
                 else stuck = stuck ? Math.min(stuck, done || from) : done || from;
@@ -419,7 +428,7 @@ export function makeEngine(env) {
             const odd = tradesOdd(S);
             for (const id of odd.slice(0, EG_REPRICE_AT_ONCE)) {
                 let full = null;
-                try { full = await fetchTrade(env.torn, id, use); } catch { full = null; }
+                try { full = await fetchTrade(env.torn, id, slow); } catch { full = null; }
                 const n = foldTradeReprice(S, id, full);
                 if (n) env.say('note', 'An old trade priced again', 'trade ' + id + ': ' + n + ' row(s) - its money is shared over everything that was in it');
             }

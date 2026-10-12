@@ -91,6 +91,14 @@ const HIDDEN_POLL_MS = 1000;
 export const API_PRIORITY = { low: 0, normal: 1, high: 2 };
 export const NORMAL_RESERVE = 5;
 export const LOW_RESERVE = 20;
+/*
+ * The ceiling those two were chosen for. Under a smaller one they shrink with it (1.3.7): with Torn Bids in view
+ * this app keeps to 12 a minute, and 20 held back out of 12 left the low lane one slot - taken only when a whole
+ * minute had passed with no request at all, which the once-a-minute trade read never lets happen. Measured on the
+ * pretend Torn: at 12 and at 20 a minute a finished trade was not read in half an hour; nor your log, your money,
+ * the points market or the Item Market.
+ */
+export const RESERVE_FOR = 85;
 /* Returned by a wait that gave way to a more urgent call. */
 const YIELDED = Symbol('yielded');
 
@@ -340,8 +348,10 @@ export class TornApiClient {
 
     /** How many of the window's slots this lane may fill. */
     laneLimit(priority = API_PRIORITY.normal, now = Date.now()) {
-        const reserve = priority >= API_PRIORITY.high ? 0 : priority >= API_PRIORITY.normal ? NORMAL_RESERVE : LOW_RESERVE;
-        return Math.max(1, this.limitNow(now) - reserve);
+        const limit = this.limitNow(now);
+        const full = priority >= API_PRIORITY.high ? 0 : priority >= API_PRIORITY.normal ? NORMAL_RESERVE : LOW_RESERVE;
+        const reserve = Math.min(full, Math.floor(limit * full / RESERVE_FOR));
+        return Math.max(1, limit - reserve);
     }
 
     /**

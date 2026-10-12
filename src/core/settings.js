@@ -26,6 +26,7 @@ export const ARCHIVE_DEFAULTS = Object.freeze({
     sound: false,
     beforeEach: 0,
     w3bSync: false,
+    noConfirm: false,
     from: Object.freeze({ bazaar: true, market: true }),
 });
 
@@ -58,6 +59,8 @@ export function archiveSettings(stored) {
         beforeEach: stNum(s.beforeEach) > 0 ? stWhole(s.beforeEach) : 0,
         // Keep your TornW3B price list at your rate by itself (needs the key you registered there).
         w3bSync: s.w3bSync === true,
+        // After your press of Torn's Buy on a listing the Archive tells you to buy: Torn's "Yes" is pressed too.
+        noConfirm: s.noConfirm === true,
         // Where a list may send you to buy: bazaars, the Item Market, or both.
         from: { bazaar: from.bazaar !== false, market: from.market !== false },
     };
