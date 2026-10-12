@@ -329,7 +329,7 @@ export function makeEngine(env) {
         countRun();
         // 'seen': a buy tied to its log row is stored so. (Until 1.3.0 it was not, and after a reload the same buy
         // came off its seller's listing twice.)
-        touch('log', 'book', 'ledger', 'outs', 'stock', 'run', 'seen');
+        touch('log', 'book', 'ledger', 'outs', 'stock', 'run', 'seen', 'swaps');
         tidySoon(true);
     }
 
@@ -1192,7 +1192,8 @@ export function makeEngine(env) {
         // you sure", or refuse - but its log is asked soon after: what was bought is in it. Nothing on the screen
         // changes by the press itself.
         } else if (kind === 'press') { askLogSoon(now); return; }
-        else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); }
+        // Torn's log has the exchange at once: asked a few seconds after the press, so the count rests on it.
+        else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); askLogSoon(now); }
         else if (kind === 'thread') { noteThread(S, what, now); touch('thread'); }
         // A Torn tab sees a trade that is not as it was read: read again now, not at the minute.
         else if (kind === 'trade') { due.trades = 0; again(); }

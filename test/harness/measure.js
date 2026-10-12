@@ -10,6 +10,8 @@
 // a 1707 px window then leaves the pages 1471 px, not 1647. 1.3.0 was measured only with it closed, and Buy and
 // Stock fell into their narrow layouts on his screen. A page that scrolls is no finding here: read
 // `.view.scrollHeight - .view.clientHeight` for that.
+// Since 1.3.2 the hub is drawn at nine tenths (hub-css.js --scale): a 1707 px window is 1897 px to the pages, and
+// with the menu pinned they get 1661. getBoundingClientRect gives sizes as drawn, offsetWidth the page's own.
 
 const SKIP = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'OPTION', 'TITLE']);
 

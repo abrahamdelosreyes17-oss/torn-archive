@@ -156,6 +156,11 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             /** Torn has been seen to refuse /v2/user/inventory without `cat` ("Incorrect category"). */
             inventoryNeedsCat: true,
             /**
+             * Torn counts your inventory once an hour for each category, and its answer carries the time of that count.
+             * Off: every answer is counted that moment (as this made-up Torn always did). On: as Torn does.
+             */
+            inventoryHourly: false,
+            /**
              * What GET /api/pricelist/{you} answers. UNSURE.
              *   'config' = { items: [{ itemID, pricingType, pricingValue }] }: what core/tw3b-list.js parseOwnList reads.
              *   'public' = [{ itemId, name, buyPrice }]: what the same route answered for other traders' lists in
@@ -185,6 +190,8 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
     };
 
     const calls = [];
+    // Torn's hourly count of your inventory, a category: { at, held } (options.inventoryHourly).
+    const invCounts = new Map();
     const unknown = [];
     const refused = [];
     const leaks = [];
@@ -505,7 +512,16 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             if (no) return no;
             const cat = q('cat');
             if (!cat && world.options.inventoryNeedsCat) return tornError(21, 'Incorrect category');
-            const all = Object.entries(world.held)
+            let held = world.held;
+            let countedAt = t;
+            if (world.options.inventoryHourly) {
+                const key = cat || '';
+                const had = invCounts.get(key);
+                if (!had || t - had.at >= 3600000) invCounts.set(key, { at: t, held: { ...world.held } });
+                held = invCounts.get(key).held;
+                countedAt = invCounts.get(key).at;
+            }
+            const all = Object.entries(held)
                 .filter(([id, n]) => n > 0 && world.items[id] && (!cat || world.items[id].type === cat))
                 .map(([id, n]) => ({ id: Number(id), name: world.items[id].name, type: world.items[id].type, amount: n, equipped: false, faction_owned: false, uid: null }))
                 .sort((a, b) => a.id - b.id);
@@ -513,7 +529,7 @@ export function makeFakeTorn({ now = () => Date.now() } = {}) {
             const offset = ftWhole(q('offset'));
             const page = all.slice(offset, offset + limit);
             const next = offset + limit < all.length ? 'https://api.torn.com/v2/user/inventory?limit=' + limit + '&offset=' + (offset + limit) + (cat ? '&cat=' + encodeURIComponent(cat) : '') : null;
-            return answer(200, { inventory: { items: page, timestamp: ftSec(t) }, _metadata: { links: { next, prev: null } } });
+            return answer(200, { inventory: { items: page, timestamp: ftSec(countedAt) }, _metadata: { links: { next, prev: null } } });
         }
 
         if (path === '/v2/user/money') {

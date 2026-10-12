@@ -486,6 +486,72 @@ test('with a Full key: the page saw more than was bought - the log says how many
     assert.equal(piece(r.view(), 186).held, before + 2, 'the log has the buy: its number stands');
 });
 
+// ---- an exchange seen on Torn's page --------------------------------------------------------------------------------
+
+/** Eight of every piece: five sets can be swapped, three of each are left. Torn counts your items once an hour, as it does. */
+const eightOfEach = (w) => { w.options.inventoryHourly = true; for (const s of w.sets) for (const id of s.pieces) w.held[id] = 8; };
+const firstOf = (r, key) => r.world.sets.find((s) => s.key === key).pieces[0];
+
+test('an exchange at the museum comes off the count once: Read pressed right after it brings its log row, and that row is the press, not a second exchange (the owner, 2026-10-12: 500 sets made, 0 of every piece shown)', async (t) => {
+    const r = rig(t, { world: eightOfEach });
+    await r.ready();
+    await pastLogRead(r);
+    const id = firstOf(r, 'plushie');
+    assert.equal(piece(r.view(), id).held, 8);
+    r.fake.swap('plushie', 5);
+    r.engine.note('swap', { t: Date.now(), set: 'plushie', sets: 5 });
+    assert.equal(piece(r.view(), id).held, 3, 'at the press');
+    r.engine.act('readStock');
+    const shown = [];
+    for (let k = 0; k < 48; k++) { await r.go(5000); shown.push(piece(r.view(), id).held); }
+    assert.deepEqual(shown.filter((n) => n !== 3), [], 'every look in the four minutes after the exchange shows three left');
+    await r.go(3 * 60 * MIN);
+    assert.equal(piece(r.view(), id).held, 3, 'and after Torn has counted anew');
+});
+
+test('an exchange at the museum: your log is asked a few seconds after the press, and with no Read pressed the count still shows it once', async (t) => {
+    const r = rig(t, { world: eightOfEach });
+    await r.ready();
+    await pastLogRead(r);
+    const id = firstOf(r, 'flower');
+    r.fake.swap('flower', 5);
+    const press = Date.now();
+    r.engine.note('swap', { t: press, set: 'flower', sets: 5 });
+    const shown = [];
+    for (let k = 0; k < 6; k++) { await r.go(5000); shown.push(piece(r.view(), id).held); }
+    assert.ok(logCalls(r, press).length > 0, 'the log is asked within half a minute of the press');
+    for (let k = 0; k < 42; k++) { await r.go(5000); shown.push(piece(r.view(), id).held); }
+    assert.deepEqual(shown.filter((n) => n !== 3), [], 'three left at every look');
+});
+
+test('an exchange at the museum told by the page after its log row was read: still one exchange', async (t) => {
+    const r = rig(t, { world: eightOfEach });
+    await r.ready();
+    await pastLogRead(r);
+    const id = firstOf(r, 'plushie');
+    const at = Date.now();
+    r.fake.swap('plushie', 5);
+    r.engine.act('readStock');
+    await r.go(20000);
+    assert.equal(piece(r.view(), id).held, 3, 'the log has the exchange');
+    r.engine.note('swap', { t: at, set: 'plushie', sets: 5 });
+    assert.equal(piece(r.view(), id).held, 3, 'the page tells of the same one');
+    await r.go(4 * MIN);
+    assert.equal(piece(r.view(), id).held, 3);
+});
+
+test('an exchange at the museum: the page saw more sets than were swapped - the log says how many, and the count follows the log at once', async (t) => {
+    const r = rig(t, { world: eightOfEach });
+    await r.ready();
+    await pastLogRead(r);
+    const id = firstOf(r, 'plushie');
+    r.fake.swap('plushie', 2);
+    r.engine.note('swap', { t: Date.now(), set: 'plushie', sets: 5 });
+    assert.equal(piece(r.view(), id).held, 3, 'the page is all there is, for a moment');
+    await r.go(40000);
+    assert.equal(piece(r.view(), id).held, 6, 'the log has the exchange: its number stands');
+});
+
 test('a line you bought: off the list at once with no run on; ticked on it, and kept, while a run is on', async (t) => {
     const r = rig(t, { keys: { full: '' }, settings: { target: 40 } });
     await r.ready();

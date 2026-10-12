@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Archive
 // @namespace    torn-archive
-// @version      1.3.1
+// @version      1.3.2
 // @description  Museum sets and points: what to buy and where, what your open trades hold, and what a set earns you - on a page of its own, with small marks on Torn's pages.
 // @author       -
 // @match        https://www.torn.com/*
@@ -53,7 +53,7 @@
 (function () {
     'use strict';
 
-    const TARC_BUILD_VERSION = '1.3.1';
+    const TARC_BUILD_VERSION = '1.3.2';
     const TARC_SERVER_HOME = 'https://torn-bids-shared.pumping-iron-worker.workers.dev';
 
     /* ===== src/platform/gm.js ===== */
@@ -6908,6 +6908,11 @@
         if (noLog && enCounting(S)) {
             S.stock = stockApply(S.stock, [{ key: 'seen-swap:' + t + ':' + set.key, t, swap: set.key, sets }], mvOf(S)).state;
             row.counted = true;
+        } else if (!noLog) {
+            // The log was read between the press and the page's telling of it: its row is in the count already.
+            const claimed = new Set(S.swaps.map((p) => p.logged).filter(Boolean));
+            const r = S.book.find((e) => e.kind === 'made' && e.src === 'log' && e.set === set.key && !claimed.has(e.id) && Math.abs(e.t - t) < EN_SAME_NOW_MS && e.points === sets * set.points && S.stock.done.includes(e.id));
+            if (r) row.logged = r.id;
         }
         S.swaps = [...S.swaps.filter((p) => now - p.t < 6 * EN_HOUR), row].slice(-60);
         S.book = bookAdd(S.book, { id: 'page:' + t, t, kind: 'made', points: sets * set.points, each: cost > 0 ? cost / set.points : 0, set: set.key, src: 'page' }).slice(-EN_BOOK_KEPT);
@@ -6938,6 +6943,29 @@
             if (k >= 0) seen = seen.map((b, i) => (i === k ? { ...b, logged: r.id } : b));
         }
         S.seen = seen;
+    }
+    /**
+     * A press of EXCHANGE seen on a page waits beside the count for its row in Torn's log, as a buy does. The moment
+     * that row is in, the row is the exchange: what the page saw of it is no longer taken off on top. (Until 1.3.2 it
+     * stayed until the log had been read a minute past the press. The owner, 2026-10-12, made 500 plushie and 500
+     * flower sets and pressed Read: the log came inside that minute, every set came off twice, and the page showed 0
+     * of every piece while he held 302 Jaguars.) The log's number stands where the page's differs.
+     * @param made [{ entry, set }] exchanges this read of the log brought into the count
+     */
+    function enSwapsInLog(S, made) {
+        let list = S.swaps;
+        for (const { entry, set } of made) {
+            if (list.some((p) => p.logged === entry.id)) continue;
+            const n = Math.round(entry.points / set.points);
+            let k = -1;
+            list.forEach((p, i) => {
+                if (p.counted || p.logged || p.set !== set.key || Math.abs(p.t - entry.t) >= EN_SAME_BUY_MS) return;
+                const better = k < 0 || (p.sets === n) > (list[k].sets === n) || ((p.sets === n) === (list[k].sets === n) && Math.abs(p.t - entry.t) < Math.abs(list[k].t - entry.t));
+                if (better) k = i;
+            });
+            if (k >= 0) list = list.map((p, i) => (i === k ? { ...p, logged: entry.id } : p));
+        }
+        S.swaps = list;
     }
     function enNotCounted(S, events) {
         const used = new Set();
@@ -7131,6 +7159,8 @@
         // Not before Torn's inventory has been read once: until then the log is history, and the count starts there.
         const applied = enCounting(S) ? stockApply(S.stock, [...enNotCounted(S, eventsFromRows(fresh, EN_PIECE_SET)), ...events], mvOf(S)) : { state: S.stock, made: [], out: [] };
         S.stock = applied.state;
+        // An exchange this read brought into the count is the press the page saw of it, not a second one.
+        if (applied.made.length) enSwapsInLog(S, swaps.filter((x) => applied.made.some((m) => m.key === x.entry.id)));
         enAddDirect(S, fresh, applied.out);
         const costBy = new Map(applied.made.map((m) => [m.key, m]));
         for (const { entry, set } of swaps) {
@@ -9465,7 +9495,7 @@
             countRun();
             // 'seen': a buy tied to its log row is stored so. (Until 1.3.0 it was not, and after a reload the same buy
             // came off its seller's listing twice.)
-            touch('log', 'book', 'ledger', 'outs', 'stock', 'run', 'seen');
+            touch('log', 'book', 'ledger', 'outs', 'stock', 'run', 'seen', 'swaps');
             tidySoon(true);
         }
 
@@ -10328,7 +10358,8 @@
             // you sure", or refuse - but its log is asked soon after: what was bought is in it. Nothing on the screen
             // changes by the press itself.
             } else if (kind === 'press') { askLogSoon(now); return; }
-            else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); }
+            // Torn's log has the exchange at once: asked a few seconds after the press, so the count rests on it.
+            else if (kind === 'swap') { noteSwap(S, what, now, { noLog: !logRead() }); touch('swaps', 'book', 'stock'); askLogSoon(now); }
             else if (kind === 'thread') { noteThread(S, what, now); touch('thread'); }
             // A Torn tab sees a trade that is not as it was read: read again now, not at the minute.
             else if (kind === 'trade') { due.trades = 0; again(); }
@@ -11078,6 +11109,9 @@
     const HUB_CSS = `
     :root {
       --rail: 60px; --side: 236px;
+      /* The whole hub is drawn at nine tenths (the owner, 2026-10-12: "the 90% version is what the 100% should look like"):
+         at 100% in the browser every page sits as it did with the browser at 90%. */
+      --scale: .9;
       --bg: #090b10; --rail-bg: #0c0f15; --panel: #10131a; --raised: #171b24; --hover: #1c212c; --input: #0a0c11;
       --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.13);
       --text: #f3f5f9; --text2: #c9cfda; --muted: #8e96a6; --faint: #626a7a;
@@ -11101,7 +11135,7 @@
     svg.ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
     /* ---------- shell ---------- */
-    .app { height: 100vh; display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); transition: grid-template-columns .26s var(--ease); background: radial-gradient(1100px 520px at 12% -10%, rgba(143,123,255,.07), transparent 60%), var(--bg); }
+    .app { zoom: var(--scale); height: calc(100vh / var(--scale)); display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); transition: grid-template-columns .26s var(--ease); background: radial-gradient(1100px 520px at 12% -10%, rgba(143,123,255,.07), transparent 60%), var(--bg); }
     .app.pinned { grid-template-columns: var(--side) minmax(0, 1fr); }
     .side { position: relative; z-index: 40; }
     .side-in { position: absolute; inset: 0 auto 0 0; width: var(--rail); display: flex; flex-direction: column; background: var(--rail-bg); border-right: 1px solid var(--line); overflow: hidden; transition: width .26s var(--ease), box-shadow .26s var(--ease); }
@@ -11142,7 +11176,7 @@
     .live { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; display: inline-block; position: relative; }
     .live::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid var(--good); animation: ping 2.4s var(--ease) infinite; }
 
-    .main { display: grid; grid-template-rows: 52px minmax(0, 1fr) 30px; height: 100vh; min-width: 0; container-type: inline-size; }
+    .main { display: grid; grid-template-rows: 52px minmax(0, 1fr) 30px; height: calc(100vh / var(--scale)); min-width: 0; container-type: inline-size; }
     .top { display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); white-space: nowrap; min-width: 0; }
     .top h1 { margin: 0 8px 0 0; font: 650 19px/1 var(--disp); letter-spacing: -.01em; }
     .tabs { display: flex; gap: 2px; align-self: stretch; }

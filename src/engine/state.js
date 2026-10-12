@@ -683,6 +683,11 @@ export function noteSwap(S, press, now, { noLog = false } = {}) {
     if (noLog && enCounting(S)) {
         S.stock = stockApply(S.stock, [{ key: 'seen-swap:' + t + ':' + set.key, t, swap: set.key, sets }], mvOf(S)).state;
         row.counted = true;
+    } else if (!noLog) {
+        // The log was read between the press and the page's telling of it: its row is in the count already.
+        const claimed = new Set(S.swaps.map((p) => p.logged).filter(Boolean));
+        const r = S.book.find((e) => e.kind === 'made' && e.src === 'log' && e.set === set.key && !claimed.has(e.id) && Math.abs(e.t - t) < EN_SAME_NOW_MS && e.points === sets * set.points && S.stock.done.includes(e.id));
+        if (r) row.logged = r.id;
     }
     S.swaps = [...S.swaps.filter((p) => now - p.t < 6 * EN_HOUR), row].slice(-60);
     S.book = bookAdd(S.book, { id: 'page:' + t, t, kind: 'made', points: sets * set.points, each: cost > 0 ? cost / set.points : 0, set: set.key, src: 'page' }).slice(-EN_BOOK_KEPT);
@@ -713,6 +718,29 @@ function enSeenInLog(S, rows) {
         if (k >= 0) seen = seen.map((b, i) => (i === k ? { ...b, logged: r.id } : b));
     }
     S.seen = seen;
+}
+/**
+ * A press of EXCHANGE seen on a page waits beside the count for its row in Torn's log, as a buy does. The moment
+ * that row is in, the row is the exchange: what the page saw of it is no longer taken off on top. (Until 1.3.2 it
+ * stayed until the log had been read a minute past the press. The owner, 2026-10-12, made 500 plushie and 500
+ * flower sets and pressed Read: the log came inside that minute, every set came off twice, and the page showed 0
+ * of every piece while he held 302 Jaguars.) The log's number stands where the page's differs.
+ * @param made [{ entry, set }] exchanges this read of the log brought into the count
+ */
+function enSwapsInLog(S, made) {
+    let list = S.swaps;
+    for (const { entry, set } of made) {
+        if (list.some((p) => p.logged === entry.id)) continue;
+        const n = Math.round(entry.points / set.points);
+        let k = -1;
+        list.forEach((p, i) => {
+            if (p.counted || p.logged || p.set !== set.key || Math.abs(p.t - entry.t) >= EN_SAME_BUY_MS) return;
+            const better = k < 0 || (p.sets === n) > (list[k].sets === n) || ((p.sets === n) === (list[k].sets === n) && Math.abs(p.t - entry.t) < Math.abs(list[k].t - entry.t));
+            if (better) k = i;
+        });
+        if (k >= 0) list = list.map((p, i) => (i === k ? { ...p, logged: entry.id } : p));
+    }
+    S.swaps = list;
 }
 function enNotCounted(S, events) {
     const used = new Set();
@@ -906,6 +934,8 @@ export function foldLog(S, logRows, ctx) {
     // Not before Torn's inventory has been read once: until then the log is history, and the count starts there.
     const applied = enCounting(S) ? stockApply(S.stock, [...enNotCounted(S, eventsFromRows(fresh, EN_PIECE_SET)), ...events], mvOf(S)) : { state: S.stock, made: [], out: [] };
     S.stock = applied.state;
+    // An exchange this read brought into the count is the press the page saw of it, not a second one.
+    if (applied.made.length) enSwapsInLog(S, swaps.filter((x) => applied.made.some((m) => m.key === x.entry.id)));
     enAddDirect(S, fresh, applied.out);
     const costBy = new Map(applied.made.map((m) => [m.key, m]));
     for (const { entry, set } of swaps) {

@@ -4,6 +4,9 @@
 export const HUB_CSS = `
 :root {
   --rail: 60px; --side: 236px;
+  /* The whole hub is drawn at nine tenths (the owner, 2026-10-12: "the 90% version is what the 100% should look like"):
+     at 100% in the browser every page sits as it did with the browser at 90%. */
+  --scale: .9;
   --bg: #090b10; --rail-bg: #0c0f15; --panel: #10131a; --raised: #171b24; --hover: #1c212c; --input: #0a0c11;
   --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.13);
   --text: #f3f5f9; --text2: #c9cfda; --muted: #8e96a6; --faint: #626a7a;
@@ -27,7 +30,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 svg.ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- shell ---------- */
-.app { height: 100vh; display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); transition: grid-template-columns .26s var(--ease); background: radial-gradient(1100px 520px at 12% -10%, rgba(143,123,255,.07), transparent 60%), var(--bg); }
+.app { zoom: var(--scale); height: calc(100vh / var(--scale)); display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); transition: grid-template-columns .26s var(--ease); background: radial-gradient(1100px 520px at 12% -10%, rgba(143,123,255,.07), transparent 60%), var(--bg); }
 .app.pinned { grid-template-columns: var(--side) minmax(0, 1fr); }
 .side { position: relative; z-index: 40; }
 .side-in { position: absolute; inset: 0 auto 0 0; width: var(--rail); display: flex; flex-direction: column; background: var(--rail-bg); border-right: 1px solid var(--line); overflow: hidden; transition: width .26s var(--ease), box-shadow .26s var(--ease); }
@@ -68,7 +71,7 @@ svg.ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor
 .live { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; display: inline-block; position: relative; }
 .live::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid var(--good); animation: ping 2.4s var(--ease) infinite; }
 
-.main { display: grid; grid-template-rows: 52px minmax(0, 1fr) 30px; height: 100vh; min-width: 0; container-type: inline-size; }
+.main { display: grid; grid-template-rows: 52px minmax(0, 1fr) 30px; height: calc(100vh / var(--scale)); min-width: 0; container-type: inline-size; }
 .top { display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); white-space: nowrap; min-width: 0; }
 .top h1 { margin: 0 8px 0 0; font: 650 19px/1 var(--disp); letter-spacing: -.01em; }
 .tabs { display: flex; gap: 2px; align-self: stretch; }
