@@ -9,11 +9,36 @@ const LT_DAY_MS = 86400000;
 const LT_GAP_MS = 5 * 60000;
 const LT_KEEP = 4000;
 
-export const LOT_BUCKETS = [[1, 100], [101, 250], [251, 500], [501, 1000], [1001, Infinity]];
+/**
+ * The sizes points are listed in (the owner, 2026-10-13: "its mostly sold in increments of 50, 100, 200, 500, 1000,
+ * 1500, 2000, 2500, and 5000, and 10000 and usually, we dont sell big, i avoid anything bigger than 2k"). Until
+ * 1.4.0 the sizes were ranges made up here (up to 100, 101 to 250 ... over 1,000): "over 1,000" mixed 2,000 with
+ * 5,000, and the plan was one lot of everything.
+ */
+export const LOT_SIZES = [50, 100, 200, 500, 1000, 1500, 2000, 2500, 5000, 10000];
+/** The biggest lot you list, to begin with: his number, a count of points. Yours to change in Settings. */
+export const LOT_MOST = 2000;
 
 const ltFmt = (n) => n.toLocaleString('en-US');
-export const lotLabel = ([lo, hi]) => (hi === Infinity ? 'Over ' + ltFmt(lo - 1) : lo <= 1 ? 'Up to ' + ltFmt(hi) : ltFmt(lo) + ' to ' + ltFmt(hi));
-export const lotBucket = (points) => LOT_BUCKETS.findIndex(([lo, hi]) => points >= lo && points <= hi);
+/** The sizes a lot of yours may have: the market's, none over `most`; with `most` under them all, `most` itself. */
+export function lotSizes(most = LOT_MOST) {
+    const cap = ltWhole(most) || LOT_MOST;
+    const sizes = LOT_SIZES.filter((n) => n <= cap);
+    return sizes.length ? sizes : [cap];
+}
+/**
+ * The size a lot is counted under: the nearest of your sizes (30 and 60 under 50, 900 under 1,000; half way goes
+ * up), and null for a lot over your biggest ("Bigger").
+ */
+export function lotSize(points, most = LOT_MOST) {
+    const n = ltWhole(points);
+    const sizes = lotSizes(most);
+    if (!n) return null;
+    if (n > sizes[sizes.length - 1]) return null;
+    let best = sizes[0];
+    for (const size of sizes) if (Math.abs(size - n) < Math.abs(best - n) || (Math.abs(size - n) === Math.abs(best - n) && size > best)) best = size;
+    return best;
+}
 
 export const LOTS_EMPTY = Object.freeze({ seen: {}, gone: [], t: 0 });
 
@@ -55,21 +80,24 @@ const ltMedian = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.len
  * The table: per lot size, how many left the market, the points in them, the usual wait at the front, and yours.
  * @param gone lotsRead().gone
  * @param mine [{ points, wait }] your own lots, from Torn's log (wait in ms, or null)
- * @returns [{ lo, hi, label, lots, points, wait (ms | null), waits, mine: { n, lo, hi } | null }]
+ * @param most the biggest lot you list: bigger ones are one last row, `bigger: true`
+ * @returns [{ size (0 on the last row), label, bigger, lots, points, wait (ms | null), waits, mine: { n, lo, hi } | null }]
  */
-export function lotTable(gone, mine, now, days = 7) {
+export function lotTable(gone, mine, now, days = 7, most = LOT_MOST) {
     const from = now - days * LT_DAY_MS;
-    const rows = LOT_BUCKETS.map((b) => ({ lo: b[0], hi: b[1], label: lotLabel(b), lots: 0, points: 0, wait: null, waits: 0, mine: null, w: [], m: [] }));
+    const sizes = lotSizes(most);
+    const rows = [...sizes.map((size) => ({ size, label: ltFmt(size), bigger: false })), { size: 0, label: 'Bigger', bigger: true }].map((r) => ({ ...r, lots: 0, points: 0, wait: null, waits: 0, mine: null, w: [], m: [] }));
+    const rowOf = (points) => { const size = lotSize(points, most); return ltWhole(points) ? rows[size == null ? rows.length - 1 : sizes.indexOf(size)] : null; };
     for (const g of gone || []) {
         if (g.t < from) continue;
-        const r = rows[lotBucket(ltWhole(g.qty))];
+        const r = rowOf(g.qty);
         if (!r) continue;
         r.lots += 1;
         r.points += ltWhole(g.qty);
         if (g.front && g.wait != null) r.w.push(g.wait);
     }
     for (const s of mine || []) {
-        const r = rows[lotBucket(ltWhole(s.points))];
+        const r = rowOf(s.points);
         if (r) r.m.push(s.wait);
     }
     return rows.map(({ w, m, ...r }) => {
@@ -78,36 +106,35 @@ export function lotTable(gone, mine, now, days = 7) {
     });
 }
 
-/**
- * How to list your points: all at once, or in the size that leaves quickest. Lots of one size are taken one after
- * the other, so the wait of a split is the size's usual wait, once per lot.
- * @returns { one: { lots: [n], wait }, quick: { lots, size, wait } | null } - quick is null when one lot is quickest,
- *          or no wait is known yet
- */
-export function sellPlan(points, table) {
-    const total = ltWhole(points);
-    const waitOf = (n) => { const r = (table || [])[lotBucket(n)]; return r ? r.wait : null; };
-    const one = { lots: total ? [total] : [], wait: total ? waitOf(total) : null };
-    let quick = null;
-    for (const r of table || []) {
-        if (r.wait == null || !total) continue;
-        const size = Math.min(total, r.hi === Infinity ? total : r.hi);
-        if (size >= total) continue;
-        const lots = [];
-        for (let left = total; left > 0; left -= size) lots.push(Math.min(size, left));
-        const wait = lots.length * r.wait;
-        if (!quick || wait < quick.wait) quick = { lots, size, wait };
-    }
-    if (quick && one.wait != null && one.wait <= quick.wait) quick = null;
-    return { one, quick };
+/** How long the lots in the record were watched for, in ms: from the first one gone inside `days` to now. */
+export function lotSpan(gone, now, days = 7) {
+    const from = now - days * LT_DAY_MS;
+    let first = 0;
+    let n = 0;
+    for (const g of gone || []) { if (g.t < from) continue; n += 1; if (!first || g.t < first) first = g.t; }
+    return { lots: n, ms: first ? Math.max(0, now - first) : 0 };
 }
 
-/** "4 lots of 100 and 1 of 20". */
+/**
+ * How to list your points: the biggest of your sizes first, none over your biggest lot, and what is left under the
+ * smallest size as a lot of its own (6,620 with 2,000 the biggest: 2,000, 2,000, 2,000, 500, 100, 20).
+ * @returns [points of the first lot to list, of the second, ...]
+ */
+export function sellPlan(points, most = LOT_MOST) {
+    let left = ltWhole(points);
+    const out = [];
+    for (const size of [...lotSizes(most)].reverse()) {
+        while (left >= size) { out.push(size); left -= size; }
+    }
+    if (left) out.push(left);
+    return out;
+}
+
+/** "3 × 2,000 · 1 × 500 · 1 × 20". */
 export function lotsWords(lots) {
     const by = new Map();
     for (const n of lots || []) by.set(n, (by.get(n) || 0) + 1);
-    const parts = [...by].sort((a, b) => b[0] - a[0]).map(([n, c], i) => (i ? c + ' of ' + ltFmt(n) : c + (c === 1 ? ' lot of ' : ' lots of ') + ltFmt(n)));
-    return parts.join(' and ');
+    return [...by].sort((a, b) => b[0] - a[0]).map(([n, c]) => c + ' × ' + ltFmt(n)).join(' · ');
 }
 
 /** A wait in words: "6 min", "2 h 10 min", "under a minute". */

@@ -10,7 +10,7 @@
 // receipts. The shared server, once you save its address and your password for it, is told bazaar and item numbers,
 // prices and counts - never a key, never your stock or your money. Nothing presses a button of Torn's.
 
-import { gmGet, gmSet, gmDel, gmMenu, gmOpenTab, gmOnChange, gmCopy, gmCopyRich, gmSend } from './platform/gm.js';
+import { gmGet, gmSet, gmDel, gmMenu, gmOpenTab, gmFocusTab, gmOnChange, gmCopy, gmCopyRich, gmSend } from './platform/gm.js';
 import { tabWindow } from './platform/tab-window.js';
 import { perfStart, perfTimed, perfRecord, perfMachine } from './platform/perf.js';
 import { TornApiClient } from './api/client.js';
@@ -367,6 +367,8 @@ function bootHub(tabId) {
                 else if (n.kind === 'buy' || n.kind === 'swap' || n.kind === 'thread' || n.kind === 'trade' || n.kind === 'shop' || n.kind === 'press') { engine.note(n.kind, n.what); moved = moved || n.kind === 'buy' || n.kind === 'swap' || n.kind === 'shop'; }
                 // "Read" on your stock, pressed on a Torn page: your items are asked for now, ahead of the rest.
                 else if (n.kind === 'read') { engine.act('readStock'); logLine('note', 'A Torn page', 'Read pressed on your stock', 'it waited ' + Math.max(0, t - n.t) + ' ms'); moved = true; }
+                // The last Next of a run, pressed on a Torn page: this tab comes to the front, where the browser lets it.
+                else if (n.kind === 'front') { gmFocusTab(); logLine('note', 'A Torn page', 'The run is done: Torn Archive asked to the front', 'it waited ' + Math.max(0, t - n.t) + ' ms'); }
                 // What a Torn tab saw of its page, for the log: it is in the zip.
                 else if (n.kind === 'say' && n.what) logLine('note', 'A Torn page', String(n.what.what || ''), n.what.detail ? String(n.what.detail) : null);
             } catch (error) {

@@ -11,6 +11,8 @@ export const hSigned = (n) => (n < 0 ? '-' : '+') + '$' + hNum(n);
 /** A short money figure for a graph's axis: $1.2M, $340k. */
 export const hShort = (v) => (v < 0 ? '-' : '') + '$' + (Math.abs(v) >= 1e6 ? (Math.abs(v) / 1e6).toFixed(1).replace('.0', '') + 'M' : Math.abs(v) >= 1e3 ? Math.round(Math.abs(v) / 1e3) + 'k' : Math.abs(v));
 export const hPct = (n) => (Math.round((Number(n) || 0) * 10) / 10).toFixed(1) + '%';
+/** ... cut, not rounded: a profit per set just under your least profit never reads as that least profit. */
+export const hPctDown = (n) => (Math.floor((Number(n) || 0) * 10 + 1e-7) / 10).toFixed(1) + '%';
 /** A rate as it is typed: 101, 101.4. */
 export const hRate = (n) => String(Math.round((Number(n) || 0) * 10) / 10);
 export const hPlural = (n, one, many) => hNum(n) + ' ' + (n === 1 ? one : many || one + 's');
@@ -52,6 +54,13 @@ export const HUB_ICONS = {
     set: '<path d="M4 6h6.5M15.5 6h.5M4 14h.5M9.5 14H16"/><circle cx="13" cy="6" r="2.2"/><circle cx="7" cy="14" r="2.2"/>',
     pin: '<path d="M7 3h6l-.8 5 2.3 2.5v1.5h-9v-1.5L7.8 8 7 3ZM10 12v5"/>',
 };
+/**
+ * Torn Archive's mark as a picture by itself: the violet tile with the museum on it, as the side menu shows it.
+ * The browser tab's icon (the owner, 2026-10-13: "this icon you made, add it to the chrome tab").
+ */
+export const HUB_MARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a694ff"/><stop offset="1" stop-color="#6a55e8"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#g)"/><g transform="translate(4 4) scale(1.2)" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${HUB_ICONS.brand}</g></svg>`;
+/** ... and as an address a page can name as its icon. */
+export const HUB_MARK_URL = 'data:image/svg+xml,' + encodeURIComponent(HUB_MARK_SVG);
 export const hIcon = (name) => `<svg class="ic" viewBox="0 0 20 20">${HUB_ICONS[name] || ''}</svg>`;
 
 const H_PIC_SIZE = { lg: 'medium', xl: 'large' };

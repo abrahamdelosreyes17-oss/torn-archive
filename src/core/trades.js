@@ -60,7 +60,26 @@ export function tradeTurn(trade, total) {
     return trade.myMoney >= total ? 'them' : 'you';
 }
 
-export const TURN_WORDS = { you: 'your turn to pay', them: 'paid · waiting for them', new: 'new · still adding' };
+export const TURN_WORDS = { you: 'your turn', them: 'waiting for them', new: 'adding items' };
+
+/**
+ * The trade the Trades page shows beside its list: the one you pressed for as long as it is there (an open trade
+ * that ends stays, as the finished one it became), else the open one that waits for you, else the first open one,
+ * else the newest finished one.
+ * @param open     the open trades [{ id, state }]
+ * @param finished the finished ones, newest first [{ id }]
+ * @param id       the trade pressed, or null
+ * @returns { open, done } - one of them is the trade, the other null; both null with no trade at all
+ */
+export function tradePick(open, finished, id) {
+    const same = (t) => id != null && String(t.id) === String(id);
+    const o = (open || []).find(same);
+    if (o) return { open: o, done: null };
+    const f = (finished || []).find(same);
+    if (f) return { open: null, done: f };
+    const first = (open || []).find((t) => t.state === 'you') || (open || [])[0] || null;
+    return { open: first, done: first ? null : (finished || [])[0] || null };
+}
 
 /**
  * Which trades are new since the last look. The first look ever tells of nothing: every trade is "seen".

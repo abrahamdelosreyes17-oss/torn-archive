@@ -3,8 +3,8 @@
 // Nothing here presses anything of Torn's: a button either types into a box of Torn's on your press (Fill),
 // copies text, or opens one page.
 
-import { hEsc, hNum, hMoney, hSigned, hPic, hPlural, hRate, hAge, hClock } from './fmt.js';
-import { marginWords } from '../core/margin.js';
+import { hEsc, hNum, hMoney, hSigned, hPct, hPctDown, hPic, hPlural, hRate, hAge, hClock } from './fmt.js';
+import { setMakes } from '../core/setjudge.js';
 import { lotsWords } from '../core/lots.js';
 import { typedListing, listLines } from '../core/points.js';
 import { viewPiece } from '../core/view.js';
@@ -21,14 +21,14 @@ export const VIEW_LATE_MS = 3 * 60 * 1000;
  */
 export function boxLate(at, now) {
     if (!(at > 0) || !(now - at > VIEW_LATE_MS)) return '';
-    return `<div class="ta-hold"><b>The hub last answered ${Math.floor((now - at) / 60000)} min ago.</b> These numbers are from then. Open its tab and they are current again.</div>`;
+    return `<div class="ta-hold"><b>Hub silent for ${Math.floor((now - at) / 60000)} min.</b> Numbers are from then.</div>`;
 }
 const bxBtn = (act, label, cls = '', v = '', more = '') => `<button class="btn sm ${cls}" data-act="${act}"${v !== '' ? ` data-v="${hEsc(v)}"` : ''}${more}>${label}</button>`;
 const bxHead = (title, right = '') => `<h4>${title}<span>${right}</span></h4>`;
 
 /** While the hub has not shared anything yet, or what it shared is old. */
 export function boxWaiting(old) {
-    return { where: '', html: bxNote(old ? 'Torn Archive is not open: these numbers would be old. <b>Open the hub</b> and they come back.' : 'Open the hub once: your sets are worked out there, and shown here.'), marks: [] };
+    return { where: '', html: bxNote(old ? 'Torn Archive is not open.' : 'Open Torn Archive once.'), marks: [] };
 }
 
 /**
@@ -37,7 +37,7 @@ export function boxWaiting(old) {
  * @param old   the hub shared something once
  */
 export function boxClosed(setUp, old) {
-    if (!setUp) return { head: 'not set up yet', go: true, where: '', html: bxNote('Torn Archive has no key yet. <b>Open</b> it and paste one in Settings: nothing is read before that.'), marks: [] };
+    if (!setUp) return { head: 'not set up yet', go: true, where: '', html: bxNote('No key yet: paste one in Settings.'), marks: [] };
     return { ...boxWaiting(old), head: 'hub is closed', go: true };
 }
 
@@ -48,18 +48,21 @@ export function boxClosed(setUp, old) {
 function bxBack(v) {
     const rows = (v.buy && v.buy.back) || [];
     if (!rows.length) return '';
-    const one = rows.length === 1;
-    return `<div class="ta-hold"><b>Not ${one ? 'a buy' : 'buys'} after all: ${rows.map((b) => `${hNum(b.qty)} × ${hEsc(b.name || 'item ' + b.id)}`).join(', ')}.</b> Torn's log has no such buy, so ${one ? 'it is' : 'they are'} taken back: off your stock, the run and the list.</div>`;
+    return `<div class="ta-hold"><b>Taken back: ${rows.map((b) => `${hNum(b.qty)} × ${hEsc(b.name || 'item ' + b.id)}`).join(', ')}.</b> Not in Torn's log.</div>`;
 }
 
 /**
- * A listing's price against its piece, in the list's three groups (core/setjudge.js): under the piece's own worth,
- * over it and carried by its set (Buy), a Stretch, or over all of them.
+ * A listing's price against its piece: profit per set with it (core/setjudge.js setMakes), in the Buy page's three
+ * text colours - "profit per set 2.5%", and under your least it says so. Without a points price, the piece's worth.
+ * Until 1.4.0: "worth $X", "over its worth · its set carries it", "Stretch · needs points at $X", "too dear".
  */
-const bxWorth = (p, price) => (price < p.worth ? `worth ${hMoney(p.worth)} to you`
-    : price < p.line ? `over its own worth ${hMoney(p.worth)}: its set carries it`
-    : price < p.lineS ? `a Stretch: it pays with points at ${hMoney(p.needs)} or more`
-    : 'over what its set can carry');
+function bxMakes(p, price) {
+    if (!p.mk) return { cls: price < p.worth ? 'best' : 'loss', text: price < p.worth ? `worth ${hMoney(p.worth)}` : 'over its worth' };
+    const m = setMakes(p.mk, price);
+    if (m.cls === 'loss') return { cls: 'loss', text: 'a loss for its set' };
+    return { cls: m.cls, text: `profit per set ${hPctDown(m.pct)}${m.cls === 'thin' ? ` · under your ${hRate(p.mk.least)}%` : ''}` };
+}
+const bxWorth = (p, price) => { const m = bxMakes(p, price); return m.cls === 'loss' ? m.text : `<span class="j-${m.cls}">${m.text}</span>`; };
 
 /** A page of Torn's that is none of ours, while the hub is open: your sets, and what waits for you. */
 export function boxAny(v) {
@@ -71,8 +74,8 @@ export function boxAny(v) {
         html += `<div class="ta-l"><b>${hEsc(s.label)} Set</b><span></span><b class="num">${hNum(s.full)} full</b>`
             + `<span class="s">${short ? `Shortest: ${hEsc(short.short)} ${hNum(short.held)} · ` : ''}${need ? hPlural(need, 'piece') + ' short' : 'nothing short'}</span></div>`;
     }
-    if (v.buy.units) html += bxKv('Your shopping list', `${hPlural(v.buy.units, 'piece')} · ${hPlural(v.buy.run.stops.length, 'stop')}`);
-    if (v.trades.open.length) html += bxKv('Trades open with you', hNum(v.trades.open.length));
+    if (v.buy.units) html += bxKv('Shopping list', `${hPlural(v.buy.units, 'piece')} · ${hPlural(v.buy.run.stops.length, 'stop')}`);
+    if (v.trades.open.length) html += bxKv('Open trades', hNum(v.trades.open.length));
     return { head: full ? `${hPlural(full, 'set')} ready` : 'no full set yet', where: '', html, marks: [] };
 }
 
@@ -118,7 +121,7 @@ export function boxStock(v, live = {}) {
             const cls = more ? 'over' : need > 0 ? 'need' : held > target ? 'ahead' : 'ok';
             const say = more ? `typing ${hNum(t)} · ${hNum(more)} too many` : t ? `typing ${hNum(t)} of ${hNum(need)}` : need > 0 ? `need ${hNum(need)}` : held > target ? `${hNum(held - target)} ahead` : 'enough';
             const w = target ? Math.min(100, Math.round((held / target) * 100)) : 100;
-            rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}" data-act="plan" data-v="${hEsc(id)}" title="Open Torn Archive on ${hEsc(p.name)}: who sells it, and your shopping list">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
+            rows += `<div class="st-r ${cls}${here.has(id) ? ' here' : ''}" data-act="plan" data-v="${hEsc(id)}" title="${hEsc(p.name)} in Torn Archive">${hPic(p.id, p.name)}<span class="n">${hEsc(p.short || p.name)}</span><b class="num">${hNum(held)}</b><span class="x">${say}</span><span class="bar ${target && held >= target ? 'full' : ''}"><i style="--w:${w}%"></i></span></div>`;
         }
         body += bxHead(`${hEsc(s.label)} sets`, `${hNum(Number.isFinite(full) ? full : 0)} full of ${hNum(s.target)}`) + rows;
     }
@@ -126,8 +129,8 @@ export function boxStock(v, live = {}) {
     // When Torn counted, so "Read" says what it brought: Torn counts your items once an hour, and a read in
     // between brings that same count. What you buy in between is counted here, from the pages you buy on.
     const age = (v.top && v.top.stock) || null;
-    const foot = age && age.tornAt ? `<div class="ta-n">Torn counted your items at ${hClock(age.tornAt)} and counts again at ${hClock(age.nextAt)}. Your buys since are counted in.</div>`
-        : age && age.readAt ? `<div class="ta-n">Your items were read at ${hClock(age.readAt)}. Torn counts them once an hour; your buys since are counted in.</div>` : '';
+    const foot = age && age.tornAt ? `<div class="ta-n">Counted by Torn ${hClock(age.tornAt)} · next ${hClock(age.nextAt)}</div>`
+        : age && age.readAt ? `<div class="ta-n">Items read ${hClock(age.readAt)}</div>` : '';
     return { head: over.length ? 'more than you need' : togo ? `${hNum(togo)} to go` : 'every piece is in', html: warn + body + foot, over };
 }
 
@@ -176,7 +179,7 @@ export function boxBazaar(v, cards, place, live = {}) {
         const id = String(p.id);
         const line = lineOf(id);
         // The Item Market lists one piece many times: only the listings worth taking are marked - under the piece's
-        // own worth, or at your list's price for it or under (a piece its set carries, or a Stretch).
+        // own worth, or at your list's price for it or under (a piece its set still profits with).
         if (im && !(c.price > 0 && (c.price < p.worth || (line && c.price <= line.price)) && (line || p.need > 0))) return;
         const first = !onPage.has(id);
         onPage.add(id);
@@ -184,7 +187,7 @@ export function boxBazaar(v, cards, place, live = {}) {
         const taken = line ? takenOn(line) : 0;
         // On your list, and dearer on the page now than the list has it - past everything its set can carry: not
         // bought at that price. The hub is told what the page shows, and makes the list again.
-        const dear = !!line && c.price > line.price && !(c.price < Math.max(p.worth, p.lineS || 0));
+        const dear = !!line && c.price > line.price && !(c.price < Math.max(p.worth, p.lineT || p.lineS || 0));
         const left = dear ? 0 : line ? line.q - taken : need > 0 && c.price > 0 && c.price < p.worth ? need : 0;
         // Never more than the listing holds, as the page says it now.
         // On the Item Market the piece's rows share what is left, in the order the page has them. A card that does
@@ -199,18 +202,18 @@ export function boxBazaar(v, cards, place, live = {}) {
         let state;
         let ring = '';
         if (c.typed > cap && c.typed > 0) { text = cap ? `typing ${hNum(c.typed)} · you ${line ? 'listed' : 'need'} ${hNum(cap)}` : `typing ${hNum(c.typed)} · you need no more`; state = 'over'; ring = 'over'; }
-        else if (take > 0 && c.typed === take) { text = `${hNum(take)} typed · press Buy`; state = line ? 'top' : ''; ring = line ? 'top' : 'need'; }
+        else if (take > 0 && c.typed === take) { text = `${hNum(take)} typed`; state = line ? 'top' : ''; ring = line ? 'top' : 'need'; }
         // The owner, 2026-10-11: "it says need 150 ... but it only has a few things there. Can it just tell me how
         // much I need from that bazaar". So the mark says what to take HERE, never the whole of what you need.
-        else if (line && take > 0) { text = `buy ${hNum(take)} here · on your list${take < open ? ' · all it has' : ''}`; state = 'top'; ring = 'top'; }
+        else if (line && take > 0) { text = `buy ${hNum(take)}${take < open ? ' · all it has' : ''}`; state = 'top'; ring = 'top'; }
         else if (blind && open > 0) { text = 'under its worth · open it for the stock'; state = ''; ring = 'need'; }
-        else if (dear) { text = 'dearer now than your list has it'; state = 'ahead'; }
+        else if (dear) { text = 'dearer than your list'; state = 'ahead'; }
         else if (line && taken > 0 && first) { text = `took ${hNum(taken)} ✓`; state = 'good'; }
-        else if (take > 0) { text = `buy ${hNum(take)} here${take < open ? ' · all it has' : ''}`; state = ''; ring = 'need'; }
-        else if (im && need > 0) { text = 'no more needed from this row'; state = 'ok'; }
-        else if (need > 0) { text = 'none here · over its worth'; state = 'ok'; }
-        else if (p.ahead > 0) { text = `none here · ${hNum(p.ahead)} ahead already`; state = 'ahead'; }
-        else { text = 'none here · enough for now'; state = 'ok'; }
+        else if (take > 0) { text = `buy ${hNum(take)}${take < open ? ' · all it has' : ''}`; state = ''; ring = 'need'; }
+        else if (im && need > 0) { text = 'not needed'; state = 'ok'; }
+        else if (need > 0) { text = bxMakes(p, c.price).text; state = 'ok'; }
+        else if (p.ahead > 0) { text = `${hNum(p.ahead)} ahead`; state = 'ahead'; }
+        else { text = 'enough'; state = 'ok'; }
         marks.push({ i, text, state, ring });
         if (take > 0) fill.push({ i, n: take });
         // The Item Market: each price row you are to buy from is a row of the box, with its own number and price.
@@ -229,18 +232,18 @@ export function boxBazaar(v, cards, place, live = {}) {
     const waits = away.filter((x) => x.l.q - x.taken > 0 && !goneSet.has(String(x.p.id)));
     // A press in a box that the hub has not taken after a few seconds: said, with the way to its tab. The press
     // itself shows here already.
-    const late = live.late ? `<div class="ta-hold"><b>The hub's tab has not taken your last press yet.</b> It shows here already. With its tab open it is taken at once.<div class="ta-btns late">${bxBtn('hub', 'Open its tab')}</div></div>` : '';
+    const late = live.late ? `<div class="ta-hold"><b>The hub has not taken your last press.</b><div class="ta-btns late">${bxBtn('hub', 'Open its tab')}</div></div>` : '';
     let html = late + bxBack(v) + bxHead(here ? (on ? 'Buying your list' : 'On your list here') : 'Under their worth here', here ? `stop ${at + 1} of ${stops.length}` : todo.length || bought.length ? '' : 'nothing');
     for (const r of rows) {
         const done = !r.take;
         const typed = !done && r.c.typed === r.take;
-        const act = done ? '' : typed ? `<b class="t-good">${hNum(r.take)} typed.</b> Press Buy on Torn.`
+        const act = done ? '' : typed ? `<b class="t-good">${hNum(r.take)} typed</b>`
             : r.c.hasBox ? bxBtn('fill-card', `Fill ${hNum(r.take)}`, '', String(r.i), ` data-n="${r.take}"`)
-            : live.fillAll ? `Open its Buy box on Torn: ${hNum(r.take)} is typed for you.` : 'Open its Buy box on Torn, then Fill types the number.';
+            : 'Open its Buy box';
         html += bxCheck(r.p, {
             n: done ? r.taken : r.take, cls: done ? 'done' : '', held: heldOf(r.p), act,
             right: done ? 'took ✓' : hMoney(r.take * r.c.price),
-            sub: done ? '' : `${hMoney(r.c.price)} each · ${bxWorth(r.p, r.c.price)}${r.short ? ' · all this listing has' : ''}${r.taken ? ` · took ${hNum(r.taken)} so far` : ''}`,
+            sub: done ? '' : `${hMoney(r.c.price)} each · ${bxWorth(r.p, r.c.price)}${r.short ? ' · all it has' : ''}${r.taken ? ` · took ${hNum(r.taken)}` : ''}`,
         });
     }
     for (const x of away) {
@@ -248,31 +251,30 @@ export function boxBazaar(v, cards, place, live = {}) {
         const gone = goneSet.has(String(x.p.id));
         html += bxCheck(x.p, left > 0 ? {
             n: left, cls: 'away', held: heldOf(x.p), right: gone ? 'gone' : hMoney(left * x.l.price),
-            sub: gone ? 'gone from this bazaar: your list is made again without it' : im ? 'on its own page of the Item Market' : 'not on the page as it stands',
+            sub: gone ? '' : im ? 'on its own page' : 'not on the page',
             // "item no longer there": Torn draws only the listings near the screen, so the page cannot tell a
             // listing further down from one that sold. You can, with one press.
-            act: gone || im ? '' : bxBtn('gone', 'Gone', '', String(x.p.id), ' title="It is not in this bazaar any more: taken off your list here, and the list is made again"'),
+            act: gone || im ? '' : bxBtn('gone', 'Gone', '', String(x.p.id), ' title="Not in this bazaar any more: off your list here"'),
         } : { n: x.taken, cls: 'done', held: heldOf(x.p), right: 'took ✓' });
     }
     for (const x of bought) html += bxCheck(x.p, { n: x.n, cls: 'done', held: heldOf(x.p), right: 'took ✓' });
-    if (waits.length && !im) html += bxNote(`<b>${hPlural(waits.length, 'piece')} on your list ${waits.length === 1 ? 'is' : 'are'} not on the page as it stands.</b> Scroll down the bazaar: Torn draws only the listings near the screen${live.fillAll ? ', and Fill all types into each as it comes' : ''}. One that is not there has sold: press Gone on it.`);
+    if (waits.length && !im) html += bxNote(`<b>${hPlural(waits.length, 'piece')} not on the page.</b> Scroll down, or press Gone.`);
     if (todo.length) {
         const cost = todo.reduce((s, r) => s + r.take * r.c.price, 0);
         const gain = todo.reduce((s, r) => s + r.take * (r.p.worth - r.c.price), 0);
         html += bxKv(`${hPlural(todo.reduce((s, r) => s + r.take, 0), 'piece')} cost`, hMoney(cost), 'sep')
-            + (gain >= 0 ? bxKv('Worth more than you pay', `<span class="t-good">${hSigned(gain)}</span>`) : bxKv('Over their own worth', `${hMoney(-gain)} · their sets carry it`));
+            + (gain >= 0 ? bxKv('Under their worth', `<span class="t-good">${hSigned(gain)}</span>`) : bxKv('Over their worth', hMoney(-gain)));
         // Fill all: one press of yours, and each number is typed into its own box. Nothing of Torn's is pressed.
         const typed = todo.filter((r) => r.c.typed === r.take).length;
         html += '<div class="ta-btns">' + (live.fillAll ? bxBtn('fill-all', 'Fill all is on · put back', '', 'off') : bxBtn('fill-all', `Fill all ${hNum(todo.length)}`, 'go', 'on')) + '</div>';
-        if (live.fillAll) html += bxNote(typed >= todo.length ? `<b>All ${hNum(todo.length)} typed.</b> Press Buy on each.` : `<b>${hNum(typed)} of ${hNum(todo.length)} typed.</b> Open the Buy box of the others: each gets its number as it opens.`);
+        if (live.fillAll) html += bxNote(typed >= todo.length ? `<b>All ${hNum(todo.length)} typed</b>` : `<b>${hNum(typed)} of ${hNum(todo.length)} typed.</b> Open the other Buy boxes.`);
     } else if (!rows.length && !away.length && !bought.length) {
-        html += bxNote('Nothing here is under its worth for the pieces you need.');
+        html += bxNote('Nothing to buy here.');
     }
     if (here && on) {
         const took = Math.min(here.units, here.lines.reduce((s, l) => s + takenOn(l), 0));
-        html += took >= here.units ? `<div class="ta-ok">You took ${hNum(took)} of ${hNum(here.units)} ✓</div>`
-            : took ? `<div class="ta-warn">You took ${hNum(took)} of ${hNum(here.units)}. Next counts only what you took.</div>`
-            : bxNote('Not bought yet. Or skip it: <b>Next counts only what you took.</b>');
+        html += took >= here.units ? `<div class="ta-ok">Took ${hNum(took)} of ${hNum(here.units)} ✓</div>`
+            : took ? `<div class="ta-warn">Took ${hNum(took)} of ${hNum(here.units)}</div>` : '';
     }
     // While a run stands here the Next button names the next stop: said once.
     if (next && next !== here && !on) html += `<div class="ta-kv"><span>${here ? 'Next stop' : 'Your list starts at'}</span><span>${next.im ? 'Item Market' : hEsc(next.who || 'a bazaar')}: ${next.lines.map((l) => hEsc(l.name.replace(/ (Plushie|Flower)$/i, '')) + ' ×' + hNum(l.q)).join(', ')}</span></div>`;
@@ -282,12 +284,12 @@ export function boxBazaar(v, cards, place, live = {}) {
     // Until 1.2.4 Next left the Item Market after its first piece: the others were "skipped".
     const pageAt = im && here ? here.lines.reduce((k0, l, k) => (onPage.has(String(l.id)) || String(l.id) === String(live.itemId || '') ? k : k0), -1) : -1;
     const imNext = im && here && on ? here.lines.find((l, k) => k > pageAt && l.q - takenOn(l) > 0) || null : null;
-    const stopName = (s) => (s.im ? 'the Item Market' : hEsc(s.who || 'a bazaar'));
+    const stopName = (s) => (s.im ? 'Item Market' : hEsc(s.who || 'a bazaar'));
     const linesOf = (s) => ` title="${hEsc(s.lines.map((l) => l.name + ' ×' + l.q).join(', '))}"`;
     // The keys, said where they do something: while something of yours is to buy on this page. The right arrow is
     // the press of Next (or of "Your stop"), and is said as where that takes you.
-    const right = !here ? 'your stop' : imNext ? 'the next piece' : !after ? 'back to the list' : after.im ? 'the Item Market' : 'the next bazaar';
-    if (todo.length || waits.length) html += `<div class="ta-n keys"><span class="kbd">↑</span>Fill all<span class="kbd">↓</span>the next listing to buy${on ? `<span class="kbd">→</span>${right}` : ''}</div>`;
+    const right = !here ? 'your stop' : imNext ? 'next piece' : !after ? 'Torn Archive' : after.im ? 'Item Market' : 'next bazaar';
+    if (todo.length || waits.length) html += `<div class="ta-n keys"><span class="kbd">↑</span>Fill all<span class="kbd">↓</span>next listing${on ? `<span class="kbd">→</span>${right}` : ''}</div>`;
     // One purple button on the page: Fill all while there is something to type, Next once there is not.
     const main = todo.length ? '' : 'go';
     const stop = bxBtn('run-stop', 'Stop the run', 'link');
@@ -296,15 +298,14 @@ export function boxBazaar(v, cards, place, live = {}) {
     html += '<div class="ta-btns">' + (run.over ? ''
         // A run is on and this place is on your list - the stop the run is on or another ("i didnt follow the
         // list"): Next goes on from here, and the stops passed over stay on the list.
-        : on && here ? bxBtn('run-next', (imNext ? `Next: ${hEsc(imNext.name)} ×${hNum(imNext.q - takenOn(imNext))}, its Item Market page` : after ? (after.im ? 'Next: the Item Market' : 'Next bazaar: ' + hEsc(after.who || '')) : 'Done: back to the list') + '<span class="kbd">N</span>', main, '', !imNext && after ? linesOf(after) : '') + stop
+        : on && here ? bxBtn('run-next', (imNext ? `Next: ${hEsc(imNext.name)} ×${hNum(imNext.q - takenOn(imNext))}` : after ? (after.im ? 'Next: Item Market' : 'Next: ' + hEsc(after.who || 'bazaar')) : 'Done · back to Torn Archive') + '<span class="kbd">N</span>', main, '', !imNext && after ? linesOf(after) : '') + stop
         // A run is on and this place is not on your list: back to the run's stop, or on past it.
-        : on ? bxBtn('run-go', `Your stop: ${stopName(cur)}<span class="kbd">N</span>`, main, '', linesOf(cur)) + bxBtn('run-next', past ? `Skip it: on to ${stopName(past)}` : 'Skip it: the list ends there', '', '', past ? linesOf(past) : '') + stop
+        : on ? bxBtn('run-go', `Your stop: ${stopName(cur)}<span class="kbd">N</span>`, main, '', linesOf(cur)) + bxBtn('run-next', past ? `Skip to ${stopName(past)}` : 'Skip · back to Torn Archive', '', '', past ? linesOf(past) : '') + stop
         : stops.length ? bxBtn('run-start', 'Start the run', main) : '') + '</div>';
-    if (run.over) html += bxNote('<b>The run is over.</b> What you took leaves your list, what you skipped stays on it.');
-    html += bxNote(`Fill types the number into Torn's box. <b>You press Buy.</b> A buy is counted when the page shows the sale${v.top.stock && v.top.stock.log ? "; Torn's log, read just after, is the judge" : ''}.`);
+    if (run.over) html += bxNote('<b>Run over.</b> Skipped stops stay on the list.');
     // Folded, the bar says what is here, so you know to unfold it.
     const left = todo.length + waits.length;
-    const head = here ? (left ? `${hNum(left)} to buy here` : 'all taken here ✓') : todo.length ? `${hNum(todo.length)} under ${todo.length === 1 ? 'its' : 'their'} worth here` : '';
+    const head = here ? (left ? `${hNum(left)} to buy` : 'all taken ✓') : todo.length ? `${hNum(todo.length)} under ${todo.length === 1 ? 'its' : 'their'} worth` : '';
     return { where: im ? 'the Item Market' : 'a bazaar', head, html, marks, fill, waits: waits.length, imNext: imNext ? { id: imNext.id, name: imNext.name } : null };
 }
 
@@ -339,7 +340,7 @@ export function tradeSame(v, t, rows) {
 export function boxTrade(v, t, rows, step, hasMoneyBox, known = null) {
     const marks = [];
     if (!t) {
-        return rows.length ? { where: 'a trade', html: bxNote('This trade has not been read yet. The hub reads your open trades once a minute.'), marks } : null;
+        return rows.length ? { where: 'a trade', html: bxNote('Trade not read yet.'), marks } : null;
     }
     const same = tradeSame(v, t, rows.length ? rows : known || []);
     const pieceNames = new Set(v.pieces.map((p) => String(p.name).toLowerCase()));
@@ -347,9 +348,9 @@ export function boxTrade(v, t, rows, step, hasMoneyBox, known = null) {
         const key = String(row.name).toLowerCase();
         const r = t.rows.find((x) => String(x.name).toLowerCase() === key);
         if (!r) { if (pieceNames.has(key)) marks.push({ i, text: 'not read yet', state: 'over', where: 'right' }); return; }
-        if (r.state === 'other' || !r.each) { marks.push({ i, text: 'not a set piece, not priced', state: 'over', where: 'right' }); return; }
-        if (same.diff.has(key)) { marks.push({ i, text: `${hMoney(r.each)} each · its count changed`, state: 'over', where: 'right' }); return; }
-        const word = r.take >= r.qty ? `need all ${hNum(r.qty)}` : r.take ? `need ${hNum(r.take)} of ${hNum(r.qty)}` : r.ahead ? 'ahead already' : 'enough for now';
+        if (r.state === 'other' || !r.each) { marks.push({ i, text: 'not a set piece', state: 'over', where: 'right' }); return; }
+        if (same.diff.has(key)) { marks.push({ i, text: `${hMoney(r.each)} each · count changed`, state: 'over', where: 'right' }); return; }
+        const word = r.take >= r.qty ? `need all ${hNum(r.qty)}` : r.take ? `need ${hNum(r.take)} of ${hNum(r.qty)}` : r.ahead ? 'ahead' : 'enough';
         marks.push({ i, text: `${hMoney(r.each)} · ${word}`, state: r.take ? (r.top ? 'top' : '') : 'ahead', where: 'right' });
     });
     const m = t.margin;
@@ -362,26 +363,27 @@ export function boxTrade(v, t, rows, step, hasMoneyBox, known = null) {
         return {
             where: 'a trade', marks, changed: true,
             html: bxHead('Your prices', `${paid} of market value`)
-                + `<div class="ta-hold"><b>This trade changed since it was read${t.readAt ? ' ' + hAge(t.readAt, v.at) : ''}.</b> Its total is being worked out again: it is here within a minute. Nothing is filled until then.</div>`
+                + `<div class="ta-hold"><b>Trade changed.</b> New total within a minute.</div>`
                 + (others.length ? `<div class="ta-kv sep"><span>Also open with you</span><span>${others.map((x) => `<a class="lk" data-act="open-trade" data-v="${hEsc(x.id)}">${hEsc(x.who || 'a trade')}</a>`).join(' · ')}</span></div>` : ''),
         };
     }
+    const owed = Math.max(0, t.total - t.myMoney);
     let html = bxHead('Your prices', `${paid} of market value`)
         + bxKv('Only what you need', hMoney(t.needTotal)) + bxKv(`Everything, ${hPlural(t.units, 'piece')}`, hMoney(t.total));
-    if (m && m.state === 'ok') html += `<div class="ta-ok">Everything in it ${marginWords(m.all)}.</div>`;
-    else if (m && m.state === 'under') html += `<div class="ta-hold"><b>Everything in it ${marginWords(m.all)}:</b> under your least profit since the points price fell.${m.mend ? ` Paying ${hRate(m.mend)}% would keep it.` : ''}</div>`;
-    else if (m && m.state === 'loss') html += `<div class="ta-hold"><b>Everything in it ${marginWords(m.all)}:</b> a loss at the points price now.${m.mend ? ` Paying ${hRate(m.mend)}% would keep your least profit.` : ''}</div>`;
+    const profit = m && m.all ? `Profit ${hSigned(m.all.leaves)} · ${hPct(m.all.pct)}` : '';
+    if (m && m.state === 'ok') html += `<div class="ta-ok">${profit}</div>`;
+    else if (m && m.state === 'under') html += `<div class="ta-hold"><b>${profit}:</b> under your least profit.${m.mend ? ` ${hRate(m.mend)}% would keep it.` : ''}</div>`;
+    else if (m && m.state === 'loss') html += `<div class="ta-hold"><b>${profit}:</b> a loss.${m.mend ? ` ${hRate(m.mend)}% would keep your least profit.` : ''}</div>`;
     // What you pay came down inside its hour: the seller may have counted on more.
-    for (const r of t.rateDown || []) html += `<div class="ta-hold"><b>${hEsc(r.label)} pieces:</b> your price came down from ${hRate(r.from)}% to ${hRate(r.to)}% at ${hClock(r.at)} TCT as points fell to ${hMoney(r.price)}.</div>`;
-    if (m && m.others && m.others.length) html += bxNote(`<b>${m.others.map(hEsc).join(', ')}</b>: not a set piece, not priced. The total does not cover ${m.others.length === 1 ? 'it' : 'them'}.`);
-    if (t.message) html += `<div class="msg">${hEsc(t.message)}</div><div class="ta-btns">${bxBtn('copy', 'Copy the message', 'go', t.message)}${t.messageNeed && t.needTotal !== t.total ? bxBtn('copy', 'Only what I need', '', t.messageNeed) : ''}</div>`;
-    const owed = Math.max(0, t.total - t.myMoney);
+    for (const r of t.rateDown || []) html += `<div class="ta-hold"><b>${hEsc(r.label)} price down</b> from ${hRate(r.from)}% to ${hRate(r.to)}% at ${hClock(r.at)} TCT.</div>`;
+    if (m && m.others && m.others.length) html += bxNote(`Not priced: <b>${m.others.map(hEsc).join(', ')}</b>`);
+    // Only when something has to come out of the trade (1.4.0): what to paste to the seller.
+    if (t.message && owed) html += `<div class="msg">${hEsc(t.message)}</div><div class="ta-btns">${bxBtn('copy', 'Copy the message', 'go', t.message)}</div>`;
     if (owed && step === 'addmoney') html += '<div class="ta-btns">' + (hasMoneyBox ? bxBtn('fill-money', `Fill ${hMoney(t.total)}`, 'go', String(t.total)) : '') + '</div>';
-    if (t.vault > 0 && v.top.onHand != null) html += `<div class="ta-hold"><b>On hand ${hMoney(v.top.onHand)}.</b> Take ${hMoney(t.vault)} out of the vault just before you pay.</div>`;
-    else if (!owed && t.total) html += '<div class="ta-ok">Your money covers it: nothing to do until they accept.</div>';
+    if (t.vault > 0 && v.top.onHand != null) html += `<div class="ta-hold"><b>On hand ${hMoney(v.top.onHand)}.</b> Take ${hMoney(t.vault)} out of the vault.${t.short ? ` ${hMoney(t.short)} short with the vault.` : ''}</div>`;
+    else if (!owed && t.total) html += '<div class="ta-ok">Paid · waiting for them</div>';
     const others = v.trades.open.filter((x) => x.id !== t.id);
     if (others.length) html += `<div class="ta-kv sep"><span>Also open with you</span><span>${others.map((x) => `<a class="lk" data-act="open-trade" data-v="${hEsc(x.id)}">${hEsc(x.who || 'a trade')}</a>`).join(' · ')}</span></div>`;
-    html += bxNote(`The buttons beside Torn's own box type the money and press Torn's <b>Change</b>, once. Fill here only types. <b>You press Accept.</b>`);
     return { where: 'a trade', html, marks };
 }
 
@@ -401,21 +403,20 @@ export function boxMuseum(v, found, off = {}) {
         const gain = price ? s.full * (s.value - s.cost) : null;
         if (s.full) {
             html += `<div class="ta-l"><b style="grid-column:1/3">${hNum(s.full)} ${hEsc(s.label)} ${s.full === 1 ? 'Set' : 'Sets'} · ${hNum(s.full * s.points)} points</b><b class="num ${gain == null ? '' : gain >= 0 ? 't-good' : 't-bad'}">${gain == null ? '' : hSigned(gain)}</b>`
-                + `<span class="s">cost you ${hMoney(s.cost)} a set${s.costKnown ? '' : ' (at your rate: no buy on record)'}${price ? ` · worth ${hMoney(s.value)} at ${hMoney(price)} a point` : ''}</span></div>`;
+                + `<span class="s">cost ${hMoney(s.cost)} a set${s.costKnown ? '' : ' (at your rate)'}${price ? ` · worth ${hMoney(s.value)}` : ''}</span></div>`;
         }
         const short = s.pieces[0];
         if (short) {
-            html += bxKv(`${hEsc(short.short || short.name)} holds ${hEsc(s.label.toLowerCase())} sets at`, hNum(s.full), s === sets[0] ? 'sep' : '');
+            html += bxKv(`${hEsc(s.label)} sets held back by`, hEsc(short.short || short.name), s === sets[0] ? 'sep' : '');
             tiles.push({ set: s.key, id: short.id, text: `holds you at ${hNum(s.full)}`, state: 'top' });
         }
         const ex = found.find((f) => f.set === s.key);
         if (s.full && v.settings.fillMuseum) {
             html += ex && ex.hasBox ? `<div class="ta-btns">${bxBtn('fill-museum', `Fill ${hNum(s.full)}${sets.length > 1 ? ' ' + hEsc(s.label.toLowerCase()) : ''}`, 'go', s.key, ` data-n="${s.full}"`)}</div>`
-                : ex ? bxNote('No number box was found beside EXCHANGE: one press there swaps what Torn says.') : '';
+                : ex ? bxNote('No number box beside EXCHANGE.') : '';
         }
     }
-    if (v.points.cheap && full) html += `<div class="ta-hold"><b>Points are cheap today.</b> Swap if you like: the points wait in your book until the price is back.</div>`;
-    html += bxNote(`Fill types the number of full sets into Torn's box. <b>You press EXCHANGE.</b> The points go into your book at what the sets cost. Profit is counted later, when the points sell.`);
+    if (v.points.cheap && full) html += `<div class="ta-hold"><b>Points are cheap today.</b></div>`;
     return { where: 'the museum', html, marks: [], tiles };
 }
 
@@ -445,25 +446,25 @@ function pointsTyped(v, page) {
     };
     if (onPage) {
         const lines = listLines(rows, { least, level: p.level });
-        if (t && t.at != null) add(t.at, '', 'is where yours would sit');
-        if (lines.cheapAt != null) add(lines.cheapAt, 'ahead', `has the prices under the usual ${usual} above it`);
-        if (lines.lossAt != null) add(lines.lossAt, 'bad', `has the prices that are a loss (under your ${hMoney(least)}) above it`);
+        if (t && t.at != null) add(t.at, '', 'yours');
+        if (lines.cheapAt != null) add(lines.cheapAt, 'ahead', `above it: under the usual ${usual}`);
+        if (lines.lossAt != null) add(lines.lossAt, 'bad', `above it: a loss, under ${hMoney(least)}`);
     }
     const hue = { '': ['blue', '#5aa7ff'], ahead: ['amber', '#f6b74a'], bad: ['red', '#ff7878'] };
     const by = new Map();
     for (const s of said) by.set(s.i, [...(by.get(s.i) || []), s.words]);
-    const legend = by.size ? bxNote(`In Torn's list: ${[...by].map(([i, words]) => `the <b style="color:${hue[marks.get(i).state][1]}">${hue[marks.get(i).state][0]} line</b> ${words.join(', and ')}`).join('; ')}.`) : '';
+    const legend = by.size ? bxNote([...by].map(([i, words]) => `<b style="color:${hue[marks.get(i).state][1]}">${hue[marks.get(i).state][0]} line</b> ${words.join(', ')}`).join(' · ')) : '';
     if (!t) return { html: legend, marks: [...marks.values()], note: least ? { text: `Your least price: ${hMoney(least)}`, state: '' } : null };
     const pos = t.past ? `over ${hNum(t.ahead)} points sell first` : t.ahead ? `${hNum(t.ahead)} points sell first` : rows.length ? 'first in the list' : '';
-    const verdict = t.state === 'loss' ? (t.by < 0 ? `a loss of ${hMoney(-t.by)} a point` : 'no profit: what they cost you')
+    const verdict = t.state === 'loss' ? (t.by < 0 ? (t.amount ? `a loss of ${hMoney(-t.by * t.amount)}` : `a loss of ${hMoney(-t.by)} a point`) : 'no profit: what they cost you')
         : t.under ? `${hMoney(t.under)} under the lowest: $1 under is enough`
         : t.state === 'cheap' ? `${p.hold ? 'hold: ' : ''}under the usual ${usual}`
-        : t.state === 'good' ? `${hSigned(t.by)} a point over cost` : '';
+        : t.state === 'good' ? (t.amount ? `profit ${hSigned(t.by * t.amount)}` : `${hSigned(t.by)} a point over cost`) : '';
     const text = [pos, verdict].filter(Boolean).join(' · ');
     const note = text ? { text: text.charAt(0).toUpperCase() + text.slice(1), state: t.state === 'loss' ? 'bad' : t.under || t.state === 'cheap' ? 'ahead' : t.state === 'good' ? 'good' : '' } : null;
     let html = bxHead('What you typed', `${t.amount ? hNum(t.amount) + ' at ' : ''}${hMoney(t.price)}`)
         + bxKv('Sell before yours', t.past ? `over ${hNum(t.ahead)} points` : t.ahead ? `${hNum(t.ahead)} points` : rows.length ? 'none: first in the list' : 'not read')
-        + (t.by == null ? '' : bxKv(`${t.by < 0 ? 'Under' : 'Over'} your cost, ${hMoney(least - 1)}`, `${hMoney(Math.abs(t.by))} a point`, t.by > 0 ? 't-good' : 't-bad'))
+        + (t.by == null ? '' : t.amount ? bxKv(`Profit on these ${hNum(t.amount)}`, hSigned(t.by * t.amount), t.by > 0 ? 't-good' : 't-bad') : bxKv(`${t.by < 0 ? 'Under' : 'Over'} your cost, ${hMoney(least - 1)}`, `${hMoney(Math.abs(t.by))} a point`, t.by > 0 ? 't-good' : 't-bad'))
         + (t.amount ? bxKv('Puts on hand', hMoney(t.amount * t.price)) : '');
     if (t.state === 'loss') html += `<div class="ta-hold"><b>A loss.</b> ${hMoney(t.price)} is under your least price ${hMoney(least)}${t.amount && t.by < 0 ? `: ${hMoney(-t.by * t.amount)} on these ${hNum(t.amount)}` : ''}.</div>`;
     else if (t.under) html += `<div class="ta-hold"><b>${hMoney(t.under)} under the lowest listing.</b> ${hMoney(t.lowest - 1)} is first already${t.given ? `: ${hMoney(t.given)} given away on these ${hNum(t.amount)}` : ''}.</div>`;
@@ -477,32 +478,35 @@ function pointsTyped(v, page) {
  */
 export function boxPoints(v, hasBoxes, page = null) {
     const p = v.points;
-    if (!p.price) return { where: 'the points market', html: bxNote('The points price has not been read yet. The hub reads it once a minute.'), marks: [], note: null };
+    if (!p.price) return { where: 'the points market', html: bxNote('Points price not read yet.'), marks: [], note: null };
     const typed = pointsTyped(v, page);
     const sell = p.sell;
-    const lot = sell.quick && sell.quick.size ? sell.quick.size : sell.points;
+    // The lot to list now: the first of your lots, none over your biggest (1.4.0; until then all of them in one).
+    const lot = sell.next;
     let html = '';
     // Cheap is judged on the lowest listing, not on the price Fill would type.
     const low = p.lowest || p.price;
-    if (p.hold && p.level && p.level.lo) html += `<div class="ta-hold"><b>Hold.</b> The lowest listing is ${hMoney(low)}, under the usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}. Your rule: cheap points are not sold.</div>`;
-    else if (p.cheap && p.level && p.level.lo) html += `<div class="ta-hold"><b>Cheap today.</b> The lowest listing is ${hMoney(low)}, under the usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}.</div>`;
+    if (p.hold && p.level && p.level.lo) html += `<div class="ta-hold"><b>Hold.</b> Lowest ${hMoney(low)}, usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}.</div>`;
+    else if (p.cheap && p.level && p.level.lo) html += `<div class="ta-hold"><b>Cheap today.</b> Lowest ${hMoney(low)}, usual ${hMoney(p.level.lo)} to ${hMoney(p.level.hi)}.</div>`;
     if (!sell.points) {
-        html += typed.html + bxNote(`No points made from your sets are waiting to be sold.${p.before ? ` The ${hNum(p.before)} you had before have no cost on record, so no price is called a loss for them: type what a point cost you on the hub's Points page and it is.` : ''}`);
+        html += typed.html + bxNote('No points to sell.');
         return { where: 'the points market', html, marks: typed.marks, note: typed.note };
     }
-    // Mockup Z7: the full sets not swapped yet would make the lot bigger.
     const readySets = (v.sets || []).reduce((a, s) => a + s.full, 0);
     const ready = (v.sets || []).reduce((a, s) => a + s.full * s.points, 0);
+    const each = sell.points ? p.book.cost / sell.points : 0;
     html += bxHead(p.hold ? 'If you list anyway' : 'Your points', `${hNum(sell.points)} made from sets`)
         + bxKv(`Price to type · $1 under the ${p.rule === 'wall' ? 'first wall' : 'lowest'}`, hMoney(p.price))
         + bxKv('Listed at that or cheaper', `${hNum(p.ahead)} points`)
-        + bxKv('Lot', sell.quick ? `${lotsWords(sell.quick.lots)} · the size that leaves quickest` : `all ${hNum(sell.points)} in one`)
-        + (ready ? bxKv('Or wait for a bigger lot', `${hNum(sell.points + ready)} with your ${hPlural(readySets, 'full set')}`) : '')
-        + bxKv('One lot puts on hand', hMoney(lot * p.price));
-    if (sell.loss) html += `<div class="ta-hold"><b>A loss.</b> ${hMoney(p.price)} is under the ${hMoney(sell.least)} these points cost you. Wait.</div>`;
+        + (sell.listed ? bxKv('On the market now', `${hNum(sell.listed)} points`) : '')
+        + (sell.lots.length ? bxKv(`In lots, none over ${hNum(p.lotMax)}`, lotsWords(sell.lots)) : '')
+        + (ready ? bxKv(`${hPlural(readySets, 'full set')} not swapped yet`, `+${hNum(ready)} points`) : '')
+        + (lot ? bxKv(`This lot of ${hNum(lot)} pays`, `${hMoney(lot * p.price)} · <span class="${p.price < each ? 't-bad' : 't-good'}">${hSigned(lot * (p.price - each))}</span>`) : '');
+    if (sell.loss) html += `<div class="ta-hold"><b>A loss.</b> ${hMoney(p.price)} is under your cost ${hMoney(sell.least)}.</div>`;
+    else if (!lot) html += bxNote('All of them are on the market.');
     else if (v.settings.fillPoints) html += '<div class="ta-btns">' + (hasBoxes ? bxBtn('fill-points', `${p.hold ? 'Fill anyway' : 'Fill'}: ${hNum(lot)} at ${hMoney(p.price)}`, p.hold ? '' : 'go', String(lot), ` data-n="${p.price}"`) : '') + '</div>'
-        + (hasBoxes ? '' : bxNote("Torn's Amount and Price boxes were not found on this page: type them yourself."));
-    html += typed.html + bxNote(`${p.before ? `The ${hNum(p.before)} points you had before are left alone. ` : ''}Bank each lot when it sells: a buy-mug takes cash on hand. Fill types lot and price. <b>You press ADD LISTING.</b>`);
+        + (hasBoxes ? '' : bxNote('Amount and Price boxes not found.'));
+    html += typed.html;
     return { where: 'the points market', html, marks: typed.marks, note: typed.note };
 }
 
@@ -516,12 +520,11 @@ export function boxForum(v, title, check) {
     const paid = pr.paid || hRate(pr.pct) + '%';
     const shop = pr.open ? `Open · ${paid}` : 'Closed';
     const why = check.state === 'open' ? `It says CLOSED; your shop is Open at ${paid}.` : check.state === 'closed' ? 'It says OPEN; your shop is Closed.' : check.state === 'rate' ? `It says ${hRate(check.says.pct)}%; your rate is ${hRate(pr.pct)}%.` : '';
-    let html = bxHead('Your thread', under ? 'the title names your rate' : ok ? 'the title matches' : 'the title is out of date') + bxKv('Shop', `<span class="${pr.open ? 't-good' : ''}">${shop}</span>`);
-    if (under) html += `<div class="ta-hold"><b>It says ${hRate(check.says.pct)}%; today you pay ${paid}.</b> The points price holds a set under your rate. The message for a trade names what you pay.</div>`;
-    else if (!ok) html += `<div class="ta-hold"><b>${hEsc(why)}</b> Edit the thread on Torn and paste the new title.</div><div class="msg">${hEsc(pr.forum.title)}</div>`;
-    if (pr.forum.behind) html += `<div class="ta-hold"><b>Your post is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')} Copy the post and paste it over the old one.</div>`;
-    html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}" data-post="1"`)}</div>`
-        + bxNote('<b>Nothing is posted or edited for you.</b>');
+    let html = bxHead('Your thread', under ? 'title names your rate' : ok ? 'title matches' : 'title out of date') + bxKv('Shop', `<span class="${pr.open ? 't-good' : ''}">${shop}</span>`);
+    if (under) html += `<div class="ta-hold"><b>Title says ${hRate(check.says.pct)}%, today you pay ${paid}.</b></div>`;
+    else if (!ok) html += `<div class="ta-hold"><b>${hEsc(why)}</b></div><div class="msg">${hEsc(pr.forum.title)}</div>`;
+    if (pr.forum.behind) html += `<div class="ta-hold"><b>Post is behind.</b> ${pr.forum.behind.words.map(hEsc).join(' ')}</div>`;
+    html += `<div class="ta-btns">${bxBtn('copy', 'Copy the title', ok ? '' : 'go', pr.forum.title)}${bxBtn('copy', 'Copy the post', '', pr.forum.post, ` data-html="${hEsc(pr.forum.html)}" data-post="1"`)}</div>`;
     return { where: 'your thread', html, marks: [], titleMark: { text: under ? `says ${hRate(check.says.pct)}%, you pay ${paid} today` : ok ? `matches your shop: ${shop}` : 'does not match your shop', state: under ? 'ahead' : ok ? 'good' : 'over' }, title };
 }
 
@@ -546,7 +549,7 @@ export const VAULT_URL = 'https://www.torn.com/properties.php#/p=options&tab=vau
  */
 export function tradeMoney(t, same = true, onHand = null) {
     if (!t) return { mark: null, fill: null };
-    if (!same) return { mark: { text: 'changed since it was read: total within a minute', state: 'ahead' }, fill: { buttons: [], note: 'This trade changed since it was read. Its total is here within a minute; nothing is filled until then.', state: 'ahead', vault: false } };
+    if (!same) return { mark: { text: 'changed since it was read: total within a minute', state: 'ahead' }, fill: { buttons: [], note: 'Trade changed: new total within a minute.', state: 'ahead', vault: false } };
     const total = Math.max(0, Math.floor(Number(t.total) || 0));
     if (!total) return { mark: null, fill: null };
     const need = Math.max(0, Math.floor(Number(t.needTotal) || 0));
@@ -571,11 +574,11 @@ export function tradeMoney(t, same = true, onHand = null) {
     if (split && moreNeed) buttons.push({ label: `Add only what I need: ${hMoney(need)}`, amount: need });
     let note;
     let state = '';
-    if (!moreAll) { note = `Your ${hMoney(mine)} in the trade pays for everything.`; state = 'good'; }
+    if (!moreAll) { note = 'Paid ✓'; state = 'good'; }
     else if (have == null) note = split ? `Everything, ${hPlural(t.units, 'piece')}: ${hMoney(total)}.` : '';
-    else if (shortNeed) { note = `You have ${hMoney(have)} on you: ${hMoney(shortAll)} short${split && shortNeed !== shortAll ? `, ${hMoney(shortNeed)} short of only what you need` : ''}.`; state = 'over'; }
-    else if (shortAll) { note = `You have ${hMoney(have)} on you: enough for what you need, ${hMoney(shortAll)} short of everything.`; state = 'over'; }
-    else { note = `You have ${hMoney(have)} on you: enough.`; state = 'good'; }
+    else if (shortNeed) { note = `${hMoney(have)} on you: ${hMoney(shortAll)} short${split && shortNeed !== shortAll ? `, ${hMoney(shortNeed)} short of what you need` : ''}`; state = 'over'; }
+    else if (shortAll) { note = `${hMoney(have)} on you: covers what you need, ${hMoney(shortAll)} short of everything`; state = 'over'; }
+    else { note = `${hMoney(have)} on you: enough`; state = 'good'; }
     return { mark, fill: { buttons, note, state, vault: shortAll > 0 } };
 }
 
@@ -608,11 +611,11 @@ export function vaultMoney(v, onHand = null, vault = null) {
     const inVault = vault == null ? (top.vault != null ? top.vault : null) : vault;
     const take = (want) => Math.max(0, want - (have || 0));
     const wants = [];
-    if (all) wants.push(`${hPlural(n, 'open trade')} ${n === 1 ? 'wants' : 'want'} ${hMoney(all)} more from you`);
-    if (list) wants.push(`your list costs ${hMoney(list)}`);
-    const why = wants.join(' · ') + (have == null ? '' : ` · ${hMoney(have)} on you`);
+    if (all) wants.push(`${hPlural(n, 'trade')} ${hMoney(all)}`);
+    if (list) wants.push(`list ${hMoney(list)}`);
+    const why = wants.join(' · ') + (have == null ? '' : ` · on you ${hMoney(have)}`);
     const most = take(all + list);
-    if (!most) return { buttons: [], note: `${why}: enough, nothing to take out.`, state: 'good', all, need, n, list };
+    if (!most) return { buttons: [], note: `${why} · enough`, state: 'good', all, need, n, list };
     const buttons = [];
     // Small buttons beside Torn's WITHDRAW: the sum and one word; what it is for in full is the button's own title.
     const add = (label, amount, title) => { if (amount > 0 && !buttons.some((b) => b.amount === amount)) buttons.push({ label: `${hMoney(amount)} · ${label}`, short: hMoney(amount), amount, title: `Withdraw ${hMoney(amount)}: ${title}${have ? `, less the ${hMoney(have)} on you` : ''}` }); };
@@ -623,7 +626,7 @@ export function vaultMoney(v, onHand = null, vault = null) {
     const lacks = inVault != null && inVault < most;
     return {
         buttons: inVault == null ? buttons : buttons.filter((b) => b.amount <= inVault),
-        note: lacks ? `${why}. Your vault holds ${hMoney(inVault)}: ${hMoney(most - inVault)} short${all && list ? ' of both' : ''}.` : `${why}.`,
+        note: lacks ? `${why} · vault ${hMoney(inVault)}: ${hMoney(most - inVault)} short${all && list ? ' of both' : ''}` : why,
         state: lacks ? 'over' : '', all, need, n, list,
     };
 }
@@ -640,8 +643,7 @@ export function boxVault(v, m) {
     let html = bxHead('Your vault', [m.n ? hPlural(m.n, 'open trade') : '', m.list ? 'your list' : ''].filter(Boolean).join(' · '));
     if (m.all) html += bxKv('Trades, still to pay', hMoney(m.all));
     if (m.all && m.need !== m.all) html += bxKv('Only what you need', hMoney(m.need));
-    if (m.list) html += bxKv('Your shopping list', hMoney(m.list));
+    if (m.list) html += bxKv('Shopping list', hMoney(m.list));
     html += `<div class="${m.state === 'over' ? 'ta-hold' : m.state === 'good' ? 'ta-ok' : 'ta-kv sep'}">${hEsc(m.note)}</div>`;
-    html += bxNote(`One press of a small button beside Torn's <b>Withdraw</b> or <b>Deposit</b> types the number and presses that button of Torn's, once.`);
     return { where: 'your vault', html, marks: [] };
 }

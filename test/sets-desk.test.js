@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { SETS, setByKey, shortName, tradeOffer, tradeMessage } from '../src/core/sets.js';
+import { SETS, setByKey, shortName, tradeOffer, takeOutMessage } from '../src/core/sets.js';
 import { SETS_DEFAULTS, setsSettings, setsSnapshot, snapPiece, snapTradeCtx, bazaarForSets, heldLots, pressedOff, snapForTabs, snapReady, tradeNote } from '../src/core/sets-desk.js';
 import { bookAdd, bookSettle, pointsLogTypes, entryFromLog } from '../src/core/points.js';
 
@@ -159,12 +159,11 @@ test('a row with more than you need: the total for what you need counts only the
     assert.deepEqual([offer.all.items, offer.all.total], [20, 10 * each + 10 * 35350]);
 });
 
-test('the message for such a row: the units you need, and the rest at the same price if they want them gone', () => {
+test('the message for such a row: the units over what you need are asked out, the ones you need are named', () => {
     const s = snapOf();
     const ctx = snapTradeCtx(s, setsSettings({ on: true, which: { plushie: true, flower: false } }));
     const offer = tradeOffer([{ id: ID.Chamois, name: 'Chamois Plushie', qty: 10 }], ctx);
-    assert.equal(tradeMessage(offer, { open: true }), 'I can pay $28,584 for 2 Chamois Plushie ($14,292 each). 8 more Chamois ($14,292) I have enough of for now; same price if you want them gone.');
-    assert.equal(tradeMessage(offer, { open: true, everything: true }), 'I can pay $142,920 for 10 Chamois Plushie ($14,292 each).');
+    assert.equal(takeOutMessage(offer), "Hi! Sorry about this, my stock of Chamois is full right now. Could you take 8 of the 10 Chamois out? I'd be happy to take the 2 Chamois. Thank you!");
 });
 
 test('a snapshot is shown on Torn pages only once your stock and the items\' values have been read', () => {

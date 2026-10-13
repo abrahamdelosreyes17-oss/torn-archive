@@ -82,6 +82,8 @@ export const BOX_CSS = `
 .lk { color: #9cc6ff; cursor: pointer; text-decoration: none; } .lk:hover { color: #c9bfff; }
 .num { font-variant-numeric: tabular-nums; }
 .t-good { color: var(--good); } .t-bad { color: #ff8a87; }
+/* Profit per set, in the Buy page's three text colours (drawing AK). */
+.j-best { color: #4fd17c; font-weight: 650; } .j-ok { color: #8dbb9b; } .j-thin { color: #c7a560; }
 /* Your stock, on its own beside the page: a row a piece, its count moving as you buy. Red = more than you need. */
 .st-r { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1px 8px; padding: 3px 8px; border-radius: 8px; border: 1px solid transparent; }
 .st-r .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); } .st-r.here .n { color: var(--text); font-weight: 600; }

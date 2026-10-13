@@ -37,13 +37,19 @@ test('R6 + R1. Prices: one line a set - the rate you pay, its ceiling, and what 
     assert.ok(!fl.capped && fl.pct === 101 && fl.cap > 101);
     assert.ok(pl.others && fl.others, 'the fixture has a bid read for the pieces');
     const html = page(d, 'prices');
-    assert.ok(html.includes(`A plushie set at <b>${pl.pct}%</b>, its ceiling under your 101%, costs you <b>${money(pl.cost)}</b> and makes 10 points`), 'the capped set says why');
-    assert.ok(html.includes(`A flower set at <b>101%</b> costs you <b>${money(fl.cost)}</b> and makes 10 points`));
-    assert.ok(html.includes(`the most that keeps your 2% is ${fl.cap}%`), 'the ceiling of the set that is under it');
-    assert.ok(!html.includes(`the most that keeps your 2% is ${pl.cap}%`), 'a set at its ceiling does not say it twice');
-    assert.ok(html.includes(`others pay ${pl.others.pct}% for the set`) && html.includes(`others pay ${fl.others.pct}% for the set`));
+    // 1.4.0: a set is a row of numbers, not a sentence - what you pay (and "capped", with why on the hover), a
+    // set at that rate, the profit per set, what your own sets cost, its ceiling, what others pay.
+    const rate = html.slice(html.indexOf('data-k="rate"'), html.indexOf('data-k="verdict"'));
+    assert.match(rate, /<th>Set<\/th><th class="n">You pay<\/th><th class="n">A set at your rate<\/th><th class="n">Profit per set<\/th><th class="n">Your sets cost<\/th><th class="n">Ceiling<\/th><th class="n">Others pay<\/th>/);
+    const [plRow, flRow] = rate.split('<tbody>')[1].split('</tr>');
+    assert.ok(plRow.includes(`<b>${pl.pct}%</b> <span class="tg" title="Its ceiling is under your 101%">capped</span>`), 'the capped set says why');
+    assert.ok(plRow.includes(`<td class="n">${money(pl.cost)}</td>`) && plRow.includes('10 points'));
+    assert.ok(flRow.includes('<b>101%</b></td>') && !flRow.includes('capped') && flRow.includes(`<td class="n">${money(fl.cost)}</td>`));
+    assert.ok(flRow.includes(`<td class="n" title="The most that keeps your 2%">${fl.cap}%</td>`), 'the ceiling of the set that is under it');
+    assert.ok(plRow.includes(`>${pl.others.pct}%`) && flRow.includes(`>${fl.others.pct}%`), 'what others pay for the set');
     assert.match(html, new RegExp('<div class="hero">' + String(pl.pct).replace('.', '\\.') + '% to 101%<small>'));
-    assert.ok(html.includes(`You pay, ${pl.pct}% to 101%`), 'the table head names what is paid');
+    assert.ok(html.includes(`<span class="sub">you pay ${pl.pct}%</span>`) && html.includes('<span class="sub">you pay 101%</span>'), 'each piece table names what is paid');
+    assert.doesNotMatch(rate, /leaves|a point over|makes 10 points/);
     assert.ok(!/>Set [\d.]+%</.test(html), 'the ceiling is applied by itself: no button for it');
     // Not fixed (this view has no table of the hour): said once.
     assert.equal((html.match(/TCT/g) || []).length, 0);
@@ -65,16 +71,16 @@ test('R3 + R4 + R5. Prices: the hour your prices are fixed for, a fall inside it
     const pl = d.view.prices.sets[0];
     assert.ok(pl.down && pl.down.from === 101 && pl.pct < 101);
     html = page(d, 'prices');
-    assert.ok(html.includes(`A plushie set at <b>${pl.pct}%</b>, down from 101% at ${clock(NOW)} TCT as points fell to ${money(30000)}, costs you`), 'the fall is said on the set');
+    assert.ok(html.includes(`<b>${pl.pct}%</b> <span class="tg" title="At ${clock(NOW)} TCT, as points fell to ${money(30000)}">down from 101%</span>`), 'the fall is said on the set');
     // A trade open past the hour: they stand still, and the page says so instead of an hour.
     const held = { ...fixed, at: NOW - 70 * MIN, until: NOW - 10 * MIN, held: true };
     html = page(desk(input(31500, { rate: held })), 'prices');
-    assert.ok(html.includes('stand still while a trade with set pieces is open'));
+    assert.ok(html.includes(`<b>Held while a trade is open</b> · the hour ended ${clock(held.until)} TCT`));
     assert.ok(!/fixed until/i.test(html));
     // Closed: nothing is fixed, the page says these are the prices you would pay.
     const shut = input(31500);
     html = page(desk({ ...shut, settings: { ...shut.settings, open: false } }), 'prices');
-    assert.ok(html.includes('what you would pay if you opened now'));
+    assert.ok(html.includes('Shop closed · prices as if you opened now'));
     assert.ok(!/fixed until/i.test(html));
 });
 
@@ -89,7 +95,7 @@ test('R8. no page of the hub and no box says "before any fee": the points market
     const t = v.trades.open[0];
     const out = boxTrade(v, t, t.rows.map((r) => ({ name: r.name, qty: r.qty })), 'view', false);
     assert.ok(!/\bfee\b/i.test(out.html));
-    assert.ok(out.html.includes('Everything in it'), 'the margin is still said');
+    assert.match(out.html, /Profit [+-]\$[\d,]+ · [\d.]+%/, 'the margin is still said');
 });
 
 test('R7. a thread that names your rate while a set is paid less today: said on the hub and in the box, not called out of date', () => {
@@ -97,15 +103,15 @@ test('R7. a thread that names your rate while a set is paid less today: said on 
     const pr = d.view.prices;
     assert.equal(pr.thread.check.state, 'under');
     const html = page(d, 'prices');
-    assert.ok(html.includes(`the title says 101%, you pay ${pr.paid} today`));
+    assert.ok(html.includes(`<span class="badge ahead">title says 101%, you pay ${pr.paid}</span>`));
     const box = boxForum(d.view, pr.thread.title, threadCheck(pr.thread.title, { open: pr.open, pct: pr.pct, paid: pr.paidRows }));
-    assert.ok(box.html.includes(`It says 101%; today you pay ${pr.paid}`));
+    assert.ok(box.html.includes(`Title says 101%, today you pay ${pr.paid}.`));
     assert.ok(!box.html.includes('out of date'));
     assert.ok(box.html.includes(`Open · ${pr.paid}`));
     // With both sets at your rate the thread simply matches.
     const ok = desk(input(31500));
     assert.equal(ok.view.prices.thread.check.state, 'match');
-    assert.ok(page(ok, 'prices').includes('the title on Torn matches'));
+    assert.ok(page(ok, 'prices').includes('<span class="badge ok">title matches</span>'));
 });
 
 test('R1 + R4. a trade: the box and the hub name the rate really paid, and say when it came down inside the hour', () => {
@@ -118,24 +124,23 @@ test('R1 + R4. a trade: the box and the hub name the rate really paid, and say w
     assert.ok(out.html.includes(`${t.paid} of market value`));
     assert.ok(!out.html.includes('101% of market value'));
     const down = t.rateDown[0];
-    const words = `down from ${down.from}% to ${down.to}% at ${clock(down.at)} TCT as points fell to ${money(down.price)}`;
+    const words = `price down</b> from ${down.from}% to ${down.to}% at ${clock(down.at)} TCT.`;
     assert.ok(out.html.includes(words), 'the box says the fall');
-    assert.ok(page(d, 'trades').includes(words), 'and so does the hub');
+    assert.ok(page(d, 'trades').includes(`price down from ${down.from}% to ${down.to}% at ${clock(down.at)} TCT, points at ${money(down.price)}`), 'and so does the hub');
     // No fall: nothing of it is said.
     const calm = desk(input(31500, { rate: fixed }));
     const ct = calm.view.trades.open[0];
     assert.ok(!boxTrade(calm.view, ct, ct.rows.map((r) => ({ name: r.name, qty: r.qty })), 'view', false).html.includes('down from'));
 });
 
-test('R2. Buy: the three groups name the two points prices by which is the lower', () => {
+test('R2. Buy: profit per set is counted at the lower of the two points prices, named on the hover', () => {
     // No sale of your own, the market's usual range over today's price: Buy at today's, a Stretch at the usual.
     const days = Array.from({ length: 30 }, (_, k) => ({ day: new Date(NOW - (30 - k) * DAY).toISOString().slice(0, 10), low: 31800, high: 32200 }));
     const up = desk(input(31000, { days }));
     const u = up.view.buy.usual;
     if (u.by === 'today' && u.high > u.low) {
         const html = page(up, 'buy');
-        assert.ok(html.includes(`the set still pays at today's ${money(u.low)} a point, with your least profit`));
-        assert.ok(html.includes(`pays only at the ${money(u.high)} points usually sell for`));
+        assert.ok(html.includes(`points at ${money(u.low)}"`) && !html.includes(`points at ${money(u.high)}"`));
     }
     // You usually sell for less than today's price: Buy at what you usually get, a Stretch only at today's.
     const sold = [{ id: 's1', t: NOW - 3 * DAY, kind: 'sold', points: 500, each: 30500, set: null }];
@@ -143,7 +148,9 @@ test('R2. Buy: the three groups name the two points prices by which is the lower
     const w = dn.view.buy.usual;
     assert.deepEqual([w.by, w.low, w.high], ['usual', 30500, 31000]);
     const html = page(dn, 'buy');
-    assert.ok(html.includes(`the set still pays at the ${money(30500)} you usually sell points for, with your least profit`));
-    assert.ok(html.includes(`pays only at today's ${money(31000)} a point`));
-    assert.ok(!html.includes('none: points are at or over what you usually sell for'));
+    assert.ok(html.includes(`points at ${money(30500)}"`), 'what you usually sell for is the lower: every profit per set is counted at it');
+    assert.ok(!html.includes(`points at ${money(31000)}"`));
+    // The same number is what a listing's profit per set is worked out with: value = points x that price.
+    const pc = dn.view.pieces.find((x) => x.mk);
+    assert.equal(pc.mk.value, dn.view.sets.find((x) => x.key === pc.set).points * 30500);
 });

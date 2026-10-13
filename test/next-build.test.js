@@ -307,7 +307,7 @@ test('B1. the box says a buy that was taken back, once, on a bazaar and on any o
     input.back = [{ id: String(p.id), qty: 134, whoId: '66', im: false, t: NOW - 90000 }];
     const v = shared(input);
     assert.deepEqual(v.buy.back.map((b) => [b.name, b.qty]), [[p.name, 134]]);
-    const line = `Not a buy after all: 134 × ${p.name}.`;
+    const line = `<b>Taken back: 134 × ${p.name}.</b> Not in Torn's log.`;
     assert.ok(boxAny(v).html.includes(line));
     const out = boxBazaar(v, [{ itemId: p.id, price: Math.round(p.worth * 0.9), qty: 3, typed: 0, hasBox: true }], 'b:424242');
     assert.equal(out.html.split(line).length, 2, 'once');
@@ -378,7 +378,7 @@ test('B2. a press waits in the box until the hub\'s view names it, or a view wor
     const cards = stop.lines.map((l) => ({ itemId: l.id, price: l.price, qty: l.q, typed: 0, hasBox: true }));
     const stopped = boxBazaar(viewWithPresses(v, [list[0]]), cards, stop.place, { late: true });
     assert.ok(stopped.html.includes('data-act="run-start"') && !stopped.html.includes('data-act="run-stop"'));
-    assert.match(stopped.html, /The hub's tab has not taken your last press yet\..*data-act="hub"/);
+    assert.match(stopped.html, /<b>The hub has not taken your last press\.<\/b>.*data-act="hub"/);
     assert.ok(!boxBazaar(viewWithPresses(v, [list[0]]), cards, stop.place).html.includes('has not taken'));
 });
 
@@ -443,12 +443,12 @@ test('B4. a line of your list that is not on the page: one press of Gone, and th
     assert.ok(out.html.includes(`data-act="gone" data-v="${gone.id}"`), 'the line that is not on the page has a Gone button');
     assert.equal(out.html.split('data-act="gone"').length, 2, 'and only that one');
     assert.equal(out.waits, 1);
-    assert.equal(out.head, `${stop.lines.length} to buy here`);
+    assert.equal(out.head, `${stop.lines.length} to buy`);
     const after = boxBazaar(v, cards, stop.place, { gone: new Set([String(gone.id)]) });
     assert.ok(!after.html.includes('data-act="gone"'));
-    assert.ok(after.html.includes('gone from this bazaar: your list is made again without it'));
+    assert.ok(after.html.includes('<b class="num">gone</b>'));
     assert.equal(after.waits, 0);
-    assert.equal(after.head, `${stop.lines.length - 1} to buy here`);
+    assert.equal(after.head, `${stop.lines.length - 1} to buy`);
     // The Item Market's lines are each on a page of their own: no Gone there.
     const im = v.buy.run.stops.find((s) => s.im);
     if (im) assert.ok(!boxBazaar(v, [], IM_PLACE).html.includes('data-act="gone"'));
@@ -456,7 +456,7 @@ test('B4. a line of your list that is not on the page: one press of Gone, and th
 
 // ---- C1 in the box, D3 -------------------------------------------------------------------------------------------------------
 
-test('C1. in the box a listing over its own worth says what carries it, and a line dearer on the page than every line of its set is not bought', () => {
+test('C1. in the box a listing says the profit per set with it, and a line dearer on the page than its set can carry is not bought', () => {
     const { input, stops } = runDesk();
     input.run = runStart(stops);
     const v = shared(input);
@@ -464,12 +464,16 @@ test('C1. in the box a listing over its own worth says what carries it, and a li
     const l = stop.lines[0];
     const p = viewPiece(v, l.id);
     const card = (price) => [{ itemId: l.id, price, qty: l.q + 5, typed: 0, hasBox: true }];
-    assert.ok(boxBazaar(v, card(l.price), stop.place).html.includes(`worth $${p.worth.toLocaleString('en-US')} to you`));
+    // 1.4.0: one number for every listing - what its set makes with it - in the Buy page's colours.
+    assert.match(boxBazaar(v, card(l.price), stop.place).html, /\$[\d,]+ each · <span class="j-(best|ok)">profit per set [\d.]+%<\/span>/);
+    assert.ok(!/worth \$[\d,]+ to you|its set carries it|Stretch/.test(boxBazaar(v, card(l.price), stop.place).html));
     // The seller raised it past everything its set can carry since the list was made.
-    const dear = boxBazaar(v, card(Math.max(p.worth, p.lineS) + 500), stop.place);
-    assert.deepEqual([dear.marks[0].text, dear.fill], ['dearer now than your list has it', []]);
+    const dear = boxBazaar(v, card(Math.max(p.worth, p.lineT) + 500), stop.place);
+    assert.deepEqual([dear.marks[0].text, dear.fill], ['dearer than your list', []]);
+    // Dearer than the list has it and still a price its set profits with: bought, as the list says.
+    if (p.lineT > l.price + 1) assert.equal(boxBazaar(v, card(l.price + 1), stop.place).fill.length, 1);
     assert.ok(!dear.html.includes('data-act="fill-card"'));
     // The keys are named while something of yours is to buy here, and not otherwise.
-    assert.match(boxBazaar(v, card(l.price), stop.place).html, /class="ta-n keys"><span class="kbd">↑<\/span>Fill all<span class="kbd">↓<\/span>the next listing to buy<span class="kbd">→<\/span>the next bazaar/);
+    assert.match(boxBazaar(v, card(l.price), stop.place).html, /class="ta-n keys"><span class="kbd">↑<\/span>Fill all<span class="kbd">↓<\/span>next listing<span class="kbd">→<\/span>next bazaar/);
     assert.ok(!dear.html.includes('class="ta-n keys"') || stop.lines.length > 1);
 });

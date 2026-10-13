@@ -17,6 +17,8 @@ export const HUB_CSS = `
   --st-need: var(--warn); --st-even: var(--good); --st-over: var(--bad);
   --s-plush: #3987e5; --s-flower: #d55181; --s-gold: #c98500; --s-violet: #9085e9; --s-aqua: #199e70;
   --grid: #1a1f29; --axis: #2a303c;
+  /* Buy: profit per set, in three text colours (drawing AK). Text only: no fill, no tag. */
+  --j-best: #4fd17c; --j-ok: #8dbb9b; --j-thin: #c7a560;
   --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
   --disp: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
   --ease: cubic-bezier(.2,.8,.2,1);
@@ -88,7 +90,7 @@ svg.ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor
 @container (max-width: 1240px) { .page.stackable { grid-template-columns: minmax(0, 1fr); } .page.stackable .minc { min-height: 260px !important; } }
 /* Five panels across only with room for them: three and two below that (at 1707 px five cut their badges and buttons). */
 .tiles.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-@container (max-width: 1900px) { .tiles.five { grid-template-columns: repeat(6, minmax(0, 1fr)); } .tiles.five > * { grid-column: span 2; } .tiles.five > :nth-child(n+4) { grid-column: span 3; } }
+@container (max-width: 1900px) { .tiles.five { grid-template-columns: repeat(6, minmax(0, 1fr)); } .tiles.five > * { grid-column: span 2; } .tiles.five > :nth-child(4) { grid-column: span 4; } .tiles.five > :nth-child(5) { grid-column: span 2; } }
 @container (max-width: 1000px) { .tiles.five { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tiles.five > *, .tiles.five > :nth-child(n+4) { grid-column: auto; } }
 @container (max-width: 1420px) { .page.stackable.wide { grid-template-columns: minmax(0, 1fr); } .page.stackable.wide .minc { min-height: 260px !important; } }
 .btn { height: 30px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line2); background: var(--raised); color: var(--text); font-weight: 550; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; transition: background .16s, transform .16s var(--ease), border-color .16s; }
@@ -201,7 +203,7 @@ svg .cross { stroke: var(--line2); stroke-width: 1; }
 .lad .bar { height: 10px; border-radius: 0 4px 4px 0; background: var(--s-gold); width: var(--w); min-width: 3px; opacity: .85; animation: growx .7s var(--ease) both; animation-delay: calc(var(--n) * 50ms + 150ms); transform-origin: left; }
 .lad.wall .bar { opacity: 1; } .lad .tag { color: var(--muted); }
 /* Rows from the top, each its own height: one row is one row, not the whole panel (13 still fit without a scroll). */
-.after { display: grid; grid-auto-rows: minmax(18px, 34px); align-content: start; height: 100%; padding: 6px 0; box-sizing: border-box; font-size: 12px; min-height: 150px; }
+.after { display: grid; grid-auto-rows: minmax(18px, 34px); align-content: start; height: 100%; padding: 6px 0; box-sizing: border-box; font-size: 12px; }
 .af { display: grid; grid-template-columns: 178px minmax(0, 1fr) 110px; align-items: center; gap: 12px; padding: 0 14px; white-space: nowrap; }
 .af b { color: var(--text); font-weight: 600; } .af .it { margin-right: 8px; } .af .r { text-align: right; color: var(--muted); }
 .af-b { position: relative; height: 10px; display: flex; gap: 2px; }
@@ -272,6 +274,8 @@ table.t { width: 100%; border-collapse: collapse; }
 .sw-t { width: 38px; height: 22px; border-radius: 999px; background: var(--good); position: relative; flex: none; } .sw-t::after { content: ""; position: absolute; right: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
 .field { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); white-space: nowrap; } .field:first-child { border-top: 0; }
 .field .f-l { flex: 1; min-width: 0; white-space: normal; } .field .f-l span { display: block; color: var(--muted); font-size: 12px; }
+/* A second head inside a panel: two short groups in one box, not two boxes with room under each. */
+.field.f-h h2 { margin: 0; font: 650 13px/1.2 var(--sans); color: var(--text); }
 .inp { display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border-radius: 8px; background: var(--input); border: 1px solid var(--line2); color: var(--text); font-variant-numeric: tabular-nums; }
 .inp.key { flex: 1; min-width: 0; letter-spacing: .2em; color: var(--muted); }
 .stack { display: flex; height: 14px; gap: 2px; border-radius: 5px; overflow: hidden; margin: 10px 0; } .stack i { background: var(--c); width: var(--w); animation: growx .8s var(--ease) both; transform-origin: left; }
@@ -352,8 +356,8 @@ table.t { width: 100%; border-collapse: collapse; }
 @container (max-width: 1400px) { .pane.stk { grid-template-columns: minmax(0, 1fr); } .pane.stk .minc { min-height: 260px !important; } }
 .t tr.pick { cursor: pointer; } .t tbody tr.sel, .t tbody tr.sel:hover { background: var(--brand-bg); box-shadow: inset 2px 0 0 var(--brand); }
 .rec { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; } .rec .hero { white-space: nowrap; } .rec-t { flex: 1; min-width: 240px; color: var(--text2); line-height: 1.5; } .rec-t b { color: var(--text); } .rec-b { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; } .from { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; white-space: nowrap; } .ph .from { margin-right: 6px; }
-/* "Against its worth" holds "No thanks · $1,234 a point over" whole (1.3.0: at 150px it ran under "Checked"). */
-.wl { display: grid; grid-template-columns: minmax(96px, 1fr) 44px 72px 196px 104px 104px; align-items: center; gap: 8px; padding: 6px 14px; border-top: 1px solid var(--line); white-space: nowrap; color: var(--text2); transition: background .14s; }
+/* "Profit per set" holds "$12,345 · 12.3%" whole; "Checked" holds "TornW3B · 12 min". */
+.wl { display: grid; grid-template-columns: minmax(96px, 1fr) 52px 80px 136px 104px 104px; align-items: center; gap: 8px; padding: 6px 14px; border-top: 1px solid var(--line); white-space: nowrap; color: var(--text2); transition: background .14s; }
 .wl:hover { background: rgba(255,255,255,.028); } .wl b { color: var(--text); } .wl .n { text-align: right; }
 .wl.h { color: var(--faint); font: 650 12px var(--sans); } .wl.h:hover { background: none; }
 .wl.cheap b.num { color: #c9bfff; } .wl.old > span:not(.wl-a), .wl.old > b { opacity: .5; } .wl-s.old-h { border-top: 1px solid var(--line); } .wl.on { background: var(--brand-bg); box-shadow: inset 2px 0 0 var(--brand); }
@@ -419,6 +423,81 @@ table.t { width: 100%; border-collapse: collapse; }
 .ta-hold { padding: 8px 10px; border-radius: 9px; background: var(--warn-bg); border: 1px solid rgba(245,165,36,.4); color: var(--text2); font-size: 12px; line-height: 1.5; } .ta-hold b { color: var(--warn); }
 .ta .msg { font-size: 12px; padding: 7px 10px; } .ta-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* ---------- 1.4.0: the graphs of drawing AJ ---------- */
+.ch-h { flex: none; height: var(--h, 270px); }
+svg .ch-ln { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+svg .ch-ln.thin { stroke-width: 1.5; }
+svg .ch-ln.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 1.1s var(--ease) .1s forwards; }
+svg .ch-base { stroke: var(--axis); stroke-width: 1; }
+svg .ch-ev { fill: var(--text); font: 600 12px var(--sans); }
+svg .ch-day { fill: var(--text2); font: 600 12px var(--sans); }
+svg .ch-top { fill: var(--text2); font: 600 12px var(--sans); }
+svg .ch-stk { stroke-linecap: round; }
+svg .ch-stk.grow { transform-box: fill-box; transform-origin: bottom; animation: growy .5s var(--ease) both; }
+.ch-rows { display: grid; gap: 2px; }
+.ch-r { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; align-items: center; gap: 10px; height: 30px; white-space: nowrap; color: var(--text2); }
+.ch-r .d { color: var(--muted); font-size: 12px; }
+.ch-r .b { display: flex; gap: 2px; height: 12px; }
+.ch-r .b i { height: 100%; width: var(--w); min-width: 3px; background: var(--c); animation: growx .7s var(--ease) both; animation-delay: calc(var(--n) * 40ms + 120ms); transform-origin: left; }
+.ch-r .b i:first-child { border-radius: 3px 0 0 3px; } .ch-r .b i:last-child { border-radius: 0 3px 3px 0; } .ch-r .b i:only-child { border-radius: 3px; }
+.ch-r .v { color: var(--text); font-weight: 600; min-width: 46px; text-align: right; }
+.ch-r.none .d, .ch-r.none .v { color: var(--faint); font-weight: 400; }
+.ch-r.none .b { border-bottom: 1px solid var(--line); height: 7px; }
+.ch-sum { display: flex; align-items: baseline; gap: 8px; padding-bottom: 8px; margin-bottom: 6px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; }
+.ch-sum b { color: var(--text); font: 650 20px/1.2 var(--disp); letter-spacing: -.01em; }
+.ch-sum span.r { margin-left: auto; }
+/* A panel of rows ends where its rows end, and stays in view while the list beside it scrolls. */
+[data-k="bought"] { position: sticky; top: 0; align-self: start; flex: none; }
+[data-k="swapped"] { flex: none; }
+
+/* ---------- 1.4.0: My prices in three rows, each as tall as what it holds ---------- */
+.pp { grid-template-columns: minmax(0, 1fr); align-content: start; }
+.pp-a { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 12px; }
+.pp-b { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.pp-c { display: grid; grid-template-columns: repeat(var(--n, 2), minmax(0, 1fr)); gap: 12px; }
+.pp-r { display: grid; grid-template-columns: minmax(230px, 2fr) minmax(0, 5fr); gap: 24px; align-items: start; }
+.pp-r .track { margin-bottom: 30px; } .pp-r .field { flex-wrap: nowrap; }
+.pp-t th:first-child, .pp-t td:first-child { padding-left: 0; } .pp-t th:last-child, .pp-t td:last-child { padding-right: 0; }
+.pp-t th, .t.flat th { background: none; position: static; }
+/* Seven columns beside the rate: a head of two words takes two lines before the table leaves its panel. */
+.pp-t th { white-space: normal; vertical-align: bottom; line-height: 1.25; } .pp-t .key { margin-right: 7px; } .pp-t .tg { margin-left: 6px; }
+.pp-n { padding-top: 9px; color: var(--text2); font-size: 12px; line-height: 1.6; } .pp-n b { color: var(--text); }
+.pp-btns { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; } .pp-btns .sp { flex: 1; }
+.pp-b .field:first-child { border-top: 0; } .pp-b .rows + .field, .pp-b .row + .field { border-top: 1px solid var(--line); }
+/* Under 1560 px the rate's table (a tag beside what you pay: "down from 101%") has no room beside "Open your shop?". */
+@container (max-width: 1560px) { .pp-a { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 1340px) { .pp-b { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pp-b > [data-k="ratechart"] { grid-column: 1 / -1; min-height: 230px; } }
+@container (max-width: 1060px) { .pp-c { grid-template-columns: minmax(0, 1fr); } }
+.tile .inp { height: 24px; }
+
+/* ---------- 1.4.0: Trades - one list on the left, the pressed trade on the right (drawing AL) ---------- */
+.p-trades { grid-template-columns: 390px minmax(0, 1fr); align-items: start; align-content: start; }
+.tl { position: sticky; top: 0; max-height: calc(100vh / var(--scale) - 106px); overflow: hidden; }
+.tl-find { flex: none; padding: 10px 14px 8px; }
+.tl-find input { width: 100%; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--input); color: var(--text); font: inherit; outline: 0; } .tl-find input:focus { border-color: var(--brand); }
+.tl-s { overflow-y: auto; min-height: 0; padding-bottom: 4px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.16) transparent; }
+.tl-g { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 8px 14px 6px; position: sticky; top: 0; background: var(--panel); z-index: 1; white-space: nowrap; }
+.tl-g h2 { margin: 0; font: 650 13px/1.2 var(--sans); } .tl-g .sub { color: var(--muted); font-size: 12px; }
+.tl-d { padding: 6px 14px 4px; color: var(--faint); font: 650 11px/1 var(--sans); letter-spacing: .05em; text-transform: uppercase; border-top: 1px solid var(--line); }
+.tl .li { cursor: pointer; } .tl .li-m b, .tl .li-m span { white-space: nowrap; }
+.amt span { font-size: 12px; color: var(--muted); } .amt .you { color: var(--warn); } .amt .new { color: #c9bfff; } .amt .rc { color: var(--j-ok); } .amt .t-bad { color: #ff8a87; }
+.av.you { border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
+.flow.plain .fl::before { display: none; }
+.drs { margin-top: 12px; }
+.dr { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); color: var(--text2); }
+.dr:last-child { padding-bottom: 0; } .dr b { color: var(--text); }
+.dr.top { align-items: start; } .dr.top .dr-l { padding-top: 6px; } .dr-l { color: var(--muted); font-size: 12px; } .dr-b { display: flex; gap: 8px; align-items: center; }
+.dr .msg { overflow-wrap: anywhere; }
+
+/* ---------- 1.4.0: sets in money, selling points, profit per set ---------- */
+.split { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin: 14px 0 6px; background: rgba(255,255,255,.05); }
+.split i { display: block; height: 100%; width: var(--w); animation: growx .8s var(--ease) both; transform-origin: left; } .split .a { background: var(--good); opacity: .75; } .split .b { background: var(--brand); } .split .c { background: var(--faint); }
+.split-k { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 12px; white-space: nowrap; } .split-k b { color: var(--text2); }
+.even-b s { position: absolute; top: 0; bottom: 0; left: 0; width: var(--w); border-radius: 5px 0 0 5px; background: var(--bad); opacity: .35; }
+.j-best { color: var(--j-best); font-weight: 650; } .j-ok { color: var(--j-ok); } .j-thin { color: var(--j-thin); }
+.mk3 { display: flex; flex-wrap: wrap; gap: 4px 22px; white-space: nowrap; }
+.tg.q { color: var(--muted); background: rgba(255,255,255,.06); }
+
 /* page grids */
 .g2 { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); } .g2r { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); } .g57 { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); } .g11 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .g1 { grid-template-columns: minmax(0, 1fr); }
 .p-tabs { grid-template-columns: minmax(0, 1fr); } .p-tabs > .pane { height: 100%; }
@@ -432,5 +511,5 @@ table.t { width: 100%; border-collapse: collapse; }
 @keyframes ping { 0% { transform: scale(.6); opacity: .9; } 70%, 100% { transform: scale(1.5); opacity: 0; } }
 @keyframes flash { 0% { background: rgba(245,165,36,.28); border-color: rgba(245,165,36,.6); } }
 @keyframes tape { to { transform: translateX(-50%); } }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } svg .ln.draw { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } svg .ln.draw, svg .ch-ln.draw { stroke-dashoffset: 0; } }
 `;

@@ -202,13 +202,14 @@ test('on the Item Market, Next opens the next piece of your list - and leaves on
     const card = (p) => ({ itemId: p.id, price: p.worth - 10, qty: 5, typed: 0, hasBox: false });
     const first = boxBazaar(v, [card(three[0])], IM_PLACE, { itemId: String(three[0].id) });
     assert.deepEqual(first.imNext, { id: three[1].id, name: three[1].name });
-    assert.ok(first.html.includes(`Next: ${three[1].name} ×2, its Item Market page`), 'the button names the piece and how many');
-    assert.ok(!first.html.includes('Done: back to the list'));
+    assert.ok(first.html.includes(`Next: ${three[1].name} ×2<span class="kbd">N</span>`), 'the button names the piece and how many');
+    assert.ok(!first.html.includes('Done · back to Torn Archive'));
     const second = boxBazaar(v, [card(three[1])], IM_PLACE, { itemId: String(three[1].id) });
     assert.equal(second.imNext.id, three[2].id);
     const last = boxBazaar(v, [card(three[2])], IM_PLACE, { itemId: String(three[2].id) });
     assert.equal(last.imNext, null);
-    assert.ok(last.html.includes('Done: back to the list'));
+    // 1.4.0: the last Next of a run closes this tab and brings Torn Archive to the front; the button says so.
+    assert.ok(last.html.includes('Done · back to Torn Archive'));
     // A page that has drawn no listing yet (or has none left): the address still says which piece it is.
     const empty = boxBazaar(v, [], IM_PLACE, { itemId: String(three[1].id) });
     assert.equal(empty.imNext.id, three[2].id);
@@ -254,7 +255,7 @@ test('"Sold by" has a button that makes a list of that piece alone; a piece you 
     const p = v.pieces.find((x) => x.need > 0 && x.under.units > 0);
     assert.ok(p, 'a piece wanted, with listings under its worth');
     const html = hubPage({ view: v }, { ...ui, sel: String(p.id) });
-    assert.ok(html.includes(`data-act="list-only" data-id="${p.id}"`) && html.includes(`Make the list: only ${p.name}`));
+    assert.ok(html.includes(`data-act="list-only" data-id="${p.id}"`) && html.includes(`>List only ${p.name}</button>`));
     const full = v.pieces.find((x) => !x.need);
     if (full) assert.ok(!hubPage({ view: v }, { ...ui, sel: String(full.id) }).includes('data-act="list-only"'));
 });

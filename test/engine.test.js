@@ -936,10 +936,12 @@ test('a bazaar\'s own page, told by your Torn tab: its price and stock are the h
     const line = r.engine.state.cart.find((l) => !l.im);
     assert.ok(line, 'a bazaar line on the list');
     const p = piece(r.view(), line.id);
-    // The page shows that piece there at more than it is worth to you, one left.
-    r.engine.note('shop', { t: Date.now(), whoId: String(line.whoId), items: [{ id: String(line.id), price: p.worth + 1000, qty: 1 }] });
+    // The page shows that piece there at a price its set loses with (1.4.0: a line stays for as long as its set
+    // still profits, `lineT`; until then, for as long as it was under the Stretch line), one left.
+    assert.ok(p.lineT >= p.worth, 'what a set can carry is never under the piece\'s own share');
+    r.engine.note('shop', { t: Date.now(), whoId: String(line.whoId), items: [{ id: String(line.id), price: p.lineT + 1000, qty: 1 }] });
     const row = piece(r.view(), line.id).offers.find((o) => String(o.whoId) === String(line.whoId));
-    assert.deepEqual([row.price, row.qty, row.from, row.ok], [p.worth + 1000, 1, 'page', true]);
+    assert.deepEqual([row.price, row.qty, row.from, row.ok], [p.lineT + 1000, 1, 'page', true]);
     assert.equal(r.engine.state.cart.some((l) => l.key === line.key), false, 'the line is off the list');
     // Torn's next read of that bazaar is the newer look: it wins again.
     await r.go(2 * MIN);

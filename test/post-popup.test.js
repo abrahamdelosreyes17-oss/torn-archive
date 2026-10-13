@@ -27,10 +27,12 @@ test('My prices: the thread panel is short - what the post says, which you copie
     assert.ok(html.includes('forums.php#/p=threads&amp;f=10&amp;t=16610597'), 'your thread, to go and paste');
     assert.ok(!html.includes('post-view'), 'the whole post is no longer poured into the page');
     assert.ok(!html.includes('OPEN FOR TRADES'));
-    assert.ok(html.includes('The open post names <b>101%</b>'));
-    assert.ok(html.includes('You have not copied a post from here yet.'));
+    // 1.4.0, short: behind says what changed; else what the post says. Which post you copied last, in a few words.
+    assert.ok(d.view.prices.forum.behind ? html.includes('<b>Behind.</b>') : html.includes('Post says <b>101%</b>'));
+    assert.ok(html.includes('Not copied yet'));
     const copied = panel(page(desk({ posted: { ...d.view.prices.forum.says, at: NOW - 30 * MIN } }), 'prices'), 'thread');
-    assert.ok(copied.includes('You last copied the open one on 12 Oct, 12:50 TCT.'), copied);
+    assert.ok(copied.includes('Post says <b>101%</b>') && !copied.includes('Behind'), copied);
+    assert.ok(copied.includes('Copied: open post, 12 Oct, 12:50 TCT'), copied);
 });
 
 test('the box: the open post and the closed post, each with its title, the post to change, and the top line to copy alone', () => {
@@ -40,19 +42,19 @@ test('the box: the open post and the closed post, each with its title, the post 
     assert.ok(open.includes('value="[OPEN] Buying Plushies &amp; Flowers · 101% of market value"'));
     assert.ok(open.includes('id="pop-post" contenteditable="true"') && open.includes('data-which="open"'));
     assert.ok(open.includes(d.view.prices.forum.html), 'the post as it is copied');
-    assert.ok(open.includes('this is the post for now.'));
+    assert.ok(open.includes('Your shop is <b>open</b></span>'), 'the post for the shop as it stands: no more words');
     for (const act of ['post-copy', 'post-top', 'post-title', 'post-reset', 'pop-close']) assert.ok(open.includes(`data-act="${act}"`), act);
     assert.ok(open.includes('forums.php#/p=threads&amp;f=10&amp;t=16610597'));
     const closed = hubPop(d, { ...UI, pop: { kind: 'post', id: 'closed' } });
     assert.ok(closed.includes('value="[CLOSED] Buying Plushies &amp; Flowers · back soon"'));
     assert.ok(closed.includes('CLOSED FOR NOW') && !closed.includes('OPEN FOR TRADES'));
-    assert.ok(closed.includes('this is the post for when you close.'));
+    assert.ok(closed.includes('Your shop is <b>open</b> · for when you close</span>'));
     assert.equal(hubPostOf(d, 'closed'), d.view.prices.forum.other);
     assert.equal(hubPostOf(d, 'open'), d.view.prices.forum);
     // Closed, the two change places.
     const shut = desk({ settings: { ...fixtureInput(NOW).settings, open: false } });
     assert.equal(hubPostOf(shut, 'closed'), shut.view.prices.forum);
-    assert.ok(hubPop(shut, { ...UI, pop: { kind: 'post', id: 'open' } }).includes('this is the post for when you open.'));
+    assert.ok(hubPop(shut, { ...UI, pop: { kind: 'post', id: 'open' } }).includes('Your shop is <b>closed</b> · for when you open</span>'));
 });
 
 test('a struck piece is red in the post, and the dashboard\'s warning opens the post, where your thread\'s link is', () => {
@@ -75,23 +77,23 @@ test('a struck piece is red in the post, and the dashboard\'s warning opens the 
 
 test('the TornW3B panel: when your list last changed, "Update now", a refusal or a check under it, and what the server holds', () => {
     const none = panel(page(desk(), 'prices'), 'w3b');
-    assert.ok(none.includes('Not changed from here yet.'));
+    assert.ok(none.includes('Never changed from here'));
     assert.ok(none.includes('data-act="w3b" data-v="update">Update now</button>'));
     const ch = { at: NOW - 35 * MIN, by: 'by itself', text: '3 set, 1 taken off' };
     const html = panel(page(desk({}, { changed: ch, wrote: { ...ch, ok: true } }), 'prices'), 'w3b');
-    assert.ok(html.includes('Last changed <b>12 Oct, 12:45 TCT</b>'), html);
+    assert.ok(html.includes('Changed <b>12 Oct, 12:45 TCT</b>'), html);
     assert.ok(html.includes('· by itself · 3 set, 1 taken off'));
     assert.ok(!html.includes('Refused') && !html.includes('Checked'));
     const refused = panel(page(desk({}, { changed: ch, wrote: { at: NOW - 5 * MIN, ok: false, by: 'your press', text: 'TornW3B answered 400' } }), 'prices'), 'w3b');
-    assert.ok(refused.includes('Last changed <b>12 Oct, 12:45 TCT</b>'), 'a refusal does not hide when it last changed');
-    assert.ok(refused.includes('<b>Refused</b> 13:15 TCT, on your press: TornW3B answered 400.'));
+    assert.ok(refused.includes('Changed <b>12 Oct, 12:45 TCT</b>'), 'a refusal does not hide when it last changed');
+    assert.ok(refused.includes('<b>Refused</b> 13:15 TCT: TornW3B answered 400</span>'));
     const same = panel(page(desk({}, { changed: ch, wrote: { at: NOW - MIN, ok: true, same: true, by: 'your press', text: 'it already matches your rate' } }), 'prices'), 'w3b');
-    assert.ok(same.includes('Checked 13:19 TCT on your press: nothing to change, it already matches your rate.'));
+    assert.ok(same.includes('Checked 13:19 TCT: nothing to change</span>'));
     assert.ok(panel(page(desk({}, { w3b: true }), 'prices'), 'w3b').includes('disabled>Updating</button>'));
     const served = panel(page(desk({}, {}, { on: true, level: 'ok', now: 'On.', ownAt: NOW - 2 * MIN }), 'prices'), 'w3b');
-    assert.ok(served.includes('The shared server holds these prices for Torn Bids'), served);
+    assert.ok(served.includes('The shared server has them for Torn Bids'), served);
     // A key that is not the one marked as the server's owner's: the server did not keep the list, and it says so.
     const notKept = panel(page(desk({}, {}, { on: true, level: 'ok', now: 'On.', ownAt: NOW - 2 * MIN, ownKept: false }), 'prices'), 'w3b');
-    assert.ok(notKept.includes("The shared server keeps one price list, its owner's: yours is not held there."), notKept);
-    assert.ok(!notKept.includes('holds these prices'));
+    assert.ok(notKept.includes("The shared server keeps only its owner's list"), notKept);
+    assert.ok(!notKept.includes('has them for'));
 });

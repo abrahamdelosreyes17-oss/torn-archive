@@ -1152,7 +1152,8 @@ export function engineInput(S, settings, now, { logRead = false } = {}) {
         // What you pay your sellers, fixed for the hour (core/sellrate.js): null while nothing is fixed.
         rate: (S.rate && S.rate.table) || null,
         listings: S.points.listings, pointsAt: S.points.at, days: S.points.days, wallDays: S.points.wallDays,
-        lots: S.points.lots, mineLots: [],
+        // Your own lots: the points sales in Torn's log this week. Torn does not say when a lot was listed: no wait.
+        lots: S.points.lots, mineLots: (S.book || []).filter((e) => e.kind === 'sold' && now - enNum(e.t) < 7 * 24 * 60 * EN_MIN).map((e) => ({ points: e.points, wait: null })),
         pool: S.stock.pool, book: S.book,
         mugs: S.ledger.mugs.map((m) => ({ id: m.id, t: m.t, by: (m.who && S.names[m.who]) || '', taken: m.taken, ...(m.kept ? { kept: m.kept } : {}) })),
         outs: S.outs,

@@ -5,6 +5,7 @@
 //     const m = await import('./measure.js');
 //     await m.measureHub();              // hub.html: every page and every tab of it
 //     m.measureBox();                    // torn.html: the overlay's box (and "Your stock")
+//     await m.measureRoom();             // hub.html: the empty room in every panel (a box stretched around a few rows)
 // Each finding: { what, el, text, by } - what is wrong, the element, its words, and by how many pixels.
 // Measure with the side menu pinned open as well (localStorage 'tarc-pin' = '1', then reload): the owner's is, and
 // a 1707 px window then leaves the pages 1471 px, not 1647. 1.3.0 was measured only with it closed, and Buy and
@@ -238,4 +239,46 @@ export function measureBox(doc = document, win = window) {
     if (!host || !host.shadowRoot) return { win: [win.innerWidth, win.innerHeight], found: [{ what: 'no overlay on this page', el: '', text: '', by: 0 }] };
     const found = measure(host.shadowRoot, win);
     return { win: [win.innerWidth, win.innerHeight], texts: found.texts, found };
+}
+
+/**
+ * The empty room inside every panel of the hub, every page and tab (1.4.0; the owner, 2026-10-13: "dead spaces" -
+ * no box stretched around a few rows, no short column beside a long one). measure() finds what is cut or covered;
+ * this finds a box much taller than what it holds. Charts fill their panel and are not counted.
+ * @returns [{ page, scroll, big: ['key: WxH empty N'] }] - `big`: panels with more than `least` px under their last line
+ */
+export async function measureRoom(doc = document, win = window, least = 34) {
+    const wait = (ms = 160) => new Promise((done) => win.setTimeout(done, ms));
+    const pages = [...new Set([...doc.querySelectorAll('.nav-b[data-go]')].map((b) => b.dataset.go))];
+    const INK = new Set(['svg', 'INPUT', 'BUTTON', 'IMG', 'I', 'S', 'CANVAS', 'SELECT', 'TEXTAREA']);
+    const inkBottom = (panel) => {
+        let low = 0;
+        const walk = doc.createTreeWalker(panel, 5);
+        const range = doc.createRange();
+        for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+            if (n.nodeType === 3) { if (!n.textContent.trim()) continue; range.selectNodeContents(n); for (const r of range.getClientRects()) if (r.height > 0) low = Math.max(low, r.bottom); continue; }
+            if (INK.has(n.tagName)) { const r = n.getBoundingClientRect(); if (r.height > 0) low = Math.max(low, r.bottom); }
+        }
+        return low;
+    };
+    const out = [];
+    for (const page of pages) {
+        doc.querySelector(`.nav-b[data-go="${page}"]`).click();
+        await wait();
+        const tabs = Math.max(1, doc.querySelectorAll('[data-tab]').length);
+        for (let tab = 0; tab < tabs; tab++) {
+            if (tabs > 1) { doc.querySelector(`[data-tab="${tab}"]`).click(); await wait(); }
+            settle(doc);
+            const view = doc.querySelector('.view');
+            const big = [];
+            for (const p of view.querySelectorAll('.panel')) {
+                const r = p.getBoundingClientRect();
+                if (!(r.width > 0 && r.height > 0) || p.parentElement.closest('.panel')) continue;
+                const empty = Math.round(r.bottom - inkBottom(p));
+                if (empty > least) big.push(`${p.dataset.k || p.className}: ${Math.round(r.width)}x${Math.round(r.height)} empty ${empty}`);
+            }
+            out.push({ page: page + '/' + tab, scroll: view.scrollHeight - view.clientHeight, big });
+        }
+    }
+    return out;
 }

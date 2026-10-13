@@ -351,26 +351,36 @@ export function tradeOffer(items, ctx) {
 
 const setListWords = (parts) => (parts.length <= 1 ? parts.join('') : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]);
 
-/** The message to copy into Torn's trade chat. `everything` prices every piece, not only the ones you need. */
-export function tradeMessage(offer, { open = true, everything = false } = {}) {
-    const priced = offer.rows.filter((r) => r.each > 0);
-    const wanted = priced.filter((r) => r.take > 0);
-    const rest = priced.filter((r) => r.extra > 0);
-    const others = offer.rows.filter((r) => r.state === 'other');
-    const each = (r) => `${r.qty} ${r.name} (${setMoney(r.each)} each)`;
-    const needed = (r) => `${r.take} ${r.name} (${setMoney(r.each)} each)`;
-    const out = [];
-    if (!open) out.push('I am closed for buying right now.');
-    if (everything && priced.length) {
-        out.push(`I can pay ${setMoney(offer.all.total)} for ${setListWords(priced.map(each))}.`);
-    } else if (wanted.length) {
-        out.push(`I can pay ${setMoney(offer.need.total)} for ${setListWords(wanted.map(needed))}.`);
-        if (rest.length) out.push(`${setListWords(rest.map((r) => `${r.take > 0 ? r.extra + ' more ' : ''}${shortName(r.name)} (${setMoney(r.each)})`))} I have enough of for now; same price if you want them gone.`);
-    } else if (rest.length) {
-        out.push(`I have enough of these for now: ${setListWords(rest.map((r) => `${shortName(r.name)} (${setMoney(r.each)} each)`))}. Same price if you want them gone: ${setMoney(offer.all.total)} for all.`);
-    }
-    if (others.length) out.push(`${setListWords(others.map((r) => r.name))} I do not buy.`);
-    return out.join(' ');
+/**
+ * What to paste to the seller when you will not take all of their trade.
+ *
+ * 1.4.0 (the owner, 2026-10-13: "Hi! Apologies but can we take x amount of plushie/flower out? my stock is
+ * currently full, ill take x y z amount of x y z plushie/flower instead" - "make it sound nice and not trying to
+ * push" - "if nothing to take out, no need for message"). Before, the message named the rate and the sum, which
+ * the seller's own price list already says.
+ * @param offer  tradeOffer's result: of a row, `take` units are the ones you need
+ * @param reason 'budget' when your targets come from your money, else your stock is what is full
+ * @returns '' when every unit in the trade is one you take
+ */
+export function takeOutMessage(offer, { reason = 'stock' } = {}) {
+    const rows = (offer && offer.rows) || [];
+    const full = rows.filter((r) => r.state !== 'other' && r.qty - r.take > 0);
+    const other = rows.filter((r) => r.state === 'other' && r.qty > 0);
+    if (!full.length && !other.length) return '';
+    const n = (q) => setWhole(q).toLocaleString('en-US');
+    const short = (r) => shortName(r.name);
+    const out = [
+        ...full.map((r) => (r.take > 0 ? `${n(r.qty - r.take)} of the ${n(r.qty)} ${short(r)}` : `the ${n(r.qty)} ${short(r)}`)),
+        ...other.map((r) => `the ${n(r.qty)} ${short(r)}`),
+    ];
+    const taken = rows.filter((r) => r.take > 0).map((r) => `${n(r.take)} ${short(r)}`);
+    const why = [];
+    if (full.length) why.push(reason === 'budget' ? "I'm a little short on budget right now" : `my stock of ${setListWords(full.map(short))} is full right now`);
+    if (other.length) why.push(`I only buy plushie and flower sets, so I can't take the ${setListWords(other.map(short))}`);
+    const say = [`Hi! Sorry about this, ${why.join(', and ')}.`, `Could you take ${setListWords(out)} out?`];
+    if (taken.length) say.push(`I'd be happy to take the ${setListWords(taken)}.`);
+    say.push('Thank you!');
+    return say.join(' ');
 }
 
 const setPctText = (pct) => String(Math.round(setNum(pct) * 10) / 10);
@@ -519,15 +529,18 @@ export function postBehind(posted, says) {
 
 /**
  * What to say to a seller after a trade, with the receipt's link last. The owner's order, 2026-10-12: whether they
- * enjoyed it, a like and a comment on the forum ("it will be a big help", "dont make it too wordy"), hope to trade
- * again, then the receipt. Plain text: the thread's address is what they click.
+ * enjoyed it, a like and a comment on the forum ("it will be a big help", "dont make it too wordy"), then the
+ * receipt. In place of "Hope to trade again!" (the owner, later that day: "say something like you can add me as as
+ * a friend and when you see me online dont hestiate to trade ... of course keep the link of the forum and receipts"):
+ * the invitation comes before the two links, so each link ends its own sentence.
+ * Plain text: the thread's address is what they click.
  * @param thread your buying thread's link, '' when it is not known: the sentence about it is then left out
  */
 export function thanksMessage({ receipt = '', thread = '' } = {}) {
     return [
         'Thanks for the trade!',
+        "Feel free to add me as a friend, and whenever you see me online, don't hesitate to send a trade.",
         thread ? `If you enjoyed it, a like and a comment on my forum would be a big help: ${thread}` : '',
-        'Hope to trade again!',
         receipt ? `Your receipt: ${receipt}` : '',
     ].filter(Boolean).join(' ');
 }

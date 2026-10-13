@@ -77,6 +77,8 @@ const HEADER = `// ==UserScript==
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addValueChangeListener
 // @grant        GM_setClipboard
+// @grant        window.close
+// @grant        window.focus
 // @connect      api.torn.com
 // @connect      weav3r.dev
 // @connect      workers.dev

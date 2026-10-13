@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { LOTS_EMPTY, lotsRead, lotTable, sellPlan, lotsWords, waitWords, lotLabel, lotBucket, LOT_BUCKETS } from '../src/core/lots.js';
+import { LOTS_EMPTY, lotsRead, lotTable, lotSpan, sellPlan, lotsWords, waitWords, lotSizes, lotSize, LOT_SIZES, LOT_MOST } from '../src/core/lots.js';
 import { hotListings, hotSince, shopVerdict, shareCovers, HOT_SIT_MS, VERDICT_WORDS } from '../src/core/verdict.js';
 import { desiredList, owedPieces, parseOwnList, listDiff, listMatches, putBody, receiptBody, readReceipt, receiptOf, receiptsWith, claimReceipts, receiptLink, receiptIdOf, listedUntil, RECEIPT_FORMS, RECEIPT_OWED_MS } from '../src/core/tw3b-list.js';
 import { parseTradeList, parseTrade, tradeTurn, tradesSeen, tradesClosed, agoWords, tradeNotice } from '../src/core/trades.js';
@@ -12,11 +12,21 @@ const T0 = Date.UTC(2026, 9, 10, 12);
 
 // ---- lots ------------------------------------------------------------------------------------------------------------
 
-test('lot sizes have names', () => {
-    assert.deepEqual(LOT_BUCKETS.map(lotLabel), ['Up to 100', '101 to 250', '251 to 500', '501 to 1,000', 'Over 1,000']);
-    assert.equal(lotBucket(100), 0);
-    assert.equal(lotBucket(101), 1);
-    assert.equal(lotBucket(5000), 4);
+test('lot sizes: those of the market, none over your biggest lot, and a lot counted under the nearest of them', () => {
+    // The owner, 2026-10-13: "50, 100, 200, 500, 1000, 1500, 2000, 2500, and 5000, and 10000 ... i avoid anything bigger than 2k".
+    assert.deepEqual(LOT_SIZES, [50, 100, 200, 500, 1000, 1500, 2000, 2500, 5000, 10000]);
+    assert.equal(LOT_MOST, 2000);
+    assert.deepEqual(lotSizes(), [50, 100, 200, 500, 1000, 1500, 2000]);
+    assert.deepEqual(lotSizes(500), [50, 100, 200, 500]);
+    assert.deepEqual(lotSizes(10000), LOT_SIZES);
+    assert.deepEqual(lotSizes(30), [30], 'a biggest lot under every size is the one size');
+    assert.deepEqual(lotSizes(0), lotSizes(LOT_MOST), 'nothing typed: his number');
+    // The nearest size; half way between two goes up.
+    assert.deepEqual([1, 30, 60, 75, 80, 150, 420, 900, 1250, 1900, 2000].map((n) => lotSize(n)), [50, 50, 50, 100, 100, 200, 500, 1000, 1500, 2000, 2000]);
+    assert.equal(lotSize(2001), null, 'over your biggest: "Bigger"');
+    assert.equal(lotSize(5000), null);
+    assert.equal(lotSize(5000, 5000), 5000);
+    assert.equal(lotSize(0), null);
 });
 
 test('a lot that was there and is gone is counted, with how long it stood', () => {
@@ -49,26 +59,45 @@ const gone = [
     { cost: 30000, qty: 300, t: T0 - 9 * 86400000, wait: MIN, front: true },
 ];
 
-test('the table: lots, points, the usual wait at the front, and your own', () => {
-    const t = lotTable(gone, [{ points: 100, wait: 6 * MIN }, { points: 90, wait: 17 * MIN }, { points: 420, wait: null }], T0);
-    assert.deepEqual([t[0].lots, t[0].points, t[0].wait, t[0].waits], [4, 380, 6 * MIN, 3]);
-    assert.deepEqual(t[0].mine, { n: 2, lo: 6 * MIN, hi: 17 * MIN });
-    assert.deepEqual([t[2].lots, t[2].wait], [1, 48 * MIN], 'the lot of nine days ago is out');
-    assert.deepEqual(t[2].mine, { n: 1, lo: null, hi: null });
-    assert.equal(t[1].wait, null);
-    assert.equal(t[1].mine, null);
+test('the table: a row for each size of yours and one for the bigger lots; the usual wait at the front, and your own', () => {
+    const big = [...gone, { cost: 30000, qty: 5000, t: T0, wait: 9 * MIN, front: true }, { cost: 30000, qty: 2500, t: T0, wait: null, front: true }];
+    const t = lotTable(big, [{ points: 100, wait: 6 * MIN }, { points: 90, wait: 17 * MIN }, { points: 420, wait: null }], T0);
+    assert.deepEqual(t.map((r) => r.label), ['50', '100', '200', '500', '1,000', '1,500', '2,000', 'Bigger']);
+    assert.deepEqual(t.map((r) => r.size), [50, 100, 200, 500, 1000, 1500, 2000, 0]);
+    const row = (size) => t.find((r) => r.size === size);
+    // Three of 100 and one of 80: the 80 is counted under 100, the nearest size.
+    assert.deepEqual([row(100).lots, row(100).points, row(100).wait, row(100).waits], [4, 380, 6 * MIN, 3]);
+    assert.deepEqual(row(100).mine, { n: 2, lo: 6 * MIN, hi: 17 * MIN });
+    assert.deepEqual([row(500).lots, row(500).wait], [1, 48 * MIN], '420 is counted under 500; the lot of nine days ago is out');
+    assert.deepEqual(row(500).mine, { n: 1, lo: null, hi: null });
+    assert.deepEqual([row(200).lots, row(200).wait, row(200).mine], [0, null, null]);
+    // 2,500 and 5,000 are not sizes of yours: one row, last, and never mixed into 2,000.
+    const last = t[t.length - 1];
+    assert.deepEqual([last.bigger, last.lots, last.points, last.wait], [true, 2, 7500, 9 * MIN]);
+    assert.equal(row(2000).lots, 0);
+    // A bigger "biggest lot" in Settings: those sizes get rows of their own.
+    const wide = lotTable(big, [], T0, 7, 5000);
+    assert.deepEqual(wide.map((r) => r.size), [50, 100, 200, 500, 1000, 1500, 2000, 2500, 5000, 0]);
+    assert.deepEqual([wide[7].lots, wide[8].lots, wide[9].lots], [1, 1, 0]);
+    // How long the record was watched for: from the first lot gone in the week.
+    assert.deepEqual(lotSpan(big, T0), { lots: 7, ms: 2 * MIN });
+    assert.deepEqual(lotSpan([], T0), { lots: 0, ms: 0 });
 });
 
-test('how to list: the size that leaves quickest, or one lot', () => {
-    const t = lotTable(gone, [], T0);
-    const plan = sellPlan(420, t);
-    assert.deepEqual(plan.one, { lots: [420], wait: 48 * MIN });
-    assert.deepEqual(plan.quick.lots, [100, 100, 100, 100, 20]);
-    assert.equal(plan.quick.wait, 30 * MIN);
-    assert.equal(lotsWords(plan.quick.lots), '4 lots of 100 and 1 of 20');
-    assert.equal(lotsWords([420]), '1 lot of 420');
-    assert.equal(sellPlan(60, t).quick, null, 'one small lot is already the quickest');
-    assert.equal(sellPlan(420, lotTable([], [], T0)).quick, null, 'nothing seen yet');
+test('how to list: the biggest of your sizes first, none over your biggest lot, the odd rest as a lot of its own', () => {
+    // The owner's own example, 2026-10-13: 6,620 points, nothing over 2,000.
+    assert.deepEqual(sellPlan(6620), [2000, 2000, 2000, 500, 100, 20]);
+    assert.equal(lotsWords(sellPlan(6620)), '3 × 2,000 · 1 × 500 · 1 × 100 · 1 × 20');
+    assert.deepEqual(sellPlan(420), [200, 200, 20]);
+    assert.deepEqual(sellPlan(2000), [2000]);
+    assert.deepEqual(sellPlan(40), [40]);
+    assert.deepEqual(sellPlan(0), []);
+    assert.deepEqual(sellPlan(6620, 1000), [1000, 1000, 1000, 1000, 1000, 1000, 500, 100, 20]);
+    assert.deepEqual(sellPlan(12000, 5000), [5000, 5000, 2000]);
+    for (const n of [1, 49, 51, 999, 6620, 123457]) assert.equal(sellPlan(n).reduce((a, b) => a + b, 0), n, 'every point is in a lot, none twice');
+    assert.ok(sellPlan(123457).every((n) => n <= LOT_MOST));
+    assert.equal(lotsWords([420]), '1 × 420');
+    assert.equal(lotsWords([]), '');
     assert.equal(waitWords(6 * MIN), '6 min');
     assert.equal(waitWords(130 * MIN), '2 h 10 min');
     assert.equal(waitWords(null), '');

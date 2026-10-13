@@ -105,7 +105,16 @@ test('trades: whose turn, the margin, what is not a set piece', () => {
     assert.equal(garrett.margin.state, 'ok');
     assert.deepEqual(garrett.margin.others, ['Xanax']);
     assert.ok(garrett.margin.held > 0, 'the kittens are ahead: their money waits');
-    assert.ok(garrett.message.includes('101%'));
+    // 1.4.0: the message is what to paste when something has to come out - the kittens you hold too many of and
+    // what is no set piece - with no rate and no sum in it; a trade you take whole has none.
+    assert.match(garrett.message, /^Hi! Sorry about this, /);
+    assert.ok(/Kitten/.test(garrett.message) && /Xanax/.test(garrett.message) && !/[$%]/.test(garrett.message));
+    assert.ok(garrett.outUnits > 0);
+    for (const t of v.trades.open) assert.equal(t.message === '', !t.rows.some((r) => r.qty - r.take > 0), t.who);
+    // What it still wants of you, over what is on hand, and over on hand and the vault together.
+    assert.equal(garrett.owed, Math.max(0, garrett.total - garrett.myMoney));
+    assert.equal(garrett.vault, Math.max(0, garrett.owed - garrett.onHand));
+    assert.ok(garrett.short <= garrett.vault);
     assert.ok(garrett.vault > 0);
     assert.equal(v.trades.finished[0].receipt.id, 'r8000');
     assert.equal(v.nav.trades, 3);
@@ -117,17 +126,38 @@ test('trades: whose turn, the margin, what is not a set piece', () => {
     assert.ok(fell.prices.sets.some((s) => s.capped && s.pct < 101 && s.pct === s.cap), 'a set is at its ceiling, under your 101%');
     assert.equal(fell.trades.open[0].margin.state, 'ok');
     assert.ok(fell.trades.open[0].total < garrett.total, 'the same trade costs less');
-    assert.ok(!fell.trades.open[0].message.includes('At 101% of market value that is'));
+    assert.ok(fell.trades.open[0].paid && !/^101%$/.test(fell.trades.open[0].paid), 'the rate really paid is named on the trade');
     assert.notEqual(fell.prices.verdict.state, 'low');
 });
 
-test('points: the book at its average, the lot that leaves quickest, the mug that counts', () => {
+test('points: the book at its average, your lots none over your biggest, the mug that counts', () => {
     const v = archiveView(fixtureInput(NOW));
     assert.equal(v.points.book.left, 340);
     assert.equal(v.points.before, 1243 - 340);
-    assert.ok(v.points.sell.quick, 'small lots leave quicker than one of 340');
-    assert.ok(v.points.sell.quick.wait < v.points.sell.one.wait);
-    assert.equal(v.points.table.length, 5);
+    // 340 points of yours, all still held: listed as 200, 100 and the odd 40 - the first one is what Fill types.
+    const sell = v.points.sell;
+    assert.deepEqual([sell.points, sell.toList, sell.listed, sell.lots, sell.next], [340, 340, 0, [200, 100, 40], 200]);
+    assert.equal(v.points.lotMax, 2000);
+    assert.deepEqual(v.points.table.map((r) => r.size), [50, 100, 200, 500, 1000, 1500, 2000, 0], 'a row for each size of yours, and one for the bigger lots');
+    assert.equal(sell.nextWait, v.points.table.find((r) => r.size === 200).wait);
+    assert.equal(sell.profit, 340 * v.points.price - v.points.book.cost);
+    // Points already on the market have left your balance: they are not planned again.
+    const base0 = fixtureInput(NOW);
+    const part = archiveView({ ...base0, money: { ...base0.money, points: 140 } });
+    assert.deepEqual([part.points.sell.toList, part.points.sell.listed, part.points.sell.lots, part.points.sell.next], [140, 200, [100, 40], 100]);
+    const all = archiveView({ ...base0, money: { ...base0.money, points: 0 } });
+    assert.deepEqual([all.points.sell.toList, all.points.sell.listed, all.points.sell.lots, all.points.sell.next], [0, 340, [], 0]);
+    // A smaller biggest lot in Settings: no lot over it.
+    const small = archiveView({ ...base0, settings: { ...base0.settings, lotMax: 100 } });
+    assert.deepEqual(small.points.sell.lots, [100, 100, 100, 40]);
+    assert.equal(small.points.table.length, 3);
+    // The sets you made, in money: what they cost in all and a set.
+    const made = v.points.made;
+    assert.equal(made.sets, made.rows.reduce((a, r) => a + r.sets, 0));
+    if (made.sets) {
+        assert.equal(made.perSet, Math.round(made.spent / made.sets));
+        for (const r of made.rows) assert.equal(r.perSet, Math.round(r.spent / r.sets));
+    }
     assert.equal(v.points.ladder[2].wall, true);
     assert.equal(v.points.chart.x.length, 40);
     assert.equal(v.ledger.mugs.counted, 612000);

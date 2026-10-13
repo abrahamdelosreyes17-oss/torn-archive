@@ -147,8 +147,10 @@ test('R1. the view: with points low, every price of yours is at the set\'s ceili
     // A trade is priced at it, and its message names the rate really paid - each set its own.
     const t = v.trades.open.find((x) => x.id === '9001');
     for (const r of t.rows.filter((x) => x.state !== 'other')) assert.equal(r.each, piece(v, r.id).pay, r.name);
-    assert.match(t.message, new RegExp('^Hi! At ' + String(setOf(v, 'plushie').pct).replace('.', '\\.') + '% of market value for plushies and ' + String(setOf(v, 'flower').pct).replace('.', '\\.') + '% for flowers that is \\$'));
-    assert.ok(!/At 101%/.test(t.message));
+    // (1.4.0: the message no longer names a rate - it asks for what you do not take to come out. The rate really
+    // paid is on the trade itself, each set its own.)
+    assert.equal(t.paid, [setOf(v, 'plushie').pct, setOf(v, 'flower').pct].sort((a, b) => a - b).join('% to ') + '%');
+    assert.ok(!/[%$]/.test(t.message));
     assert.equal(t.margin.state, 'ok', 'a trade at the ceiling keeps your least profit');
     // "Open your shop?" no longer says the rate is too high: it is never paid.
     assert.equal(v.prices.verdict.checks.leaves.ok, true);

@@ -90,6 +90,6 @@ test('a place that sells: the line counts what you would take there', () => {
     const m = placeMargin([{ id: 274, take: 4, price: 19000 }, { id: 263, take: 2, price: 21000 }], { mv, pointsPrice: 27000, leastPct: 2 });
     assert.equal(m.units, 6);
     assert.equal(m.paid, 4 * 19000 + 2 * 21000);
-    assert.equal(marginWords(m), 'leaves +$' + m.leaves.toLocaleString('en-US') + ', ' + m.pct.toFixed(1) + '%');
+    assert.equal(marginWords(m), 'profit +$' + m.leaves.toLocaleString('en-US') + ', ' + m.pct.toFixed(1) + '%');
     assert.equal(setMarketValue(plush, mv), 260000);
 });

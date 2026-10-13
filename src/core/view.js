@@ -2,16 +2,16 @@
 // Pure: the engine hands in settings, the stock count, prices, the points market, the books and the open trades;
 // out comes one plain object. No page, no storage, no clock of its own. The pages only format it.
 
-import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, tradeMessage, forumText, postBehind, thanksMessage, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
+import { SETS, setStock, autoTargets, setMarketValue, setValue, ratePrice, rateSet, tradeOffer, takeOutMessage, forumText, postBehind, thanksMessage, threadCheck, moneyShare, shortName, setByKey } from './sets.js';
 import { setsCtx, buysFrom } from './settings.js';
 import { safeWorth, pieceBrings, tradeMargin, placeMargin } from './margin.js';
-import { fillPlan, fillList, stopsOf, runView, runOrder, onList, listAfterRun, cheapPieces, placeOf, addAll } from './shopping.js';
+import { fillPlan, fillList, stopsOf, runView, runOrder, onList, listAfterRun, cheapPieces, placeOf, addAll, smallPiece } from './shopping.js';
 import { listPrice, priceLevels, usualLevel, pointsCheap } from './points.js';
 import { avgBook, heldByDay, mugCheck, profitBuckets, profitSum, runningTotal, poolSum, poolSetCost, poolEach, poolAdd, BOOK_ABOUT } from './books.js';
-import { judgeSet, usualSell } from './setjudge.js';
-import { cautiousPrice, liveTable, safeTable, rateKey, othersPay, rateWords, rateShort, BID_KEEPS_MS } from './sellrate.js';
+import { judgeSet, usualSell, setMakes, makesLines } from './setjudge.js';
+import { cautiousPrice, liveTable, safeTable, rateKey, othersPay, rateShort, BID_KEEPS_MS } from './sellrate.js';
 import { shortlists } from './shortlist.js';
-import { lotTable, sellPlan } from './lots.js';
+import { lotTable, lotSpan, lotSize, sellPlan } from './lots.js';
 import { hotListings, shopVerdict, shareCovers } from './verdict.js';
 import { tradeTurn, agoWords } from './trades.js';
 import { listDiff, desiredList, owedPieces, listMatches, listedUntil, listLink } from './tw3b-list.js';
@@ -49,6 +49,28 @@ export function setLadder(set, offersOf, most = 500) {
 }
 
 const VW_DEPTH_AT = [1, 10, 50, 100, 250, 500];
+const vwLineG = { best: '', ok: 'room', thin: 'thin', loss: 'no' };
+/** A swap is "about" when over this share of what its pieces cost is an estimate. */
+const VW_ABOUT_SET = 0.1;
+
+/** What you still need of every piece, counted by what its set makes at the cheapest listings that count. */
+function vwMarks(pieces, rowsOf) {
+    const out = { best: 0, ok: 0, thin: 0, none: 0 };
+    for (const p of pieces || []) {
+        let left = vwWhole(p.need);
+        if (!left) continue;
+        for (const o of rowsOf(p.id)) {
+            if (!left || !p.mk) break;
+            const cls = setMakes(p.mk, o.price).cls;
+            if (cls === 'loss') break;
+            const q = Math.min(left, vwWhole(o.qty));
+            out[cls] += q;
+            left -= q;
+        }
+        out.none += left;
+    }
+    return out;
+}
 /** The stops of the list the dashboard names under "Do now": as many as its card ever has room for. */
 const VW_FIRST_STOPS = 12;
 
@@ -65,7 +87,7 @@ const VW_FIRST_STOPS = 12;
  *                                you pay is worked out now
  *   listings, pointsAt           the points market (points.js parsePointsMarket)
  *   days, wallDays               the lowest listing and the first wall by day (points.js recordPrice)
- *   lots, mineLots               lots.js's record, and your own lots [{ points, wait }]
+ *   lots, mineLots               lots.js's record, and your own lots [{ points, wait }] (your sales of the week)
  *   pool, book, mugs, outs       books.js: the cost pool, the points book's entries, mugs, money that left your hand
  *   money                        { points, onHand, vault }, each null when not read
  *   trades, finished             open trades (trades.js parseTrade) and finished ones [{ id, who, whoId, t, units, paid, mv }]
@@ -192,17 +214,29 @@ export function archiveView(i) {
         // a list would hold if every row shown were true: its bazaars are the ones to ask Torn about next).
         const judge = judgeSet(set, { ...o, rows: (id) => live.get(String(id)).filter((r) => r.ok !== false && !isOut(r)) });
         const wishJ = judgeSet(set, { ...o, rows: (id) => live.get(String(id)).filter((r) => !isOut(r)) });
-        judged.push({ set, heldMap, stock, guide, judge, wishJ });
+        // What the set makes with a listing (1.4.0, setjudge.js setMakes): the set's points at the cautious price,
+        // less what the rest of the set costs, less the listing. `lineT`: a listing under it is shown and may go on
+        // a list by hand - the set still profits, or the judge keeps it. Over it, it is a loss and not drawn.
+        const makes = new Map();
+        const valueC = set.points * caut.price;
+        for (const p of stock.pieces) {
+            const j = judge.pieces.get(String(p.id));
+            const worth = guide.get(String(p.id)) || 0;
+            const mk = worth > 0 && valueC > 0 ? { others: j.others, value: valueC, least: settings.least, worth, keep: j.lineS } : null;
+            const lines = mk ? makesLines(mk) : { ok: j.line, show: j.lineS };
+            makes.set(String(p.id), { mk, okLine: lines.ok, lineT: Math.max(j.lineS, lines.show) });
+        }
+        judged.push({ set, heldMap, stock, guide, judge, wishJ, makes });
         for (const p of stock.pieces) {
             const j = judge.pieces.get(String(p.id));
             const w = wishJ.pieces.get(String(p.id));
-            shortIn.push({ id: p.id, need: p.need, take: Math.min(p.need, j.buy + j.fin), takeLine: j.takeLine, line: j.line, lineS: Math.max(j.lineS, w.lineS), worth: guide.get(String(p.id)) || 0 });
+            shortIn.push({ id: p.id, need: p.need, take: Math.min(p.need, j.buy + j.fin), takeLine: j.takeLine, line: Math.max(j.line, makes.get(String(p.id)).okLine), lineS: Math.max(makes.get(String(p.id)).lineT, w.lineS), worth: guide.get(String(p.id)) || 0, small: smallPiece(p.id, set.pieces, mv) });
         }
     }
     const cartAt = new Map();
     for (const l of cartList) { const k = String(l.id); if (!cartAt.has(k)) cartAt.set(k, new Set()); cartAt.get(k).add(l.place); }
     short = shortlists(shortIn, pileLive, (id) => cartAt.get(String(id)) || null, isOut);
-    for (const { set, heldMap, stock, guide, judge, wishJ } of judged) {
+    for (const { set, heldMap, stock, guide, judge, wishJ, makes } of judged) {
         // What a set costs at what you pay and what it leaves at today's points price; `cap` is the ceiling the
         // table was made with, `pct` what you pay, `typed` the most you pay, `down` when it came down this hour.
         const tr = payTable.sets[set.key];
@@ -222,6 +256,7 @@ export function archiveView(i) {
             const j = judge.pieces.get(String(p.id));
             const w = wishJ.pieces.get(String(p.id));
             const take = Math.min(p.need, j.buy + j.fin);
+            const mkd = makes.get(String(p.id));
             const pay = payOf(p.id);
             const bid = (i.topBid && i.topBid(p.id)) || null;
             const listed = onList(leftList, p.id);
@@ -233,13 +268,21 @@ export function archiveView(i) {
                 // dearest Stretch unit needs. `wish`: the same, were every row shown true.
                 line: j.line, lineS: j.lineS, take, takeLine: j.takeLine, buyUnits: Math.min(p.need, j.buy), stretchUnits: j.stretch, fin: j.fin, needs: j.needs,
                 wish: { take: Math.min(p.need, w.buy + w.fin), takeLine: w.takeLine },
+                // Profit per set with a listing of this piece: `mk` is what setMakes takes (null: no points price or
+                // no market value - then no listing is marked); under `okLine` the set keeps your least profit;
+                // under `lineT` a listing is shown and may be added; at or over it the set loses.
+                mk: mkd.mk, okLine: mkd.okLine, lineT: mkd.lineT,
+                // A small part of what its set costs (a Kitten, a Sheep): a list goes to its big listings first.
+                small: smallPiece(p.id, set.pieces, mv),
                 brings: Math.floor(pieceBrings(p.id, mv, pointsPrice)),
                 // low: the cheapest where you buy. lowAll: the cheapest anywhere (the day's record, the tape).
                 offers, low: offers.find((o) => !o.out) || null, lowAll: sl.lowAll,
                 lowBazaar: sl.lowBazaar,
                 // What one press of "Add all" on this piece would put on the list.
                 more: onList(addAll(leftList, { ...p, worth: j.takeLine, need: take }, good), p.id) - listed,
-                under: sl.under, good: sl.good,
+                // Units that count: under the piece's own share, under the line the set keeps your least at, and
+                // from there up to `lineT` (the set profits, under your least).
+                under: sl.under, good: sl.good, thin: sl.thin,
                 // Rows the shortlist leaves out, said once under the table: over the line, more under it, not
                 // checked lately, in a place you do not buy from. `all`: every row there is.
                 left: sl.left, all: sl.all,
@@ -288,8 +331,9 @@ export function archiveView(i) {
     const check = [...new Set(unsure.map((l) => String(l.whoId)))];
     const nameOfPiece = (id) => (pieceOf(id) || {}).name || (i.itemName && i.itemName(id)) || 'Item ' + id;
     // The lines of the list that are over the piece's own share: carried by the set's room, or a Stretch.
-    const lineGroup = (l) => { const p = pieceOf(l.id); return !p || l.price < p.worth ? '' : l.price < p.line ? 'room' : l.price < p.lineS ? 'stretch' : 'no'; };
-    // `g` on a line: '' under the piece's own share, 'room', 'stretch' or 'no' (dear now: it leaves at the next read).
+    const lineGroup = (l) => { const p = pieceOf(l.id); return !p || !p.mk || l.price < p.worth ? '' : vwLineG[setMakes(p.mk, l.price).cls]; };
+    // `g` on a line: '' under the piece's own share, 'room' over it while the set keeps your least profit, 'thin'
+    // under your least, 'no' a loss (dear now: it leaves at the next read).
     const stops = runOrder(stopsOf(cartList, worthOf), i.run).map((s) => ({ ...s, lines: s.lines.map((l) => ({ ...l, g: lineGroup(l) })), margin: placeMargin(s.lines.map((l) => ({ id: l.id, take: l.q, price: l.price })), marginCtx) }));
     // `took` (line key -> units you took) rides along: the box on a bazaar says it per line.
     const run = { ...runView(i.run, stops), took: (i.run && i.run.took) || {} };
@@ -308,7 +352,9 @@ export function archiveView(i) {
         const set = setByKey(s.key);
         const from = poolSetCost(i.pool, set);
         const to = leftList.some((l) => l.set === s.key || s.pieces.some((p) => String(p.id) === String(l.id))) ? poolSetCost(poolAfter, set) : 0;
-        return { key: s.key, label: s.label, from: from ? Math.ceil(from / s.points) : 0, to: to ? Math.ceil(to / s.points) : 0 };
+        // `from` / `to` a point (the points market's box), `setFrom` / `setTo` a whole set, `value` what a set's
+        // points sell for today.
+        return { key: s.key, label: s.label, from: from ? Math.ceil(from / s.points) : 0, to: to ? Math.ceil(to / s.points) : 0, setFrom: Math.round(from), setTo: Math.round(to), value: s.value };
     });
     const depthN = Math.min(...sets.map((s) => s.ladder.length), Infinity);
     const depthX = VW_DEPTH_AT.filter((k) => k <= depthN);
@@ -324,10 +370,13 @@ export function archiveView(i) {
         // The list's capital beside what you have on hand, and what it does to a set's cost a point.
         cash: { onHand: money.onHand == null ? null : vwWhole(money.onHand), vault: money.vault == null ? null : vwWhole(money.vault) },
         even,
-        // Units on the list bought over the piece's own share: carried by the set's room, or a Stretch.
-        stretch: { units: vwSum(leftList.filter((l) => lineGroup(l) === 'stretch'), (l) => l.q), needs: Math.max(0, ...pieces.filter((p) => leftList.some((l) => String(l.id) === String(p.id) && lineGroup(l) === 'stretch')).map((p) => p.needs)) },
-        // `low` / `high`: the two points prices the groups are judged at (Buy pays at the lower, a Stretch only at
-        // the higher); `by`: which of them is the lower - 'today' or 'usual'.
+        // Units on the list whose set profits under your least.
+        thin: vwSum(leftList.filter((l) => lineGroup(l) === 'thin'), (l) => l.q),
+        // What you still need, by what its set makes at the cheapest listings: units under the piece's own share,
+        // units where the set keeps your least, units under your least, and units with no such listing.
+        marks: vwMarks(pieces, checkedOf),
+        // `low` / `high`: the two points prices (every limit rests on the lower); `by`: which of them is the lower -
+        // 'today' or 'usual'.
         usual: { price: usual.price, from: usual.from, low: caut.price, high: caut.high, by: caut.from },
         // Buys a page told of that Torn's log does not have: taken back, said once.
         back: (i.back || []).map((b) => ({ ...b, name: nameOfPiece(b.id), who: (i.names && i.names(b.whoId)) || '' })),
@@ -352,6 +401,8 @@ export function archiveView(i) {
         const margin = tradeMargin(offer, marginCtx);
         const total = offer.all.total;
         const state = tradeTurn(t, total);
+        // What the trade still wants of you. Short of it with all your money, the message says budget, else stock.
+        const owed = Math.max(0, total - vwWhole(t.myMoney));
         // The sets with a priced piece in this trade: the message names the rate really paid, each set its own
         // when they differ, and the box says when one came down inside the hour.
         const inIt = sets.filter((s) => offer.rows.some((r) => r.each > 0 && s.pieces.some((p) => String(p.id) === String(r.id))));
@@ -359,12 +410,16 @@ export function archiveView(i) {
             id: t.id, who: t.who, whoId: t.whoId, modified: t.modified, ago: agoWords(t.modified, now), state, readAt: t.readAt || 0,
             rows: offer.rows, items: offer.rows.length, units: offer.all.items, total, needTotal: offer.need.total, needUnits: offer.need.items,
             margin, myMoney: t.myMoney, other: t.other,
-            message: total ? `Hi! At ${rateWords(inIt.map((s) => ({ label: s.label, pct: s.rate.pct })))} that is $${total.toLocaleString('en-US')} for all ${offer.all.items.toLocaleString('en-US')}. I will add the money now, thank you.` : '',
+            // What to paste to the seller when you will not take all of it ('' when you take it all, 1.4.0).
+            message: takeOutMessage(offer, { reason: cash != null && owed > cash ? 'budget' : 'stock' }),
+            outUnits: vwSum(offer.rows, (r) => r.qty - r.take),
             paid: rateShort(inIt.map((s) => ({ label: s.label, pct: s.rate.pct }))),
             rateDown: inIt.filter((s) => s.rate.down).map((s) => ({ key: s.key, label: s.label, from: s.rate.down.from, to: s.rate.pct, at: s.rate.down.at, price: s.rate.down.price })),
-            messageNeed: tradeMessage(offer, { open: settings.open }),
             // Money to take out of the vault just before you pay: what the trade still wants, over what is on hand.
-            vault: money.onHand == null ? null : Math.max(0, total - t.myMoney - vwWhole(money.onHand)),
+            // `short`: what on hand and the vault together still lack.
+            owed, onHand: money.onHand == null ? null : vwWhole(money.onHand),
+            vault: money.onHand == null ? null : Math.max(0, owed - vwWhole(money.onHand)),
+            short: money.onHand == null || money.vault == null ? 0 : Math.max(0, owed - cash),
             receipt: receipts.get(String(t.id)) || null,
             after: offer.rows.filter((r) => r.state !== 'other').map((r) => ({ id: r.id, name: r.name, held: r.held, q: r.qty, take: r.take, target: r.target })),
             full: fullAfter((p) => vwSum(offer.rows.filter((r) => String(r.id) === String(p.id)), (r) => r.qty)),
@@ -393,17 +448,37 @@ export function archiveView(i) {
     const levels = priceLevels(i.listings || []);
     let ahead = 0;
     const ladder = levels.slice(0, 14).map((lv) => { const row = { price: lv.price, qty: lv.qty, lots: lv.lots, ahead, wall: !!price && lv.price === price.wall }; ahead += lv.qty; return row; });
-    const table = lotTable((i.lots && i.lots.gone) || [], i.mineLots || [], now);
-    const sell = sellPlan(book.left, table);
+    const gone = (i.lots && i.lots.gone) || [];
+    const table = lotTable(gone, i.mineLots || [], now, 7, settings.lotMax);
+    // What is still yours to list: the book's points, no more than Torn says you hold - a lot on the market has
+    // left your balance, and the next lot is planned on what is left.
+    const toList = pointsHeld == null ? book.left : Math.min(book.left, pointsHeld);
+    const lots = sellPlan(toList, settings.lotMax);
+    const nextSize = lots.length ? lotSize(lots[0], settings.lotMax) : null;
+    const nextRow = nextSize == null ? null : table.find((r) => r.size === nextSize) || null;
     const mugs = mugCheck(book.rows.filter((r) => r.kind === 'sold').map((r) => ({ id: r.id, t: r.t, got: Math.round(r.mine * r.each) })), i.mugs || [], i.outs || [], i.outsFrom || 0);
     const hold = cheap && settings.cheapRule === 'hold';
+    // The sets you made, in money (1.4.0, the owner 2026-10-13: "it should say how much it costs to complete a set
+    // not per point"): every swap with what its pieces cost you, in all and a set. `about`: over a tenth of that
+    // cost is an estimate (pieces never seen bought).
+    const madeRows = book.rows.filter((r) => r.kind === 'made').map((r) => {
+        const set = r.set ? setByKey(r.set) : null;
+        const n = Math.max(1, Math.round(vwWhole(r.points) / ((set || SETS[0]).points || 1)));
+        const spent = Math.round(vwWhole(r.points) * vwNum(r.cost));
+        return { t: r.t, set: set ? set.key : '', sets: n, points: vwWhole(r.points), spent, perSet: Math.round(spent / n), each: vwNum(r.cost), about: vwNum(r.est) > VW_ABOUT_SET };
+    });
+    const madeSets = vwSum(madeRows, (r) => r.sets);
     const points = {
         price: pointsPrice, lowest: price ? price.lowest : 0, wall: price ? price.wall : null, rule: price ? price.rule : settings.pointsRule,
         ahead: price ? price.ahead : 0, at: i.pointsAt || 0, level, cheap, hold, held: pointsHeld, before,
-        ladder, table,
+        ladder, table, span: lotSpan(gone, now, 7), lotMax: settings.lotMax,
+        // `lots`: how to list what is yours to list, the biggest first, none over your biggest lot. `next`: the
+        // lot to list now (what Fill types), `nextWait` what a lot of its size usually waits at the front (null:
+        // not seen), `listed`: points of the book that Torn no longer counts as held - on the market.
         sell: {
             points: book.left, least: book.least, loss: !!pointsPrice && book.left > 0 && pointsPrice < book.least,
-            one: sell.one, quick: sell.quick, lands: book.left * pointsPrice,
+            toList, listed: book.left - toList, lots, next: lots[0] || 0, nextWait: nextRow ? nextRow.wait : null,
+            lands: book.left * pointsPrice,
             profit: book.left && pointsPrice ? book.left * pointsPrice - book.cost : 0,
         },
         // The break-even (C2): what a point you hold cost you against the price now - under it, selling loses
@@ -415,6 +490,7 @@ export function archiveView(i) {
             sets: even,
         },
         book: { ...book, rows: book.rows.slice(0, 200) },
+        made: { sets: madeSets, spent: book.madeCost, perSet: madeSets ? Math.round(book.madeCost / madeSets) : 0, since: madeRows.length ? Math.min(...madeRows.map((r) => r.t)) : 0, rows: madeRows.slice(0, 200) },
         heldDays: heldByDay(i.book || [], now, 14),
         chart: vwPriceChart(i.days || [], i.wallDays || [], now, level, book.least),
     };
@@ -650,8 +726,8 @@ function vwSellers(buys, open, nameOf, names, now) {
 
 /** The pieces as a list takes them: `take` units, each under `takeLine` - Buy, and the Stretch that finishes a set. */
 export const listPieces = (pieces) => (pieces || []).map((p) => ({ ...p, worth: p.takeLine ?? p.worth, need: p.take ?? p.need }));
-/** ... and as a list keeps them: a line stays for as long as its listing is under the Stretch line. */
-export const keepPieces = (pieces) => (pieces || []).map((p) => ({ ...p, worth: p.lineS ?? p.worth }));
+/** ... and as a list keeps them: a line stays for as long as its set does not lose with it (`lineT`). */
+export const keepPieces = (pieces) => (pieces || []).map((p) => ({ ...p, worth: p.lineT ?? p.lineS ?? p.worth }));
 
 /** A piece's line in the view, by item id. What a mark on a Torn page reads. */
 export const viewPiece = (view, itemId) => ((view && view.pieces) || []).find((p) => String(p.id) === String(itemId)) || null;

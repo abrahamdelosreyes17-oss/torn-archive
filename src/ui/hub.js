@@ -3,9 +3,9 @@
 // stores nothing itself, save which page you were on and whether the sidebar is pinned.
 
 import { HUB_CSS } from './hub-css.js';
-import { hEsc, hMoney, hShort, hRate, hAge, hIcon, hPic } from './fmt.js';
+import { hEsc, hMoney, hShort, hRate, hAge, hIcon, hPic, HUB_MARK_URL } from './fmt.js';
 import { lineChart, colChart } from './charts.js';
-import { HUB_PAGES, hubTabs, hubPage, hubChart, hubPop, hubPostOf } from './hub-pages.js';
+import { HUB_PAGES, hubTabs, hubPage, hubChart, hubPop, hubPostOf, hubYoung } from './hub-pages.js';
 import { setStruck, SET_RULE } from '../core/sets.js';
 import { SET_LOOK } from '../core/view.js';
 
@@ -23,7 +23,7 @@ a.btn { text-decoration: none; }
 `;
 
 const HUB_BOOL = new Set(['open', 'fillMuseum', 'fillPoints', 'sound', 'w3bSync', 'noConfirm']);
-const HUB_NUM = new Set(['pct', 'least', 'target', 'shareMax', 'readMin', 'beforeEach']);
+const HUB_NUM = new Set(['pct', 'least', 'target', 'shareMax', 'readMin', 'beforeEach', 'lotMax']);
 const HUB_PIN_KEY = 'tarc-pin';
 /** The piece open on "Sold by" is named to the engine when it changes, and again this often while it stays open. */
 const HUB_LOOK_EVERY_MS = 60 * 1000;
@@ -78,9 +78,18 @@ export function mountHub(doc, actions) {
     const style = doc.createElement('style');
     style.textContent = HUB_CSS + HUB_CSS_MORE;
     doc.head.appendChild(style);
+    // The tab's icon: Torn Archive's own mark, in place of whatever the page had.
+    for (const old of $$('link[rel~="icon"]', doc.head)) old.remove();
+    const icon = doc.createElement('link');
+    icon.rel = 'icon';
+    icon.type = 'image/svg+xml';
+    icon.href = HUB_MARK_URL;
+    doc.head.appendChild(icon);
     doc.body.innerHTML = hubShell();
 
-    const ui = { page: 'dashboard', pane: 0, sel: null, trade: null, range: { pts: 40, pts2: 40 }, unit: 'day', imKey: '' };
+    // `trade`: the trade pressed on Trades, open or finished (one id over both). `find`: what is typed in its
+    // "Find a seller". `unit`: 'hour' | 'day' | 'week' | 'month' - a young record opens on hours, once (show()).
+    const ui = { page: 'dashboard', pane: 0, sel: null, trade: null, find: '', range: { pts: 40, pts2: 40 }, unit: 'day', unitSet: false, imKey: '' };
     let desk = null;
     let shown = '';
     let tabsShown = '';
@@ -405,7 +414,12 @@ export function mountHub(doc, actions) {
         if (g) go(g.dataset.go, g.dataset.pane);
     });
     // The forum post's box: every change of yours is kept; a paste comes in as plain words (nothing foreign).
-    doc.addEventListener('input', (e) => { const t = e.target; if (t && (t.id === 'pop-post' || t.id === 'pop-title')) postTyped(); });
+    doc.addEventListener('input', (e) => {
+        const t = e.target;
+        if (t && (t.id === 'pop-post' || t.id === 'pop-title')) postTyped();
+        // "Find a seller" on Trades: the list is drawn again while you type; the box itself is left alone (patch).
+        else if (t && t.id === 't-find') { ui.find = t.value; draw(false); }
+    });
     doc.addEventListener('paste', (e) => {
         const t = e.target && e.target.closest ? e.target.closest('#pop-post') : null;
         if (!t) return;
@@ -473,6 +487,8 @@ export function mountHub(doc, actions) {
         show(d) {
             const first = !desk;
             desk = d;
+            // A record of profit under three days old opens on its hours: chosen once, then yours to change.
+            if (!ui.unitSet && d.view && d.view.ready) { ui.unitSet = true; if (hubYoung(d.view)) ui.unit = 'hour'; }
             // The piece the address named: its table is the one it is in, as a press on a piece chooses it.
             if (ui.arrive && d.view && d.view.pieces) { ui.arrive = false; const p = d.view.pieces.find((x) => String(x.id) === String(ui.sel)); if (p) ui.pane = p.need ? 0 : 1; else ui.sel = null; }
             draw(first);

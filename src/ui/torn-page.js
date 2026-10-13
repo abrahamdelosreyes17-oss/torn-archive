@@ -37,7 +37,7 @@
 // a few seconds after the press (engine.js note 'press'), and a page buy it does not have is taken back
 // (engine/state.js judgeSeen).
 
-import { gmGet, gmSet, gmOnChange, gmCopy, gmCopyRich, gmOpenTab } from '../platform/gm.js';
+import { gmGet, gmSet, gmOnChange, gmCopy, gmCopyRich, gmOpenTab, gmCloseTab } from '../platform/gm.js';
 import { MARKS_CSS } from './marks-css.js';
 import { BOX_CSS, BOX_MARKS_CSS, BOX_GAP } from './box-css.js';
 import { hIcon, hMoney, hNum } from './fmt.js';
@@ -150,6 +150,8 @@ const TP_EMPTY_MS = 5000;
 /** The listing the Down key brought you to pulses for this long. */
 const TP_AIM_MS = 4000;
 const TP_DONE_MS = 4000;
+/** After the last Next of a run this tab closes, once the press has had time to reach the hub. */
+export const TP_CLOSE_MS = 600;
 /** After your press of Torn's Buy, its "Yes" is looked for in that listing for this long (Settings: No "Yes" after Buy). */
 const TP_YES_MS = 3000;
 /** Torn Trading's panel is looked at this often while it is on the page: it can be moved, folded, or come later. */
@@ -1107,6 +1109,21 @@ export function mountTornPage(doc, { tabId, version = '', scripted = false } = {
         const next = stops[(here >= 0 ? here : cur) + 1] || null;
         pressRun('next', here >= 0 ? placeNow() : null);
         if (next) openStop(next);
+        else runDone();
+    }
+
+    /**
+     * The list is done (1.4.0; the owner, 2026-10-13: "when the list is done when i press next or the right button,
+     * it closes it and puts me back to the torn archive tab, if no torn archive tab it makes one"). The hub's tab
+     * is asked to come to the front - with none open (it has gone quiet), one is opened - and this tab closes.
+     * Nothing of Torn's is pressed: only this tab is closed, by your own press of Next.
+     */
+    function runDone() {
+        const quiet = !st.shared || now() - st.shared.at > VIEW_QUIET_MS;
+        if (quiet) gmOpenTab(ARCHIVE_PAGE_URL);
+        else note('front', { why: 'run done' });
+        say('', 'The run is done', quiet ? 'Torn Archive opened, this tab closes' : 'Torn Archive asked to the front, this tab closes');
+        win.setTimeout(() => gmCloseTab(win), TP_CLOSE_MS);
     }
 
     /** Fill all, on: by its button, or the Up key. */

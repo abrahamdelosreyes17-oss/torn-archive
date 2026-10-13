@@ -205,6 +205,19 @@ export function gmOpenTab(url) {
 }
 
 /**
+ * Close the tab the script runs in. A page may only close a tab it opened; with `@grant window.close` the script's
+ * own `window` may close any tab it runs in. `win`: the window to close where there is no such `window` (a test).
+ */
+export function gmCloseTab(win = null) {
+    try { (typeof window !== 'undefined' ? window : win).close(); } catch { /* the browser keeps the tab: it stays as it is */ }
+}
+
+/** Bring the tab the script runs in to the front, where the browser lets it (`@grant window.focus`). */
+export function gmFocusTab(win = null) {
+    try { (typeof window !== 'undefined' ? window : win).focus(); } catch { /* the tab stays where it is */ }
+}
+
+/**
  * Be told when ANOTHER tab changes a stored value. This is how follower tabs
  * see the live feed the leader tab writes, without polling anything.
  * Returns false when the host has no listener API (the caller then re-reads

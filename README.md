@@ -54,12 +54,15 @@ your browser. Nothing is sent to that site.
   - **A trade's Add Money step.** Beside Torn's box: **Add $...** (everything) and **Add only what I need**. A
     press types the money and presses Torn's Change. Accept stays yours. Your own money row of the trade shows
     the total, red when what is on you is short, with a link to your vault.
-  - **Torn's "Yes" after Buy** - only with **Settings > Points and Torn's pages > No "Yes" after Buy** turned
+  - **Torn's "Yes" after Buy** - only with **Settings > Torn's pages > No "Yes" after Buy** turned
     on (it is off on a new install). After YOUR press of Torn's Buy on a listing Torn Archive tells you to buy,
     with no more in its box than it says to take there, Torn's "Yes" in that listing is pressed. Any other
     listing, or a larger number, keeps Torn's question. Other public scripts do the same; Torn's rule text names
     neither them nor this, so the switch is yours to turn.
   Where Torn's button is not there or not ready, the number stays typed and the button says so.
+- **The last Next of a run closes the Torn tab the run was in (1.4.0)** and brings Torn Archive's own tab to the
+  front; with no Archive tab open, it opens one. Only that tab of yours is closed, on your press of Next (or the
+  Right key) with no stop left. Nothing of Torn's is pressed.
 - **Fill all**, on a bazaar, is one press of yours: from then on, on that page only, each listing's number is typed
   into its own quantity box - the ones open now, and each other one as you open it or scroll to it. It never
   opens a box and never presses Buy; a second press puts back what was there. Typing a number sends nothing to
@@ -154,21 +157,36 @@ listings near the screen) has a small **Gone** button.
 
 ## Buying by the whole set
 
-A listing is judged on the set it would finish, in dollars a point - not on the piece alone. A piece's own share
-of the set (by market value, your least profit taken off) is the guide: under it, a unit is always worth buying.
-Over it, a unit is
+A listing is judged on the set it would finish - not on the piece alone - and says one number: **profit per
+set**, in dollars and percent (1.4.0). It is what the set's points sell for, less what the rest of that set costs
+(the pieces you hold at what they cost you, the ones to buy at their cheapest listing), less the listing. The
+points are counted at the lower of two prices: today's, and the one you usually sell points for (your own sales
+of the last two weeks; with none, the middle of the market's usual range). The number has one of three colours:
 
-- **Buy** while the rest of that set has room for it: what its other pieces are under their own share by (the
-  ones you hold at what they cost you, the ones to buy at their cheapest listing). The set still pays, with your
-  least profit, at the lower of two points prices: today's, and the one you usually sell points for (your own
-  sales of the last two weeks; with none, the middle of the market's usual range).
-- **Stretch** when the set pays only at the higher of the two. A list takes a Stretch only when it finishes a set
-  no Buy listing finishes, and says the points price it needs.
-- **No thanks** over even that.
+- **strong green**: the listing is under the piece's own share of the set (by market value, your least profit
+  taken off) - always worth buying;
+- **green**: over its share, and the set still keeps your least profit;
+- **amber**: the set still profits, under your least profit. A list takes such a listing by itself only when it
+  finishes a set nothing better finishes; you can add one by hand, and it stays on your list for as long as its
+  set does not lose.
+
+A listing its set would lose with is not drawn in the hub's lists (the foot of the list counts them); on Torn's own
+page the row is Torn's and stays, and its mark says "a loss for its set". "Fill my stock" counts the three once.
+
+**A cheap piece** - one under a quarter of an even share of its set, by market value - is bought where there is
+a lot of it: the places that hold the most of what you still need come first, the price second, every unit still
+under the piece's worth. Any other piece is taken cheapest first.
 
 No money figure is typed anywhere for this. The Buy page says the list's total once, beside what you have on
-hand, and what the list does to a set's cost a point; the Points page has the break-even on one bar: what a
-point you hold cost you against the price now, red with "Selling now loses $..." when the price is under it.
+hand, and what a whole set will cost you - now, and with the list bought - beside what it sells for. The Points
+page has "Selling your N points": what they cost you, the price now and your usual price on one bar, and what
+selling brings, in all and a set - red, with the loss in dollars, when the price is under your cost.
+
+**Points are sold in lots of the market's own sizes** (50, 100, 200, 500, 1,000, 1,500, 2,000 and up), none over
+the biggest lot you set (Settings > Points; 2,000 on a new install): what you hold is split into those, the odd
+rest as a lot of its own, and the page says the next lot, its price and how long a lot of that size usually
+waits. "Lot sizes that sold" counts the market's sales of seven days by those sizes - yours beside them - with
+everything over your biggest lot in a last row of its own.
 
 The hub works on a shortlist a piece (the cheapest listings that count, a few times what you need); the whole
 pile stays in storage, and "Sold by" says once how many more there are. The list made from the shortlists is
@@ -207,8 +225,8 @@ rest is worked out.
 - **Shop closed**: nothing is fixed; the Prices page shows what you would pay if you opened now, and the set
   pieces come off your TornW3B list.
 
-The Prices page has one line a set: its rate and why it is not your own, what a set costs and leaves, the
-ceiling, and what the other buyers pay for the whole set - from their prices read in the last 24 hours, with the
+The Prices page has one row a set: its rate (and "capped" or "down from", with why on the hover), what a set
+costs at that rate, the profit per set, what your own sets cost, the ceiling, and what the other buyers pay for the whole set - from their prices read in the last 24 hours, with the
 age said from an hour on. When the piece you are shortest of has a buyer over your ceiling, the line names it;
 you are not made to pay over the ceiling for it. Your forum text keeps your rate; when a set is paid less today,
 the page and the box on your thread say so.
@@ -240,6 +258,11 @@ hub), and "Forum post behind" stays in the hub's top bar on every page until you
 
 ## Trades, receipts and the list
 
+- **A trade with something you do not take** - a piece you are full of, more than you need, more than your money
+  covers, or an item that is no set piece - has a message for the seller, on the Trades page and in the box on
+  the trade: which rows to take out and how many, and what you are happy to take. One press copies it (1.4.0).
+  The Trades page shows one trade at a time, open or finished, picked from one list ("Find a seller" when the
+  list is long); a trade that ends while you look at it stays, as its receipt.
 - **Open trades** are read again every minute, each one in full. Torn's own "changed at" time for a trade does not
   move when items are put into it, so nothing else would notice a trade that was opened empty and filled a minute
   later. When set pieces first show in a trade you are told once.
@@ -266,11 +289,11 @@ hub), and "Forum post behind" stays in the hub's top bar on every page until you
 
 | Page | The box says | Marks |
 | --- | --- | --- |
-| Someone's bazaar, the Item Market | what is on your list here, what else is under its worth, the next stop of your run. Start, Next and Stop show in the box at once; when the hub has not taken a press after a few seconds the box says so. Next works from wherever you stand: on a bazaar of your list that is not the run's stop it goes on from there, and the stops passed over stay on the list | on each set piece: on your list, need, ahead |
-| A trade | your price for each row, the total, what it leaves you, the money to take out of the vault | beside each of their items; on your own money row: the total, and what is still to add (red when what is on you is short); beside Torn's Add Money box: Add (everything, or only what you need) |
+| Someone's bazaar, the Item Market | what is on your list here, what else is under its worth, the next stop of your run (at the last stop: "Done · back to Torn Archive", which closes this tab). Start, Next and Stop show in the box at once; when the hub has not taken a press after a few seconds the box says so. Next works from wherever you stand: on a bazaar of your list that is not the run's stop it goes on from there, and the stops passed over stay on the list | on each set piece: on your list, need, ahead |
+| A trade | your price for each row, the total, the profit, the message for the seller when something has to come out, the money to take out of the vault | beside each of their items; on your own money row: the total, and what is still to add (red when what is on you is short); beside Torn's Add Money box: Add (everything, or only what you need) |
 | Your vault | what your open trades still want from you and what your shopping list costs | small buttons floating by Torn's WITHDRAW: the exact sums to take out; by its DEPOSIT: all that is on you |
 | The museum | full sets, what they cost you, what they are worth at today's points price | on each piece: held, need; beside EXCHANGE, when you type more sets than you hold |
-| The points market | the price and lot to list, or to hold when points are cheap or it would be a loss; and for the price you type into Torn's box: how many points sell before yours, and whether it is a loss, cheap, or more under the lowest than it takes | beside ADD LISTING: the same, in a line; in Torn's list: a hairline on the edge between two rows where your listing would sit, and one above which a price is cheap or a loss (no words on them: the box says which is which) |
+| The points market | the price and the lots to list (the next one first), or to hold when points are cheap or it would be a loss; and for the price you type into Torn's box: how many points sell before yours, and whether it is a loss, cheap, or more under the lowest than it takes | beside ADD LISTING: the same, in a line; in Torn's list: a hairline on the edge between two rows where your listing would sit, and one above which a price is cheap or a loss (no words on them: the box says which is which) |
 | Your buying thread | whether its title still says what your shop says | beside the title |
 
 On every other Torn page the box shows your sets and what to do next.
@@ -313,7 +336,8 @@ The harness pages run on made-up numbers and ask nothing of Torn:
   `(await import('/test/harness/measure.js')).measureHub(document, window)` walks every page and tab of the hub
   and names each text that is cut off, shortened with dots, covered, over other words, off the window or broken
   a letter a line, and every Stock tile that does not hold its three lines; `measureBox(document, window)` does
-  the same for the box on a stand-in Torn page. Each answer says how many texts it measured: a clean answer that
+  the same for the box on a stand-in Torn page; `measureRoom(document, window)` names every panel of the hub that
+  is much taller than what it holds. Each answer says how many texts it measured: a clean answer that
   measured next to nothing is no answer (a tab out of view runs no animation; `settle()` ends them first).
 
 `build.mjs` joins the modules into one scope, so a top-level name may exist once in all of `src/`. Private

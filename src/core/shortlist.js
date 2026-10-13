@@ -12,7 +12,7 @@
 // makes: test/shortlist.test.js holds both against each other.
 // Pure working-out on plain rows. The pile's rows are shared with the layer: none is written on here.
 
-import { placeOf } from './shopping.js';
+import { placeOf, fillPlan } from './shopping.js';
 
 const slWhole = (v) => Math.max(0, Math.floor(Number(v) || 0));
 
@@ -24,13 +24,18 @@ export const SHORT_ROWS = 14;
 export const SHORT_OVER = 2;
 /** Rows of a place you do not buy from that are kept whatever they cost. */
 export const SHORT_OUT = 3;
+/** Of a cheap piece (`small`), the places holding the most of it under its take line that are kept too: a list
+ *  goes to those first (shopping.js fillPlan), and a pile of x1 rows must not push them off the shortlist. */
+export const SHORT_BIG = 5;
 
 const slRank = (o) => (o.ok === false ? 2 : o.out ? 1 : 0);
 
 /**
- * @param pieces [{ id, need, take, takeLine, line, lineS, worth }]
+ * @param pieces [{ id, need, take, takeLine, line, lineS, worth, small }]
  *   take / takeLine   what a list takes of the piece: so many units, each under that price (core/setjudge.js)
- *   line / lineS      a row under `line` is Buy, under `lineS` Stretch, at or over it "No thanks"
+ *   line / lineS      a row under `line` is one a list takes by itself; under `lineS` it is shown and may be added
+ *                     by hand (the set does not lose with it); at or over it, it is left out
+ *   small             a small part of what its set costs: its biggest listings are kept as well
  * @param pileOf  id -> every listing of the piece, cheapest first: [{ price, qty, src, whoId, ok }]
  * @param cartPlaces id -> Set of the places your list has a line for the piece at (or null)
  * @param isOut   row -> true when it is in a place you do not buy from (settings.from)
@@ -39,7 +44,8 @@ const slRank = (o) => (o.ok === false ? 2 : o.out ? 1 : 0);
  *            the rows not checked lately; cheapest first in each
  *   all      rows in the pile
  *   under    { units, places } rows that count under the piece's own worth
- *   good     { units, places } rows that count under its line (Buy)
+ *   good     { units, places } rows that count under its line
+ *   thin     { units } rows that count from its line up to `lineS`: shown, not taken by a list by itself
  *   left     { over, more, old, out } rows left out: over the line (sellers), under it beyond the shortlist,
  *            not checked lately, in a place you do not buy from
  *   lowAll   the cheapest row anywhere, a checked one first (the day's record of the price)
@@ -63,6 +69,19 @@ export function shortlists(pieces, pileOf, cartPlaces = null, isOut = null) {
             places.add(placeOf(o));
             left -= slWhole(o.qty);
         }
+        if (!p.small || !slWhole(p.take)) continue;
+        // A cheap piece is not taken cheapest first (shopping.js fillPlan): the places its list goes to are the
+        // ones that hold the most of it - worked out here on the whole pile, so the shortlist holds them and a
+        // list made from it is the same list. A few more of the biggest are kept to show.
+        const big = [];
+        for (const o of pile) {
+            if (o.price >= p.takeLine) break;
+            if (o.ok === false || outOf(o) || !(o.price > 0) || !(o.qty > 0)) continue;
+            big.push(o);
+        }
+        for (const l of fillPlan([{ id: p.id, need: p.take, worth: p.takeLine, small: true }], () => big)) places.add(l.place);
+        big.sort((a, b) => slWhole(b.qty) - slWhole(a.qty) || a.price - b.price);
+        for (const o of big.slice(0, SHORT_BIG)) places.add(placeOf(o));
     }
     const out = new Map();
     for (const p of list) {
@@ -73,6 +92,7 @@ export function shortlists(pieces, pileOf, cartPlaces = null, isOut = null) {
         const rows = [];
         const under = { units: 0, places: 0 };
         const good = { units: 0, places: 0 };
+        const thin = { units: 0 };
         const left = { over: 0, more: 0, old: 0, out: 0 };
         // Units seen so far under the line: that count, of every row where you buy, and where you do not.
         let units = 0;
@@ -99,6 +119,7 @@ export function shortlists(pieces, pileOf, cartPlaces = null, isOut = null) {
             const counts = !old && !away;
             if (counts && o.price < p.worth) { under.units += q; under.places += 1; }
             if (counts && o.price < p.line) { good.units += q; good.places += 1; }
+            else if (counts && o.price < p.lineS) thin.units += q;
             let keep = onList;
             if (away) {
                 // A place you do not buy from: its checked rows under the line are still a price (a deal anyone can
@@ -125,7 +146,7 @@ export function shortlists(pieces, pileOf, cartPlaces = null, isOut = null) {
             if (keep) { rows.push(away ? { ...o, out: true } : o); if (!away) kept += 1; }
         }
         rows.sort((a, b) => slRank(a) - slRank(b) || a.price - b.price);
-        out.set(id, { rows, all: pile.length, under, good, left, lowAll: lowAll || lowOld, lowBazaar });
+        out.set(id, { rows, all: pile.length, under, good, thin, left, lowAll: lowAll || lowOld, lowBazaar });
     }
     return out;
 }

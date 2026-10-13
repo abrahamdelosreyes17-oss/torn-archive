@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
     SETS, setByKey, setOfItem, isSetItem, shortName, setsOn, keptForSets, setStock, autoTarget, autoTargets, fillCost, setMarketValue, setValue, pieceWorths,
-    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, tradeMessage, mostWanted, forumText, setListLines, postBehind, thanksMessage, readThreadTitle,
+    ratePrice, rateSet, setsCost, leastPointPrice, buyPlan, setRun, tradeOffer, takeOutMessage, mostWanted, forumText, setListLines, postBehind, thanksMessage, readThreadTitle,
     isBuyingTitle, threadCheck, moneyShare,
 } from '../src/core/sets.js';
 
@@ -232,19 +232,25 @@ test('a trade someone opens: your price on every piece, the total for what you n
     assert.deepEqual([by.Xanax.state, by.Xanax.each], ['other', 0]);
     assert.deepEqual(offer.need, { items: 35, total: 1_375_620 });
     assert.deepEqual(offer.all, { items: 73, total: 1_796_300 });
-    const msg = tradeMessage(offer);
-    assert.equal(msg, 'I can pay $1,375,620 for 20 Panda Plushie ($35,350 each), 10 Nessie Plushie ($61,913 each) and 5 Crocus ($9,898 each). Kitten ($556) and Lion ($50,500) I have enough of for now; same price if you want them gone. Xanax I do not buy.');
-    assert.match(tradeMessage(offer, { everything: true }), /^I can pay \$1,796,300 for 20 Panda Plushie/);
-    assert.match(tradeMessage(offer, { open: false }), /^I am closed for buying right now\. /);
+    // 1.4.0 (the owner, 2026-10-13): what to paste when something has to come out - asked nicely, no rate, no sum.
+    assert.equal(takeOutMessage(offer), "Hi! Sorry about this, my stock of Kitten and Lion is full right now, and I only buy plushie and flower sets, so I can't take the Xanax. Could you take the 30 Kitten, the 8 Lion and the 2 Xanax out? I'd be happy to take the 20 Panda, 10 Nessie and 5 Crocus. Thank you!");
+    // Your targets come from your money and it does not reach: said as that, never as "full".
+    assert.match(takeOutMessage(offer, { reason: 'budget' }), /^Hi! Sorry about this, I'm a little short on budget right now, and I only buy plushie and flower sets, so I can't take the Xanax\. Could you take /);
+    assert.ok(!/\$|%/.test(takeOutMessage(offer)), 'no price and no rate: their own list says those');
 });
 
 test('a trade with nothing you need, and one with nothing you buy', () => {
     const enough = tradeOffer([{ id: ID.Lion, name: 'Lion Plushie', qty: 2 }], CTX);
     assert.equal(enough.need.total, 0);
-    assert.match(tradeMessage(enough), /^I have enough of these for now: Lion \(\$50,500 each\)\. Same price if you want them gone: \$101,000 for all\.$/);
+    assert.equal(takeOutMessage(enough), 'Hi! Sorry about this, my stock of Lion is full right now. Could you take the 2 Lion out? Thank you!');
+    assert.equal(takeOutMessage(enough, { reason: 'budget' }), "Hi! Sorry about this, I'm a little short on budget right now. Could you take the 2 Lion out? Thank you!");
     const none = tradeOffer([{ id: 206, name: 'Xanax', qty: 2 }, { id: 1, name: 'Nothing', qty: 0 }], CTX);
     assert.equal(none.rows.length, 1);
-    assert.equal(tradeMessage(none), 'Xanax I do not buy.');
+    assert.equal(takeOutMessage(none), "Hi! Sorry about this, I only buy plushie and flower sets, so I can't take the Xanax. Could you take the 2 Xanax out? Thank you!");
+    // "if nothing to take out, no need for message": every unit is one you take.
+    assert.equal(takeOutMessage(tradeOffer([{ id: ID.Panda, name: 'Panda Plushie', qty: 20 }, { id: ID.Nessie, name: 'Nessie Plushie', qty: 10 }], CTX)), '');
+    assert.equal(takeOutMessage(null), '');
+    assert.equal(takeOutMessage({ rows: [] }), '');
     // Sets switched off: nothing is priced.
     assert.equal(tradeOffer([{ id: ID.Panda, name: 'Panda Plushie', qty: 2 }], { ...CTX, settings: { on: false } }).rows[0].state, 'other');
 });
@@ -308,9 +314,10 @@ test('your forum thread: the title and post to copy, open and closed (mockup Z3)
     assert.equal(closed.top.text, 'CLOSED FOR NOW');
     assert.ok(closed.top.html.includes('color="#f85149"'));
     assert.equal((struck.html.match(/<s>/g) || []).length, over[0].pieces.filter((p) => p.ahead > 0).length, 'each piece held over the target, and no other');
-    // What to send the seller after a trade, in his order: enjoyed it, the forum, hope to trade again, the receipt last.
-    assert.equal(thanksMessage({ receipt: 'https://weav3r.dev/receipt/abc' }), 'Thanks for the trade! Hope to trade again! Your receipt: https://weav3r.dev/receipt/abc');
-    assert.equal(thanksMessage({ receipt: 'R', thread: 'T' }), 'Thanks for the trade! If you enjoyed it, a like and a comment on my forum would be a big help: T Hope to trade again! Your receipt: R');
+    // What to send the seller after a trade, in his order: add me as a friend and trade when I am online, the
+    // forum with its link, the receipt last.
+    assert.equal(thanksMessage({ receipt: 'https://weav3r.dev/receipt/abc' }), "Thanks for the trade! Feel free to add me as a friend, and whenever you see me online, don't hesitate to send a trade. Your receipt: https://weav3r.dev/receipt/abc");
+    assert.equal(thanksMessage({ receipt: 'R', thread: 'T' }), "Thanks for the trade! Feel free to add me as a friend, and whenever you see me online, don't hesitate to send a trade. If you enjoyed it, a like and a comment on my forum would be a big help: T Your receipt: R");
     assert.equal(forumText({ open: true, pct: 99.4, stocks: [], sets: [PLUSHIE] }).title, '[OPEN] Buying Plushies · 99.4% of market value');
 });
 

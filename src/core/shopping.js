@@ -24,9 +24,27 @@ const shLine = (piece, offer, q) => ({
 });
 
 /**
+ * A piece counts as cheap when it is under this share of an even share of its set (a quarter: of thirteen pieces,
+ * one under 1.9% of what the set costs - a Kitten or a Sheep, never a Camel). A ratio, not a dollar figure.
+ */
+export const SMALL_SHARE = 0.25;
+/** Whether a piece is a small part of what its set costs. @param mvOf id -> market value; pieces: the set's own */
+export function smallPiece(itemId, pieces, mvOf) {
+    const all = (pieces || []).reduce((s, p) => s + shWhole(mvOf(p.id)), 0);
+    const n = (pieces || []).length;
+    return all > 0 && n > 0 && shWhole(mvOf(itemId)) > 0 && shWhole(mvOf(itemId)) < all / n * SMALL_SHARE;
+}
+
+/**
  * "Fill my stock": the cheapest way to what you need, taking a unit only while its price is under the piece's
  * safe worth (what it brings less your least profit).
- * @param pieces   [{ id, name, set, need, worth }] - worth is the SAFE worth
+ *
+ * 1.4.0 - a cheap piece (`small`) goes to the places that hold the most of what you need first, the price second
+ * (the owner, 2026-10-13: "for cheap items like kittens and sheep etc, can it prioritize the bazaars with a lot
+ * more quantity in it not the x1 x1 x1 ... and also make sure its still profitable"). Every unit is still under
+ * the piece's worth; the few dollars a unit it costs are nothing against a stop for one Kitten. Until then every
+ * piece was taken cheapest first whatever its listing held.
+ * @param pieces   [{ id, name, set, need, worth, small }] - worth is the SAFE worth
  * @param offersOf id -> [{ price, qty, src, who, whoId }]
  */
 export function fillPlan(pieces, offersOf) {
@@ -35,6 +53,7 @@ export function fillPlan(pieces, offersOf) {
         let left = shWhole(p.need);
         if (!left || !(p.worth > 0)) continue;
         const all = [...((offersOf && offersOf(p.id)) || [])].filter((o) => shWhole(o.price) > 0 && shWhole(o.qty) > 0).sort((a, b) => a.price - b.price);
+        if (p.small) { out.push(...shBigFirst(p, all.filter((o) => o.price < p.worth), left)); continue; }
         const seen = new Set();
         // The Item Market's rows, cheapest first with everything else: what falls to them is one line.
         let imQ = 0;
@@ -52,6 +71,38 @@ export function fillPlan(pieces, offersOf) {
             left -= q;
         }
         if (imQ) out.splice(imAt, 0, shLine(p, { ...imRow, price: Math.ceil(imCost / imQ) }, imQ));
+    }
+    return out;
+}
+
+/**
+ * A cheap piece's lines: the place that holds the most of what is still needed first, the cheaper one of two that
+ * hold as much. A bazaar is its cheapest listing; the Item Market is its rows under the worth taken together.
+ * @param rows the piece's listings under its worth, cheapest first
+ */
+function shBigFirst(piece, rows, need) {
+    const places = new Map();
+    for (const o of rows) {
+        const place = placeOf(o);
+        if (place === IM_PLACE) {
+            const im = places.get(place) || { place, rows: [], qty: 0, price: shWhole(o.price) };
+            im.rows.push(o);
+            im.qty += shWhole(o.qty);
+            places.set(place, im);
+        } else if (!places.has(place)) places.set(place, { place, rows: [o], qty: shWhole(o.qty), price: shWhole(o.price) });
+    }
+    const out = [];
+    let left = need;
+    const open = [...places.values()];
+    while (left > 0 && open.length) {
+        open.sort((a, b) => Math.min(left, b.qty) - Math.min(left, a.qty) || a.price - b.price || (a.place < b.place ? -1 : 1));
+        const s = open.shift();
+        const q = Math.min(left, s.qty);
+        let cost = 0;
+        let take = q;
+        for (const o of s.rows) { const n = Math.min(take, shWhole(o.qty)); cost += n * shWhole(o.price); take -= n; if (!take) break; }
+        out.push(shLine(piece, { ...s.rows[0], price: Math.ceil(cost / q) }, q));
+        left -= q;
     }
     return out;
 }

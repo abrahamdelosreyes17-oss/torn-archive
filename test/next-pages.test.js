@@ -129,7 +129,7 @@ test('G + E3. Stock: every piece tile of both sets holds its three lines, whatev
     assert.match(page(d, 'dashboard'), /Need.*Enough.*Ahead/s);
 });
 
-test('C1 + C3 + B1. Buy: the three groups, the list\'s capital beside what is on hand, and a buy that was taken back', () => {
+test('C1 + C3 + B1. Buy: profit per set in three colours, the list\'s capital beside what is on hand, and a buy that was taken back', () => {
     const input = fixtureInput(NOW);
     const v0 = archiveView(input);
     input.cart = fillList(listPieces(v0.pieces), (id) => (v0.pieces.find((p) => String(p.id) === String(id)) || { offers: [] }).offers.filter((o) => o.ok !== false && !o.out));
@@ -137,16 +137,24 @@ test('C1 + C3 + B1. Buy: the three groups, the list\'s capital beside what is on
     input.back = [{ id: '258', qty: 3, whoId: '11', im: false, t: NOW - 90000 }];
     const d = desk(input);
     const first = page(d, 'buy');
-    assert.match(first, /<b>Buy [\d,]+<\/b>the set still pays at today's \$[\d,]+ a point, with your least profit/);
-    assert.match(first, /Stretch/);
-    assert.match(first, /No thanks/);
+    // 1.4.0 (drawing AK, "for buy colors, that looks good"): one number a listing - what its set makes with it -
+    // in three text colours, and the three counted once on "Fill my stock". No "Buy · Stretch · No thanks".
+    assert.match(first, /<span class="mk3"><span class="j-best"[^>]*>[\d,]+ under their share<\/span><span class="j-ok"[^>]*>[\d,]+ keep your 2%<\/span><span class="j-thin"[^>]*>[\d,]+ under 2%<\/span>/);
+    assert.doesNotMatch(first, /Stretch|No thanks|leaves/);
+    const m = d.view.buy.marks;
+    assert.ok(first.includes(`>${m.best.toLocaleString('en-US')} under their share<`) && first.includes(`>${m.ok.toLocaleString('en-US')} keep your 2%<`));
+    assert.match(first, /<th class="n">Profit per set<\/th>/);
+    assert.match(first, /<span class="j-(best|ok|thin)"[^>]*>\$[\d,]+ · [\d.]+%<\/span>/, 'dollars a set first, then the percent');
     // The list's own tab.
     const html = page(d, 'buy', 2);
     assert.equal(count(html, /on hand \$[\d,]+/g), 1, 'what you have on hand, once');
     assert.ok(html.includes('$' + d.view.buy.cost.toLocaleString('en-US')), 'the list\'s total');
-    assert.match(html, /Your break-even on a (plushie|flower) set, a point/);
-    assert.match(html, /<b>Not a buy after all:<\/b> 3 × [^<]+ at [^<]+ bazaar, seen at /);
-    assert.equal(count(html, /Not a buy after all/g), 1);
+    // What a set costs you, in dollars a set, now and with the list - never "a point" to multiply.
+    assert.match(html, /A (Plushie|Flower) set will cost you<\/span><span class="num"><b>\$[\d,]+<\/b> now · <b>\$[\d,]+<\/b> with this list/);
+    assert.match(html, /It sells for<\/span><span class="num"><b>\$[\d,]+<\/b> · <span class="t-(good|bad)">[+-]\$[\d,]+ a set<\/span>/);
+    assert.doesNotMatch(html, /a point|break-even/);
+    assert.match(html, /<b>Taken back:<\/b> 3 × [^<]+ at [^<]+ bazaar, [^<]+ · not in Torn's log/);
+    assert.equal(count(html, /Taken back/g), 1);
 });
 
 test('C1. Dashboard: a stop of the list bought over its pieces\' own share says so - never a minus in green under "Under their worth"', () => {
@@ -161,16 +169,28 @@ test('C1. Dashboard: a stop of the list bought over its pieces\' own share says 
     assert.ok(/t-good">\+\$/.test(plain), 'a stop under its worth: the saving, in green');
     buy.first[0] = { ...buy.first[0], gain: -7350 };
     const html = page(d, 'dashboard');
-    assert.ok(html.includes('>$7,350 over</span>') && html.includes('the set carries it'), 'said in words, and why on the hover');
+    assert.ok(html.includes('>$7,350 over</span>') && html.includes('the set still keeps your least profit'), 'said in words, and why on the hover');
     assert.ok(!/t-good">-/.test(html), 'no minus figure in green');
 });
 
-test('C2. Points: your break-even on one bar - and red, with what selling now loses, when the price is under your cost', () => {
+test('C2. Points: selling your points on one bar and in dollars - and red, with what selling now loses, when the price is under your cost', () => {
     const input = fixtureInput(NOW);
     const ok = page(desk(input), 'points');
-    assert.match(ok, /data-k="even"/);
-    assert.match(ok, /A point sold now leaves <b class="t-good">\+\$[\d,]+<\/b> over what it cost you\. Under \$[\d,]+ a point, selling is a loss\./);
+    // 1.4.0 (drawing AL): one panel in place of "Your break-even" and "Sell N points" - what they cost you, the
+    // price now and your usual on one bar, then what selling brings: in all, and a set.
+    assert.match(ok, /data-k="selling"/);
+    assert.doesNotMatch(ok, /data-k="even"|break-even|leaves/);
+    const v0 = desk(input).view;
+    assert.ok(ok.includes(`<h2>Selling your ${v0.points.sell.points} points</h2>`));
+    assert.match(ok, /<th>If you sell at<\/th><th class="n">You get<\/th><th class="n">Profit<\/th><th class="n">Profit per set<\/th>/);
+    assert.ok(ok.includes(`<td class="n t-good"><b style="color:inherit">+$${v0.points.sell.profit.toLocaleString('en-US')}</b></td>`), 'the profit of selling them all now, in dollars');
+    assert.match(ok, /In lots, none over 2,000<\/span><b class="num">1 × 200 · 1 × 100 · 1 × 40<\/b>/);
+    assert.match(ok, /Next lot: <b class="num">200<\/b> at <b class="num">\$[\d,]+<\/b>/);
     assert.doesNotMatch(ok, /under your cost/);
+    // The lot sizes are the market's own, with the bigger ones in a last row of their own.
+    assert.match(ok, /<h2>Lot sizes that sold<\/h2>/);
+    assert.match(ok, /<td><b>2,000<\/b><\/td>.*Bigger <span class="tg q">over 2,000<\/span>/s);
+    assert.doesNotMatch(ok, /Up to 100|Over 1,000/);
     // Points made at far over today's price: every sale is a loss, and the panel says how much.
     input.book = [...input.book, { id: 'mDear', t: NOW - 1000, kind: 'made', points: 5000, each: 40000, set: 'plushie', src: 'log' }];
     const d = desk(input);
@@ -178,8 +198,14 @@ test('C2. Points: your break-even on one bar - and red, with what selling now lo
     assert.ok(ev.each > ev.now && ev.loss > 0);
     const bad = page(d, 'points');
     assert.match(bad, /<span class="badge bad">under your cost<\/span>/);
-    assert.ok(bad.includes('Selling now loses $' + ev.loss.toLocaleString('en-US') + '.'));
-    assert.match(bad, /class="even-b bad"/);
+    assert.ok(bad.includes(`<td class="n t-bad"><b style="color:inherit">-$${ev.loss.toLocaleString('en-US')}</b></td>`), 'what selling now loses, in dollars');
+    assert.match(bad, /class="even-b"><s style="--w:/, 'the bar is red up to what they cost you');
+    // The points book: your sets in money - what you spent on them, in all and a set.
+    const book = page(desk(fixtureInput(NOW)), 'points', 1);
+    assert.match(book, /data-k="setsmoney"/);
+    assert.match(book, /You spent<\/div><div class="k-v[^"]*">\$[\d,]+<\/div><div class="k-s"><b>[\d,]+<\/b> sets · <b>\$[\d,]+<\/b> a set/);
+    assert.match(book, /<h2>Sets you made<\/h2>/);
+    assert.match(book, /<th>When<\/th><th>What<\/th><th class="n">Points<\/th><th class="n">They cost<\/th><th class="n">Sold at<\/th><th class="n">You got<\/th><th class="n">Profit<\/th>/);
 });
 
 test('F. Ledger: "about" where an estimate is behind the profit, today\'s worth beside the cost, pieces sold as themselves, points held before', () => {
@@ -193,11 +219,11 @@ test('F. Ledger: "about" where an estimate is behind the profit, today\'s worth 
     input.direct = [{ id: 'log9:0', t: NOW - 2000, itemId: '258', qty: 3, got: 110000, cost: 100000, venue: 'bazaar', give: false, est: 0 }, { id: 'trade:5:out:0', t: NOW - 4000, itemId: '274', qty: 4, got: 0, cost: 140000, venue: 'trade', give: true, est: 0 }];
     const d = desk(input);
     const top = page(d, 'ledger');
-    assert.match(top, /Profit, 14 days<\/div><div class="k-v[^>]*><small>about<\/small> /);
-    assert.match(top, /of it <b>\+\$10,000<\/b> from pieces sold as themselves · about: a part of the cost behind it is an estimate/);
+    assert.match(top, /Profit, 14 days<\/div><div class="k-v[^>]*><small title="Part of the cost behind it is an estimate">about<\/small> /);
+    assert.match(top, /of it <b>\+\$10,000<\/b> from pieces sold as themselves<\/div>/);
     const lots = page(d, 'ledger', 1);
     assert.match(lots, /Held before, not counted/);
-    assert.match(lots, /"about": a part of their cost was an estimate/);
+    assert.match(lots, /"about": part of the cost is an estimate/);
     assert.match(lots, new RegExp('\\+ ' + d.view.ledger.before.points.toLocaleString('en-US') + ' held before: \\$[\\d,]+, not counted'));
     const direct = page(d, 'ledger', 6);
     assert.match(direct, /Pieces sold as themselves/);

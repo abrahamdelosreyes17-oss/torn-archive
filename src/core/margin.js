@@ -103,9 +103,9 @@ export function placeMargin(takes, { mv, pointsPrice, leastPct = 0 }) {
     return leavesOf((takes || []).map((t) => ({ id: t.id, qty: t.take, each: t.price })), mv, pointsPrice, leastPct);
 }
 
-/** The words of a margin line: "leaves +$1,234, 2.4%". The sign is always shown. */
+/** The words of a margin line: "profit +$1,234, 2.4%" (the owner, 2026-10-13: "Profit", never "leaves"). The sign is always shown. */
 export function marginWords(m) {
     if (!m || !m.units) return '';
     const sign = m.leaves < 0 ? '-' : '+';
-    return 'leaves ' + sign + '$' + Math.abs(m.leaves).toLocaleString('en-US') + ', ' + (Math.round(m.pct * 10) / 10).toFixed(1) + '%';
+    return 'profit ' + sign + '$' + Math.abs(m.leaves).toLocaleString('en-US') + ', ' + (Math.round(m.pct * 10) / 10).toFixed(1) + '%';
 }

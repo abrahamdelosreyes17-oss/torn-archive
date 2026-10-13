@@ -1233,7 +1233,7 @@ export function makeEngine(env) {
             const offer = p && p.offers.find((o) => placeOf(o) === place);
             if (!offer) return;
             // Your own press: any listing may go on. The Item Market's line is its rows under the Stretch line.
-            S.cart = toggleLine(S.cart, { ...p, worth: p.lineS }, offer);
+            S.cart = toggleLine(S.cart, { ...p, worth: p.lineT }, offer);
             idle();
             touch('cart', 'run');
         },

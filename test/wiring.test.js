@@ -64,9 +64,9 @@ test('a trade on the page that is not the trade the hub read: no total, no Fill,
     assert.deepEqual([...tradeSame(v, t, more).diff], [rows[first].name.toLowerCase()]);
     const out = boxTrade(v, t, more, 'view', false);
     assert.equal(out.changed, true);
-    assert.match(out.html, /This trade changed since it was read/);
+    assert.match(out.html, /<b>Trade changed\.<\/b> New total within a minute\./);
     assert.ok(!out.html.includes('fill-money') && !out.html.includes('data-act="copy"') && !out.html.includes(t.total.toLocaleString('en-US')), 'the old total is not shown');
-    assert.match(out.marks.find((m) => m.i === first).text, /its count changed$/);
+    assert.match(out.marks.find((m) => m.i === first).text, / · count changed$/);
     assert.equal(out.marks.filter((m) => /count changed/.test(m.text)).length, 1, 'the rows that did not change keep their price');
     // A pile taken out, and a set piece the hub has not read at all.
     assert.equal(tradeSame(v, t, rows.filter((r, i) => i !== first)).same, false);
@@ -99,7 +99,7 @@ test('the hub gone quiet: a Torn tab says since when, first in its box, and says
     // The hub shares at least once a minute; a background tab may be let run only once a minute, so two can pass.
     assert.equal(boxLate(NOW - 2 * MIN - 30000, NOW), '');
     assert.equal(boxLate(0, NOW), '', 'no view at all is another message');
-    assert.match(boxLate(NOW - 4 * MIN - 30000, NOW), /The hub last answered 4 min ago/);
+    assert.match(boxLate(NOW - 4 * MIN - 30000, NOW), /<b>Hub silent for 4 min\.<\/b> Numbers are from then\./);
     // By the whole minute: the same words for the whole of a minute, so the box is not drawn again each second.
     assert.equal(boxLate(NOW - 4 * MIN - 1000, NOW), boxLate(NOW - 4 * MIN - 59000, NOW));
     // And the Torn tab puts it in front of whatever it shows from the hub.
